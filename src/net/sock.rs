@@ -12,7 +12,7 @@ use tokio::net::{TcpListener, TcpStream, UdpSocket};
 
 /// Asynchronous sending of datagrams.
 pub trait AsyncDgramSock {
-    type Addr: Sized + Send;
+    type Addr: Sized + Send + Sync + 'static;
 
     fn poll_send_to(
         &self,

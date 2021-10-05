@@ -30,6 +30,30 @@ pub trait Service<RequestOctets: AsRef<[u8]>> {
     ) -> Transaction<Self::Single, Self::Stream>;
 }
 
+impl<F, RequestOctets, ResponseOctets, Single, Strm>
+Service<RequestOctets> for F
+where
+    F: Fn(Message<RequestOctets>) -> Transaction<Single, Strm>,
+    RequestOctets: AsRef<[u8]>,
+    ResponseOctets: OctetsBuilder + Send + Sync + 'static,
+    Single: Future<
+        Output = Result<StreamTarget<ResponseOctets>, io::Error>
+    > + Send + 'static,
+    Strm: Stream<
+        Item = Result<StreamTarget<ResponseOctets>, io::Error>
+    > + Send + 'static,
+{
+    type ResponseOctets = ResponseOctets;
+    type Single = Single;
+    type Stream = Strm;
+
+    fn handle_request(
+        &self, message: Message<RequestOctets>
+    ) -> Transaction<Self::Single, Self::Stream> {
+        (*self)(message)
+    }
+}
+
 
 //------------ Transaction ---------------------------------------------------
 
@@ -68,12 +92,18 @@ where
     Buf: BufSource,
     Svc: Service<Buf::Output>
 {
+    pub fn new(sock: Sock, buf: Buf, service: Svc) -> Self {
+        DgramServer {
+            sock: sock.into(), buf, service
+        }
+    }
+
     pub async fn run(self) -> Result<(), io::Error> {
         loop {
             let (msg, addr) = self.recv_from().await?;
             let msg = match Message::from_octets(msg) {
                 Ok(msg) => msg,
-                Err(_) => continue
+                Err(_) => continue,
             };
             let sock = self.sock.clone();
             let tran = self.service.handle_request(msg);
@@ -81,9 +111,9 @@ where
                 match tran {
                     Transaction::Single(fut) => {
                         if let Ok(response) = fut.await {
-                            let _  = Self::send_to(
+                            let _ = Self::send_to(
                                 &sock, response.as_dgram_slice(), &addr
-                            );
+                            ).await;
                         }
                     }
                     Transaction::Stream(stream) => {
@@ -94,7 +124,7 @@ where
                                     let _  = Self::send_to(
                                         &sock, response.as_dgram_slice(),
                                         &addr
-                                    );
+                                    ).await;
                                 }
                                 Err(_) => break
                             }
@@ -152,6 +182,12 @@ where
     Buf::Output: Send + Sync + 'static,
     Svc: Service<Buf::Output> + Send + Sync + 'static,
 {
+    pub fn new(sock: Sock, buf: Buf, service: Svc) -> Self {
+        StreamServer {
+            sock, buf: buf.into(), service: service.into(),
+        }
+    }
+
     pub async fn run(self) -> Result<(), io::Error> {
         loop {
             let (stream, _addr) = self.accept().await?;
