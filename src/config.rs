@@ -1,7 +1,7 @@
 //! Configuration for the server.
 //!
 //! This module primarily contains the type [`Config`] that holds all the
-//! configuration used by Routinator. It can be loaded both from a TOML
+//! configuration used. It can be loaded both from a TOML
 //! formatted config file and command line options.
 
 use std::{env, fmt, fs};

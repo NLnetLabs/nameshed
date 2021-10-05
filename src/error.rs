@@ -1,7 +1,6 @@
 /// Error types used by multiple modules.
 ///
-/// There are two error types that are used widely within the Routinator
-/// library.
+/// There are two error types that are used widely within the library.
 ///
 /// The most important is [`Failed`]. This error indicates that an
 /// operation had to be canceled for some reason and callers can assume

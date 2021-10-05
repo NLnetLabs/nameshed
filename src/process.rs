@@ -9,7 +9,7 @@ use crate::error::Failed;
 
 //------------ Process -------------------------------------------------------
 
-/// A representation of the process Routinator runs in.
+/// A representation of the process the server runs in.
 ///
 /// This type provides access to the configuration and the environment in a
 /// platform independent way.
@@ -48,7 +48,7 @@ impl Process {
 impl Process {
     /// Initialize logging.
     ///
-    /// All diagnostic output of Routinator is done via logging, never to
+    /// All diagnostic output is done via logging, never to
     /// stderr directly. Thus, it is important to initalize logging before
     /// doing anything else that may result in such output. This function
     /// does exactly that. It sets a maximum log level of `warn`, leading

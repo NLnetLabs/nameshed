@@ -21,10 +21,10 @@ fn _main() -> Result<(), ExitError> {
         }
     };
     let matches = Config::config_args(
-        App::new("Routinator")
+        App::new("nameshed")
             .version(crate_version!())
             .author(crate_authors!())
-            .about("collects and processes RPKI repository data")
+            .about("a name server")
     ).get_matches();
     let config = Config::from_arg_matches(
         &matches, &cur_dir
