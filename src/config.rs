@@ -20,6 +20,9 @@ use crate::error::Failed;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Config {
+    /// Database directory.
+    pub data_dir: PathBuf,
+
     /// Addresses and protocols to listen on.
     pub listen: Vec<ListenAddr>,
 
@@ -43,6 +46,13 @@ impl Config {
              .takes_value(true)
              .value_name("PATH")
              .help("Read base configuration from this file")
+        )
+        .arg(Arg::with_name("data-dir")
+            .long("data-dir")
+            .short("d")
+            .value_name("PATH")
+            .help("Path to the directory with the database")
+            .takes_value(true)
         )
         .arg(Arg::with_name("plain-listen")
             .long("listen")
@@ -163,6 +173,7 @@ impl Config {
     fn from_config_file(mut file: ConfigFile) -> Result<Self, Failed> {
         let log_target = Self::log_target_from_config_file(&mut file)?;
         let res = Config {
+            data_dir: file.take_mandatory_path("data-dir")?,
             listen: file.take_from_str_array("listen")?.unwrap_or_else(||
                 Vec::new()
             ),
@@ -271,6 +282,19 @@ impl Config {
         matches: &ArgMatches,
         cur_dir: &Path,
     ) -> Result<(), Failed> {
+        // data_dir
+        if let Some(dir) = matches.value_of("data-dir") {
+            self.data_dir = cur_dir.join(dir)
+        }
+        if self.data_dir == Path::new("") {
+            error!(
+                "Couldn’t determine default repository directory: \
+                 no home directory.\n\
+                 Please specify the data directory with the -d option."
+            );
+            return Err(Failed)
+        }
+
         // udp_listen
         if let Some(list) = matches.values_of("udp-listen") {
             for value in list {
@@ -392,6 +416,7 @@ impl Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
+            data_dir: PathBuf::from(""),
             listen: Vec::new(),
             log_level: LevelFilter::Warn,
             log_target: LogTarget::default(),
@@ -800,7 +825,6 @@ impl ConfigFile {
         self.take_string(key).map(|opt| opt.map(|path| self.dir.join(path)))
     }
 
-    /*
     /// Takes a mandatory path value from the config file.
     ///
     /// This is the pretty much the same as [`take_path`] but also returns
@@ -820,6 +844,7 @@ impl ConfigFile {
         }
     }
 
+    /*
     /// Takes an array of strings from the config file.
     ///
     /// The value is taken from the entry with the given `key` and, if

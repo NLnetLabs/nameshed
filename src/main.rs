@@ -10,6 +10,7 @@ use nameshed::{Config, ExitError};
 // in our case we only get an `ExitError` if all is said and done, we make our
 // own, more quiet version.
 fn _main() -> Result<(), ExitError> {
+    nameshed::operation::prepare()?;
     let cur_dir = match current_dir() {
         Ok(dir) => dir,
         Err(err) => {
