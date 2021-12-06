@@ -25,6 +25,7 @@ pub fn prepare() -> Result<(), ExitError> {
     Ok(())
 }
 
+#[allow(clippy::mutable_key_type)]
 pub fn run(config: Config) -> Result<(), ExitError> {
     let process = Process::new(config);
     process.switch_logging(false)?;
@@ -101,30 +102,12 @@ async fn server(
     }
 }
 
-/*
-fn refuse<RequestOctets: AsRef<[u8]>>(
-    message: Message<RequestOctets>
-) -> Transaction<
-    impl Future<Output = Result<StreamTarget<Vec<u8>>, io::Error>>,
-    Once<Pending<Result<StreamTarget<Vec<u8>>, io::Error>>>
->
-where for<'a> &'a RequestOctets: OctetsRef
-{
-    Transaction::Single(async move {
-        MessageBuilder::new_stream_vec().start_answer(
-            &message, Rcode::Refused
-        ).map(|builder| builder.finish()).map_err(|_| {
-            io::Error::new(io::ErrorKind::Other, "short buf")
-        })
-    })
-}
-*/
-
 fn service<RequestOctets: AsRef<[u8]> + Send + Sync + 'static>(
     zones: SharedZoneSet,
 ) -> impl crate::net::server::Service<RequestOctets>
 where for<'a> &'a RequestOctets: OctetsRef
 {
+    #[allow(clippy::type_complexity)]
     fn query<RequestOctets: AsRef<[u8]>>(
         message: Message<RequestOctets>,
         zones: SharedZoneSet,

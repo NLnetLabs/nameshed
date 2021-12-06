@@ -10,7 +10,7 @@ use parking_lot::RwLock;
 use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 use super::answer::{Answer, AnswerAuthority};
 use super::flavor::{Flavor, Flavored};
-use super::rrset::SharedRrset;
+use super::rrset::{SharedRr, SharedRrset};
 use super::versioned::{Version, Versioned};
 
 
@@ -166,6 +166,11 @@ impl ZoneUpdate {
         }
     }
 
+    /// Sets the RRset for the given name and flavor.
+    ///
+    /// The method will fail if the there are zone cuts or aliases along the
+    /// way or if the node itself is not a (possibly empty or even not yet
+    /// existing) populated node.
     pub fn set_rrset(
         &mut self,
         name: &impl ToDname,
@@ -181,7 +186,6 @@ impl ZoneUpdate {
             }
             None => self.apex.set_rrset(rrset, flavor, self.version)
         }
-        
     }
 }
 
@@ -221,8 +225,7 @@ impl ZoneApex {
         &self, qname: &'l impl ToDname
     ) -> impl Iterator<Item=&'l Label> {
         let mut qname = qname.iter_labels().rev();
-        let mut apex_name = self.apex_name.iter_labels().rev();
-        while let Some(apex_label) = apex_name.next() {
+        for apex_label in self.apex_name.iter_labels().rev() {
             let qname_label = qname.next();
             assert_eq!(
                 Some(apex_label), qname_label,
@@ -309,7 +312,7 @@ impl ZoneApex {
     /// node with at least one RRset or a zone cut. It will thus error out if
     /// there are zone cuts along the path. It will flip any NXDomain nodes
     /// to empty populated nodes.
-    fn get_accessible_node<'l>(
+    pub fn get_accessible_node<'l>(
         &self,
         label: &'l Label,
         name: impl Iterator<Item = &'l Label>,
@@ -321,7 +324,7 @@ impl ZoneApex {
         )
     }
 
-    fn set_rrset(
+    pub fn set_rrset(
         &self,
         rrset: SharedRrset,
         flavor: Option<Flavor>,
@@ -338,7 +341,7 @@ impl ZoneApex {
         }
     }
 
-    fn rollback(&self, version: Version) {
+    pub fn rollback(&self, version: Version) {
         self.default_rrsets.write().rollback(version);
         self.flavor_rrsets.write().iter_mut().for_each(|item| {
             item.rollback(version)
@@ -346,7 +349,7 @@ impl ZoneApex {
         self.children.rollback(version);
     }
 
-    fn clean(&self, version: Version) {
+    pub fn clean(&self, version: Version) {
         self.default_rrsets.write().clean(version);
         self.flavor_rrsets.write().iter_mut().for_each(|item| {
             item.clean(version)
@@ -358,16 +361,31 @@ impl ZoneApex {
 
 //------------ ZoneNode ------------------------------------------------------
 
+/// A node in the zone tree.
+///
+/// The node stores the data for a single domain name in the zone. It carries
+/// the (possibly empty) data of the name itself as well as links to all the
+/// children with “more specific” names.
 struct ZoneNode {
+    /// The default content for the node if no flavors are used.
     default: RwLock<Versioned<NodeContent>>,
+
+    /// The content of the node for flavors.
+    ///
+    /// If present for a specific flavor, the content here replaces the
+    /// default content except if both the default and the flavored content
+    /// are of the “populated” variant, in which case the flavored RRsets are
+    /// extending and overiding the default RRsets.
     flavors: RwLock<Flavored<Versioned<NodeContent>>>,
+
+    /// The child nodes.
     children: NodeChildren,
 }
 
 /// # Read Access
 ///
 impl ZoneNode {
-    fn query<'l>(
+    pub fn query<'l>(
         &self,
         mut qname: impl Iterator<Item = &'l Label>,
         qtype: Rtype,
@@ -470,6 +488,9 @@ impl ZoneNode {
                             return NodeAnswer::no_data()
                         }
                     }
+                    NodeContent::Cname(ref rr) => {
+                        return NodeAnswer::cname(rr.clone())
+                    }
                     NodeContent::Cut(ref cut) => {
                         return cut.query_here(qtype)
                     }
@@ -483,6 +504,7 @@ impl ZoneNode {
                 rrsets.query(qtype, version)
                     .unwrap_or_else(NodeAnswer::no_data)
             }
+            Some(NodeContent::Cname(ref rr)) => NodeAnswer::cname(rr.clone()),
             Some(NodeContent::Cut(ref cut)) => cut.query_here(qtype),
             Some(NodeContent::NxDomain) => NodeAnswer::nx_domain(),
             None => NodeAnswer::no_data(),
@@ -492,25 +514,11 @@ impl ZoneNode {
 
 /// # Write Access
 impl ZoneNode {
-    /*
-    fn get_node<'l>(
-        self: Arc<Self>,
-        mut name: impl Iterator<Item = &'l Label>
-    ) -> Option<Arc<ZoneNode>> {
-        match name.next() {
-            Some(label) => {
-                self.children.get_child(label)?.get_node(name)
-            }
-            None => Some(self.clone())
-        }
-    }
-    */
-
     /// Returns the node for the given name and makes sure it is accessible.
     ///
     /// See [`ZoneApex::get_accessible_node`] for an explanation of what this
     /// means.
-    fn get_accessible_node<'l>(
+    pub fn get_accessible_node<'l>(
         self: Arc<ZoneNode>,
         mut name: impl Iterator<Item = &'l Label>,
         flavor: Option<Flavor>,
@@ -567,7 +575,7 @@ impl ZoneNode {
         }
     }
 
-    fn set_rrset(
+    pub fn set_rrset(
         &self,
         rrset: SharedRrset,
         flavor: Option<Flavor>,
@@ -580,6 +588,9 @@ impl ZoneNode {
         ) -> Result<(), UpdateError> {
             match content.last() {
                 Some(NodeContent::Populated(_)) => {}
+                Some(NodeContent::Cname(_)) => {
+                    return Err(UpdateError::NameIsCname)
+                }
                 Some(NodeContent::Cut(_)) => {
                     return Err(UpdateError::NameIsZoneCut)
                 }
@@ -598,7 +609,7 @@ impl ZoneNode {
         match flavor {
             Some(flavor) => {
                 update_content(
-                    &mut self.flavors.write().get_or_default(flavor),
+                    self.flavors.write().get_or_default(flavor),
                     rrset, version
                 )
             }
@@ -608,7 +619,44 @@ impl ZoneNode {
         }
     }
 
-    fn rollback(&self, version: Version) {
+    /*
+    /// Convert the content for this node and flavour into a zone cut.
+    ///
+    /// If the content already is a zone cut, merely updates the data.
+    /// 
+    /// Note: This method assumes that the zone cut’s `name` field is
+    /// correct.
+    pub fn set_zone_cut(
+        &self,
+        cut: ZoneCut,
+        flavor: Option<Flavor>,
+        version: Version
+    ) -> Result<(), UpdateError> {
+        match flavor {
+            Some(flavor) => self.set_flavor_zone_cut(cut, flavor, version),
+            None => self.set_default_zone_cut(cut, version),
+        }
+    }
+
+    fn set_default_zone_cut(
+        &self,
+        _cut: ZoneCut,
+        _version: Version,
+    ) -> Result<(), UpdateError> {
+        unimplemented!()
+    }
+
+    fn set_flavor_zone_cut(
+        &self,
+        _cut: ZoneCut,
+        _flavor: Flavor,
+        _version: Version,
+    ) -> Result<(), UpdateError> {
+        unimplemented!()
+    }
+    */
+
+    pub fn rollback(&self, version: Version) {
         self.default.write().rollback(version);
         self.flavors.write().iter_mut().for_each(|item|
             item.rollback(version)
@@ -616,7 +664,7 @@ impl ZoneNode {
         self.children.rollback(version);
     }
 
-    fn clean(&self, version: Version) {
+    pub fn clean(&self, version: Version) {
         self.default.write().clean(version);
         self.flavors.write().iter_mut().for_each(|item| item.clean(version));
         self.children.clean(version);
@@ -636,10 +684,27 @@ impl Default for ZoneNode {
 
 //------------ NodeContent ---------------------------------------------------
 
+/// The content of a node.
 #[allow(dead_code)] // XXX
 enum NodeContent {
+    /// A “normal” node with a (possibly empty) set of RRsets.
     Populated(NodeRrsets),
+
+    /// An alias node.
+    ///
+    /// The data for the node can be found at the given name.
+    Cname(SharedRr),
+
+    /// A zone cut.
+    ///
+    /// Authoritative data for the domain name lives elsewhere.
     Cut(ZoneCut),
+
+    /// The node doesn’t actually exist.
+    ///
+    /// This variant is used in conjunction with flavors to signal that, even
+    /// though there may be child nodes, none of them have any data for this
+    /// flavor and an answer should be NXDomain.
     NxDomain,
 }
 
@@ -786,6 +851,15 @@ impl NodeAnswer {
         }
     }
 
+    fn cname(rr: SharedRr) -> Self {
+        let mut answer = Answer::new(Rcode::NoError);
+        answer.add_cname(rr);
+        NodeAnswer {
+            answer,
+            add_soa: false
+        }
+    }
+
     fn nx_domain() -> Self {
         NodeAnswer {
             answer: Answer::new(Rcode::NXDomain),
@@ -806,7 +880,16 @@ impl NodeAnswer {
 
 #[derive(Clone, Copy, Debug)]
 pub enum UpdateError {
+    /// A zone cut appeared along the way to the name.
     ZoneCutOnPath,
+
+    /// The name is a zone cut.
     NameIsZoneCut,
+
+    /// The name is a CNAME.
+    NameIsCname,
+
+    /// The name has some RRsets.
+    NameHasContent,
 }
 

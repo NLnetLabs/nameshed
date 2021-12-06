@@ -174,9 +174,9 @@ impl Config {
         let log_target = Self::log_target_from_config_file(&mut file)?;
         let res = Config {
             data_dir: file.take_mandatory_path("data-dir")?,
-            listen: file.take_from_str_array("listen")?.unwrap_or_else(||
-                Vec::new()
-            ),
+            listen: {
+                file.take_from_str_array("listen")?.unwrap_or_else(Vec::new)
+            },
             log_level: {
                 file.take_from_str("log-level")?.unwrap_or(LevelFilter::Warn)
             },

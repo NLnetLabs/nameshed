@@ -2,7 +2,7 @@ use domain::base::iana::Rcode;
 use domain::base::message::Message;
 use domain::base::message_builder::MessageBuilder;
 use domain::base::octets::OctetsBuilder;
-use super::rrset::{SharedRrset, StoredDname};
+use super::rrset::{SharedRr, SharedRrset, StoredDname};
 
 //------------ Answer --------------------------------------------------------
 
@@ -11,10 +11,8 @@ pub struct Answer {
     /// The response code of the answer.
     rcode: Rcode,
 
-    /// The actual answer, if available.
-    answer: Option<SharedRrset>,
-
-    // Cname chain
+    /// The content of the answer.
+    content: AnswerContent,
 
     /// The optional authority section to be included in the answer.
     authority: Option<AnswerAuthority>
@@ -24,7 +22,7 @@ impl Answer {
     pub fn new(rcode: Rcode) -> Self {
         Answer {
             rcode,
-            answer: None,
+            content: AnswerContent::NoData,
             authority: Default::default(),
         }
     }
@@ -32,7 +30,7 @@ impl Answer {
     pub fn with_authority(rcode: Rcode, authority: AnswerAuthority) -> Self {
         Answer {
             rcode,
-            answer: None,
+            content: AnswerContent::NoData,
             authority: Some(authority),
         }
     }
@@ -41,8 +39,12 @@ impl Answer {
         Answer::new(Rcode::Refused)
     }
 
+    pub fn add_cname(&mut self, cname: SharedRr) {
+        self.content = AnswerContent::Cname(cname);
+    }
+
     pub fn add_answer(&mut self, answer: SharedRrset) {
-        self.answer = Some(answer.clone())
+        self.content = AnswerContent::Data(answer);
     }
 
     pub fn add_authority(&mut self, authority: AnswerAuthority) {
@@ -59,10 +61,18 @@ impl Answer {
         let qclass = question.qclass();
         let mut builder = builder.start_answer(&message, self.rcode).unwrap();
 
-        if let Some(ref answer) = self.answer {
-            for item in answer.data() {
-                builder.push((qname, qclass, answer.ttl(), item)).unwrap();
+        match self.content {
+            AnswerContent::Data(ref answer) => {
+                for item in answer.data() {
+                    builder.push((qname, qclass, answer.ttl(), item)).unwrap();
+                }
             }
+            AnswerContent::Cname(ref cname) => {
+                builder.push(
+                    (qname, qclass, cname.ttl(), cname.data())
+                ).unwrap()
+            }
+            AnswerContent::NoData => { }
         }
 
         let mut builder = builder.authority();
@@ -87,6 +97,17 @@ impl Answer {
 
         builder.finish()
     }
+}
+
+
+//------------ AnswerContent -------------------------------------------------
+
+/// The content of the answer.
+#[derive(Clone)]
+pub enum AnswerContent {
+    Data(SharedRrset),
+    Cname(SharedRr),
+    NoData
 }
 
 

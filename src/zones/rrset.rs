@@ -16,6 +16,33 @@ pub type StoredRecordData = ZoneRecordData<Bytes, StoredDname>;
 pub type StoredRecord = Record<StoredDname, StoredRecordData>;
 
 
+//------------ SharedRr ------------------------------------------------------
+
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SharedRr {
+    ttl: u32,
+    data: StoredRecordData,
+}
+
+impl SharedRr {
+    pub fn new(ttl: u32, data: StoredRecordData) -> Self {
+        SharedRr { ttl, data }
+    }
+
+    pub fn rtype(&self) -> Rtype {
+        self.data.rtype()
+    }
+
+    pub fn ttl(&self) -> u32 {
+        self.ttl
+    }
+
+    pub fn data(&self) -> &StoredRecordData {
+        &self.data
+    }
+}
+
+
 //------------ Rrset ---------------------------------------------------------
 
 #[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]

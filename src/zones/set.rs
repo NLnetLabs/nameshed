@@ -36,7 +36,7 @@ impl ZoneSet {
         )
     }
 
-    pub fn find_zone<'l>(
+    pub fn find_zone(
         &self,
         qname: &impl ToDname,
         class: Class

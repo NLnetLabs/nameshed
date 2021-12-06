@@ -56,6 +56,7 @@ pub trait AsyncAccept {
     type Addr: Sized + Send;
     type Stream;
     
+    #[allow(clippy::type_complexity)]
     fn poll_accept(
         &self, cx: &mut Context
     ) -> Poll<Result<(Self::Stream, Self::Addr), io::Error>>;
@@ -65,6 +66,7 @@ impl AsyncAccept for TcpListener {
     type Addr = SocketAddr;
     type Stream = TcpStream;
 
+    #[allow(clippy::type_complexity)]
     fn poll_accept(
         &self, cx: &mut Context
     ) -> Poll<Result<(Self::Stream, Self::Addr), io::Error>> {
