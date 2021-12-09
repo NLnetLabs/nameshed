@@ -22,12 +22,12 @@ pub struct Flavored<T> {
 }
 
 impl<T> Flavored<T> {
-    pub fn get(&self, flavor: Flavor) -> Option<&T> {
-        self.flavors.get(flavor.index).and_then(Option::as_ref)
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    pub fn get_mut(&mut self, flavor: Flavor) -> Option<&mut T> {
-        self.flavors.get_mut(flavor.index).and_then(Option::as_mut)
+    pub fn get(&self, flavor: Flavor) -> Option<&T> {
+        self.flavors.get(flavor.index).and_then(Option::as_ref)
     }
 
     pub fn get_or_default(&mut self, flavor: Flavor) -> &mut T
@@ -44,16 +44,12 @@ impl<T> Flavored<T> {
         self.flavors[flavor.index].as_mut().unwrap()
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = &'_ T> + '_ {
-        self.flavors.iter().filter_map(|item| item.as_ref())
-    }
-
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &'_ mut T> + '_ {
         self.flavors.iter_mut().filter_map(|item| item.as_mut())
     }
 }
 
-impl<T: Default> Default for Flavored<T> {
+impl<T> Default for Flavored<T> {
     fn default() -> Self {
         Flavored {
             flavors: Vec::new()

@@ -15,10 +15,7 @@ use crate::config::{Config, ListenAddr};
 use crate::error::ExitError;
 use crate::net::server::{BufSource, DgramServer, StreamServer, Transaction};
 use crate::process::Process;
-use crate::zones::answer::Answer;
-use crate::zones::rrset::Rrset;
-use crate::zones::set::SharedZoneSet;
-use crate::zones::zone::{Zone, StoredDname};
+use crate::zones::{Answer, Rrset, StoredDname, SharedZoneSet, Zone};
 
 pub fn prepare() -> Result<(), ExitError> {
     Process::init()?;
@@ -60,7 +57,9 @@ pub fn run(config: Config) -> Result<(), ExitError> {
 
         let mut update = zone.write().await;
         for ((name, _), rrset) in rrsets {
-            update.set_rrset(&name, rrset.shared(), None).unwrap();
+            update.update_rrset(
+                &name, rrset.shared(), None
+            );
         }
         update.commit();
         drop(update);
@@ -122,11 +121,11 @@ where for<'a> &'a RequestOctets: OctetsRef
             let zone =
                 zones.read().await
                 .find_zone(question.qname(), question.qclass())
-                .map(|zone| zone.read());
+                .map(|zone| zone.read(None));
             let answer = match zone {
                 Some(zone) => {
                     zone.query(
-                        question.qname(), question.qtype(), None
+                        question.qname(), question.qtype()
                     )
                 }
                 None => Answer::refused()

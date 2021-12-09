@@ -1,4 +1,5 @@
 use domain::base::serial::Serial;
+use super::flavor::{Flavor, Flavored};
 
 
 //------------ Version -------------------------------------------------------
@@ -21,8 +22,9 @@ impl Default for Version {
 
 //------------ Versioned -----------------------------------------------------
 
+#[derive(Clone, Debug)]
 pub struct Versioned<T> {
-    data: Vec<(Version, T)>,
+    data: Vec<(Version, Option<T>)>,
 }
 
 impl<T> Versioned<T> {
@@ -35,7 +37,7 @@ impl<T> Versioned<T> {
     pub fn get(&self, version: Version) -> Option<&T> {
         self.data.iter().rev().find_map(|item| {
             if item.0 <= version {
-                Some(&item.1)
+                item.1.as_ref()
             }
             else {
                 None
@@ -43,22 +45,14 @@ impl<T> Versioned<T> {
         })
     }
 
-    pub fn last(&self) -> Option<&T> {
-        self.data.last().map(|item| &item.1)
-    }
-
-    pub fn last_mut(&mut self) -> Option<&mut T> {
-        self.data.last_mut().map(|item| &mut item.1)
-    }
-
     pub fn update(&mut self, version: Version, value: T) {
         if let Some(last) = self.data.last_mut() {
             if last.0 == version {
-                last.1 = value;
+                last.1 = Some(value);
                 return
             }
         }
-        self.data.push((version, value))
+        self.data.push((version, Some(value)))
     }
 
     /// Drops the last version if it is `version`.
@@ -74,6 +68,72 @@ impl<T> Versioned<T> {
 }
 
 impl<T> Default for Versioned<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+
+//------------ FlavorVersioned -----------------------------------------------
+
+#[derive(Clone, Debug)]
+pub struct FlavorVersioned<T> {
+    /// The unflavored value. 
+    default: Versioned<T>,
+
+    /// The alternative values for the flavors.
+    flavors: Flavored<Versioned<T>>,
+}
+
+impl<T> FlavorVersioned<T> {
+    pub fn new() -> Self {
+        FlavorVersioned {
+            default: Versioned::new(),
+            flavors: Flavored::new(),
+        }
+    }
+
+    pub fn get(
+        &self, flavor: Option<Flavor>, version: Version,
+    ) -> Option<&T> {
+        if let Some(flavor) = flavor {
+            if let Some(res) = 
+                self.flavors.get(flavor).and_then(|flvr| flvr.get(version))
+            {
+                return Some(res)
+            }
+        }
+        self.default.get(version)
+    }
+
+    pub fn update(
+        &mut self, flavor: Option<Flavor>, version: Version, value: T
+    ) {
+        match flavor {
+            Some(flavor) => {
+                self.flavors.get_or_default(flavor).update(version, value)
+            }
+            None => self.default.update(version, value)
+        }
+    }
+
+    /// Drops the last version if it is `version`.
+    pub fn rollback(&mut self, version: Version) {
+        self.default.rollback(version);
+        for flavor in self.flavors.iter_mut() {
+            flavor.rollback(version)
+        }
+    }
+
+    pub fn clean(&mut self, version: Version) {
+        self.default.clean(version);
+        for flavor in self.flavors.iter_mut() {
+            flavor.clean(version)
+        }
+    }
+}
+
+impl<T> Default for FlavorVersioned<T> {
     fn default() -> Self {
         Self::new()
     }

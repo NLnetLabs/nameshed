@@ -85,6 +85,12 @@ impl Rrset {
         self.data.is_empty()
     }
 
+    pub fn first(&self) -> Option<SharedRr> {
+        self.data.first().map(|data| {
+            SharedRr { ttl: self.ttl, data: data.clone() }
+        })
+    }
+
     pub fn additional(&self) -> &[StoredRecord] {
         &self.additional
     }
