@@ -8,7 +8,7 @@ use domain::base::name::{Label, ToDname};
 use domain::base::octets::OctetsBuilder;
 use super::flavor::Flavor;
 use super::nodes::{
-    NodeChildren, NodeRrsets, Special, ZoneApex, ZoneCut, ZoneNode,
+    NodeChildren, NodeRrsets, OutOfZone, Special, ZoneApex, ZoneCut, ZoneNode,
 };
 use super::rrset::{SharedRr, SharedRrset, StoredDname};
 use super::versioned::Version;
@@ -36,8 +36,8 @@ impl ReadZone {
 
     pub fn query(
         &self, qname: &impl ToDname, qtype: Rtype
-    ) -> Answer {
-        let mut qname = self.apex.prepare_name(qname);
+    ) -> Result<Answer, OutOfZone> {
+        let mut qname = self.apex.prepare_name(qname)?;
 
         let answer = if let Some(label) = qname.next() {
             self.query_below_apex(label, qname, qtype)
@@ -46,7 +46,7 @@ impl ReadZone {
             self.query_rrsets(self.apex.rrsets(), qtype)
         };
 
-        answer.into_answer(self)
+        Ok(answer.into_answer(self))
     }
 
     fn query_below_apex<'l>(

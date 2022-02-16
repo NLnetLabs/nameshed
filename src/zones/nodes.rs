@@ -6,7 +6,7 @@ use domain::base::iana::Rtype;
 use domain::base::name::{Label, OwnedLabel, ToDname, ToLabelIter};
 use parking_lot::{RwLock, RwLockUpgradableReadGuard, RwLockWriteGuard};
 use super::flavor::Flavor;
-use super::rrset::{SharedRr, SharedRrset, StoredDname};
+use super::rrset::{SharedRr, SharedRrset, StoredDname, StoredRecord};
 use super::versioned::{FlavorVersioned, Version};
 
 
@@ -35,16 +35,15 @@ impl ZoneApex {
 
     pub fn prepare_name<'l>(
         &self, qname: &'l impl ToDname
-    ) -> impl Iterator<Item=&'l Label> {
+    ) -> Result<impl Iterator<Item=&'l Label>, OutOfZone> {
         let mut qname = qname.iter_labels().rev();
         for apex_label in self.apex_name().iter_labels().rev() {
             let qname_label = qname.next();
-            assert_eq!(
-                Some(apex_label), qname_label,
-                "dispatched query to the wrong zone"
-            );
+            if Some(apex_label) != qname_label {
+                return Err(OutOfZone)
+            }
         }
-        qname
+        Ok(qname)
     }
 
     /// Returns the RRsets of this node.
@@ -251,7 +250,7 @@ impl NodeRrset {
 
 #[derive(Clone)]
 pub enum Special {
-    Cut(Arc<ZoneCut>),
+    Cut(ZoneCut),
     Cname(SharedRr),
     NxDomain,
 }
@@ -259,10 +258,12 @@ pub enum Special {
 
 //------------ ZoneCut -------------------------------------------------------
 
+#[derive(Clone)]
 pub struct ZoneCut {
     pub name: StoredDname,
     pub ns: SharedRrset,
     pub ds: Option<SharedRrset>,
+    pub glue: Vec<StoredRecord>,
 }
 
 
@@ -309,4 +310,11 @@ impl NodeChildren {
         self.children.read().values().for_each(|item| item.clean(version))
     }
 }
+
+
+//============ Error Types ==================================================
+
+/// A domain name is not under the zone’s apex.
+#[derive(Clone, Copy, Debug)]
+pub struct OutOfZone;
 

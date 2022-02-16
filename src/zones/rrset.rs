@@ -42,6 +42,15 @@ impl SharedRr {
     }
 }
 
+impl From<StoredRecord> for SharedRr {
+    fn from(record: StoredRecord) -> Self {
+        SharedRr {
+            ttl: record.ttl(),
+            data: record.into_data()
+        }
+    }
+}
+
 
 //------------ Rrset ---------------------------------------------------------
 
@@ -50,7 +59,6 @@ pub struct Rrset {
     rtype: Rtype,
     ttl: u32,
     data: Vec<StoredRecordData>,
-    additional: Vec<StoredRecord>,
 }
 
 impl Rrset {
@@ -65,7 +73,6 @@ impl Rrset {
             rtype,
             ttl,
             data: Vec::new(),
-            additional: Vec::new(),
         }
     }
 
@@ -91,12 +98,14 @@ impl Rrset {
         })
     }
 
-    pub fn additional(&self) -> &[StoredRecord] {
-        &self.additional
-    }
-
     pub fn set_ttl(&mut self, ttl: u32) {
         self.ttl = ttl;
+    }
+
+    pub fn limit_ttl(&mut self, ttl: u32) {
+        if self.ttl > ttl {
+            self.ttl = ttl
+        }
     }
 
     pub fn push_data(&mut self, data: StoredRecordData) {
@@ -104,12 +113,23 @@ impl Rrset {
         self.data.push(data);
     }
 
-    pub fn push_additional(&mut self, record: StoredRecord) {
-        self.additional.push(record);
+    pub fn push_record(&mut self, record: StoredRecord) {
+        self.limit_ttl(record.ttl());
+        self.push_data(record.into_data());
     }
 
-    pub fn shared(self) -> SharedRrset {
+    pub fn into_shared(self) -> SharedRrset {
         SharedRrset::new(self)
+    }
+}
+
+impl From<StoredRecord> for Rrset {
+    fn from(record: StoredRecord) -> Self {
+        Rrset {
+            rtype: record.rtype(),
+            ttl: record.ttl(),
+            data: vec![record.into_data()],
+        }
     }
 }
 

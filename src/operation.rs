@@ -1,12 +1,12 @@
 //! Running the daemon.
 
-use std::{cmp, io};
+use std::{io};
 use std::future::Future;
 use std::str::FromStr;
 use domain::base::{Message, MessageBuilder, StreamTarget};
 use domain::base::iana::Class;
 use domain::base::octets::OctetsRef;
-use domain::base::RecordData;
+//use domain::base::RecordData;
 use futures::future::{pending, Pending};
 use futures::stream::Once;
 use tokio::net::{TcpListener, UdpSocket};
@@ -15,7 +15,8 @@ use crate::config::{Config, ListenAddr};
 use crate::error::ExitError;
 use crate::net::server::{BufSource, DgramServer, StreamServer, Transaction};
 use crate::process::Process;
-use crate::zones::{Answer, Rrset, StoredDname, SharedZoneSet, Zone};
+use crate::zones::{Answer, StoredDname, SharedZoneSet, /*Zone*/};
+use crate::zonefile::Zonefile;
 
 pub fn prepare() -> Result<(), ExitError> {
     Process::init()?;
@@ -28,41 +29,24 @@ pub fn run(config: Config) -> Result<(), ExitError> {
     process.switch_logging(false)?;
 
     Runtime::new().map_err(|_| ExitError::Generic)?.block_on(async move {
-
-        let zones = SharedZoneSet::default();
         let reader = domain::master::reader::Reader::open(
             "/etc/nsd/example.com.zone"
         ).unwrap();
-
-        let zone = Zone::new(StoredDname::from_str("example.com.").unwrap());
-
-        let mut rrsets = std::collections::HashMap::<_, Rrset>::new();
+        let mut zonefile = Zonefile::new(
+            StoredDname::from_str("example.com.").unwrap(),
+            Class::In
+        );
         for item in reader {
             match item.unwrap() {
                 domain::master::reader::ReaderItem::Record(record) => {
-                    let ttl = record.ttl();
-                    let (owner, data) = record.into_owner_and_data();
-                    
-                    let entry = rrsets.entry(
-                        (owner, data.rtype())
-                    ).or_insert_with(|| {
-                        Rrset::new(data.rtype(), ttl)
-                    });
-                    entry.set_ttl(cmp::min(entry.ttl(), ttl));
-                    entry.push_data(data);
+                    zonefile.insert(record).unwrap();
                 }
                 _ => panic!("unsupported item")
             }
         }
+        let zone = zonefile.into_zone_builder().unwrap().finalize();
 
-        let mut update = zone.write().await;
-        for ((name, _), rrset) in rrsets {
-            update.update_rrset(
-                &name, rrset.shared(), None
-            );
-        }
-        update.commit();
-        drop(update);
+        let zones = SharedZoneSet::default();
 
         zones.write().await.insert_zone(
             Class::In, zone,
@@ -126,7 +110,7 @@ where for<'a> &'a RequestOctets: OctetsRef
                 Some(zone) => {
                     zone.query(
                         question.qname(), question.qtype()
-                    )
+                    ).unwrap()
                 }
                 None => Answer::refused()
             };

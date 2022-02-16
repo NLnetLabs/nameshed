@@ -6,7 +6,7 @@ use domain::base::name::{Label, ToDname};
 use parking_lot::RwLock;
 use tokio::sync::OwnedMutexGuard;
 use super::flavor::Flavor;
-use super::nodes::{Special, ZoneApex, ZoneCut, ZoneNode};
+use super::nodes::{OutOfZone, Special, ZoneApex, ZoneCut, ZoneNode};
 use super::rrset::{SharedRr, SharedRrset};
 use super::versioned::Version;
 use super::zone::ZoneVersions;
@@ -62,13 +62,14 @@ impl WriteZone {
         name: &impl ToDname,
         rrset: SharedRrset,
         flavor: Option<Flavor>,
-    ) {
-        let name = self.apex.prepare_name(name);
+    ) -> Result<(), OutOfZone> {
+        let name = self.apex.prepare_name(name)?;
         let mut node = self.apex();
         for label in name {
             node = node.into_child_or_default(label);
         }
         node.update_rrset(rrset, flavor);
+        Ok(())
     }
 }
 

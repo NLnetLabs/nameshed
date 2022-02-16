@@ -19,9 +19,9 @@ pub struct Zone {
 }
 
 impl Zone {
-    pub fn new(apex_name: StoredDname) -> Self {
+    pub(super) fn new(apex: Arc<ZoneApex>) -> Self {
         Zone {
-            apex: Arc::new(ZoneApex::new(apex_name)),
+            apex,
             versions: Default::default(),
             update_lock: Default::default(),
         }
