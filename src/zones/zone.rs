@@ -1,7 +1,10 @@
 
+use std::io;
 use std::sync::{Arc, Weak};
+use domain::base::iana::Class;
 use parking_lot::RwLock;
 use tokio::sync::Mutex as AsyncMutex;
+use crate::store::Store;
 use super::flavor::Flavor;
 use super::nodes::ZoneApex;
 use super::read::ReadZone;
@@ -27,6 +30,31 @@ impl Zone {
         }
     }
 
+    pub(super) async fn load(
+        store: &Store, apex_name: StoredDname, class: Class
+    ) -> Result<Self, io::Error> {
+        let mut apex = ZoneApex::new(apex_name, class);
+        let mut store = stored::area(store, &apex)?.read_data().await?;
+        apex.load_snapshot(&mut store)?;
+        let zone = Self::new(apex.into());
+        WriteZone::new(
+            zone.apex.clone(),
+            zone.update_lock.clone().lock_owned().await,
+            zone.versions.read().current.0.next(),
+            zone.versions.clone(),
+            None
+        ).load(&mut store)?;
+        Ok(zone)
+    }
+
+    pub(super) fn apex(&self) -> &ZoneApex {
+        &self.apex
+    }
+
+    pub fn class(&self) -> Class {
+        self.apex.class()
+    }
+
     pub fn apex_name(&self) -> &StoredDname {
         self.apex.apex_name()
     }
@@ -36,13 +64,22 @@ impl Zone {
         ReadZone::new(self.apex.clone(), flavor, version, marker)
     }
 
-    pub async fn write(&self) -> WriteZone {
-        WriteZone::new(
+    pub async fn write(&self, store: &Store) -> Result<WriteZone, io::Error> {
+        Ok(WriteZone::new(
             self.apex.clone(),
             self.update_lock.clone().lock_owned().await,
             self.versions.read().current.0.next(),
             self.versions.clone(),
-        )
+            Some(stored::area(store, &self.apex)?.append_data().await?),
+        ))
+    }
+
+    pub async fn snapshot(&self, store: &Store) -> Result<(), io::Error> {
+        let _ = self.update_lock.clone().lock_owned().await;
+        let (version, _) = self.versions.read().current.clone();
+        let mut store = stored::area(store, &self.apex)?.replace_data().await?;
+        self.apex.snapshot(&mut store, version)?;
+        store.commit()
     }
 }
 
@@ -104,4 +141,21 @@ impl Default for ZoneVersions {
 //------------ VersionMarker -------------------------------------------------
 
 pub(super) struct VersionMarker;
+
+
+//============ Stored Data ===================================================
+
+mod stored {
+    use std::io;
+    use crate::store::{Area, Store};
+    use super::ZoneApex;
+
+    pub fn area(store: &Store, apex: &ZoneApex) -> Result<Area, io::Error> {
+        store.area([
+            "zones",
+            apex.display_class().as_ref(),
+            apex.apex_name_display()
+        ])
+    }
+}
 

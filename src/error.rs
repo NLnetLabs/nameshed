@@ -33,16 +33,6 @@ pub enum ExitError {
     ///
     /// This should be exit status 1.
     Generic,
-
-    /// Incomplete update.
-    ///
-    /// This should be exit status 2.
-    IncompleteUpdate,
-
-    /// An object could not be validated.
-    ///
-    /// This should be exit status 3.
-    Invalid,
 }
 
 impl From<Failed> for ExitError {

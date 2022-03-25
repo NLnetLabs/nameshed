@@ -1,23 +1,43 @@
 //! The known set of zones.
 
+use std::io;
+use std::collections::hash_map;
 use std::ops::{Deref, DerefMut};
 use std::collections::HashMap;
 use std::sync::Arc;
 use domain::base::iana::Class;
 use domain::base::name::{Label, OwnedLabel, ToDname, ToLabelIter};
 use tokio::sync::RwLock;
+use crate::store::Store;
 use super::zone::Zone;
 
 
 //------------ ZoneSet -------------------------------------------------------
 
 /// The set of zones we are authoritative for.
-#[derive(Default)]
 pub struct ZoneSet {
     roots: Roots,
+    store: Store,
 }
 
 impl ZoneSet {
+    fn new(store: Store) -> Self {
+        ZoneSet {
+            roots: Default::default(),
+            store,
+        }
+    }
+
+    async fn load(&mut self) -> Result<(), io::Error> {
+        let zones: stored::ZoneList =
+            stored::area(&self.store)?.read_data().await?.deserialize()?;
+        for (apex_name, class) in zones.zones {
+            let zone = Zone::load(&self.store, apex_name, class).await?;
+            self.insert_zone_only(zone)?;
+        }
+        Ok(())
+    }
+
     pub fn get_zone(
         &self,
         apex_name: &impl ToDname,
@@ -26,14 +46,34 @@ impl ZoneSet {
         self.roots.get(class)?.get_zone(apex_name.iter_labels().rev())
     }
 
-    pub fn insert_zone(
+    pub async fn insert_zone(
         &mut self,
-        class: Class,
-        zone: Zone
-    ) -> Result<(), ZoneExists> {
-        self.roots.get_or_insert(class).insert_zone(
+        zone: Zone,
+    ) -> Result<(), InsertZoneError> {
+        self.insert_zone_only(zone)?;
+        self.update_zone_list().await?;
+        Ok(())
+    }
+
+    fn insert_zone_only(
+        &mut self,
+        zone: Zone,
+    ) -> Result<(), InsertZoneError> {
+        self.roots.get_or_insert(zone.apex().class()).insert_zone(
             &mut zone.apex_name().clone().iter_labels().rev(), zone
         )
+    }
+
+    async fn update_zone_list(&self) -> Result<(), io::Error> {
+        let mut store = stored::area(&self.store)?.replace_data().await?;
+        store.serialize(
+            stored::ZoneList {
+                zones: self.iter_zones().map(|zone| {
+                    (zone.apex_name().clone(), zone.class())
+                }).collect()
+            }
+        )?;
+        store.commit()
     }
 
     pub fn find_zone(
@@ -43,18 +83,36 @@ impl ZoneSet {
     ) -> Option<&Zone> {
         self.roots.get(class)?.find_zone(qname.iter_labels().rev())
     }
+
+    pub fn iter_zones(&self) -> ZoneSetIter {
+        ZoneSetIter::new(self)
+    }
 }
 
 
 //------------ SharedZoneSet -------------------------------------------------
 
 /// The set of zones we are authoritative for.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct SharedZoneSet {
     zones: Arc<RwLock<ZoneSet>>,
 }
 
 impl SharedZoneSet {
+    pub fn new(store: Store) -> Self {
+        SharedZoneSet {
+            zones: Arc::new(RwLock::new(ZoneSet::new(store)))
+        }
+    }
+
+    pub async fn load(store: Store) -> Result<Self, io::Error> {
+        let mut zones = ZoneSet::new(store);
+        zones.load().await?;
+        Ok(SharedZoneSet {
+            zones: Arc::new(RwLock::new(zones))
+        })
+    }
+
     pub async fn read(&self) -> impl Deref<Target = ZoneSet> + '_ {
         self.zones.read().await
     }
@@ -136,13 +194,13 @@ impl ZoneSetNode {
         &mut self,
         mut apex_name: impl Iterator<Item = &'l Label>,
         zone: Zone,
-    ) -> Result<(), ZoneExists> {
+    ) -> Result<(), InsertZoneError> {
         if let Some(label) = apex_name.next() {
             self.children.entry(label.into()).or_default()
                 .insert_zone(apex_name, zone)
         }
         else if self.zone.is_some() {
-            Err(ZoneExists)
+            Err(InsertZoneError::ZoneExists)
         }
         else {
             self.zone = Some(zone);
@@ -152,9 +210,132 @@ impl ZoneSetNode {
 }
 
 
+//------------ ZoneSetIter ---------------------------------------------------
+
+pub struct ZoneSetIter<'a> {
+    roots: hash_map::Values<'a, Class, ZoneSetNode>,
+    nodes: NodesIter<'a>,
+}
+
+impl<'a> ZoneSetIter<'a> {
+    fn new(set: &'a ZoneSet) -> Self {
+        ZoneSetIter {
+            roots: set.roots.others.values(),
+            nodes: NodesIter::new(&set.roots.in_),
+        }
+    }
+}
+
+impl<'a> Iterator for ZoneSetIter<'a> {
+    type Item = &'a Zone;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if let Some(node) = self.nodes.next() {
+                if let Some(zone) = node.zone.as_ref() {
+                    return Some(zone)
+                }
+                else {
+                    continue
+                }
+            }
+            self.nodes = NodesIter::new(self.roots.next()?);
+        }
+    }
+}
+
+
+//------------ NodesIter -----------------------------------------------------
+
+struct NodesIter<'a> {
+    root: Option<&'a ZoneSetNode>,
+    stack: Vec<hash_map::Values<'a, OwnedLabel, ZoneSetNode>>,
+}
+
+impl<'a> NodesIter<'a> {
+    fn new(node: &'a ZoneSetNode) -> Self {
+        NodesIter {
+            root: Some(node),
+            stack: Vec::new(),
+        }
+    }
+
+    fn next_node(&mut self) -> Option<&'a ZoneSetNode> {
+        if let Some(node) = self.root.take() {
+            return Some(node)
+        }
+        loop {
+            if let Some(iter) = self.stack.last_mut() {
+                if let Some(node) = iter.next() {
+                    return Some(node)
+                }
+            }
+            else {
+                return None
+            }
+            let _ = self.stack.pop();
+        }
+    }
+}
+
+impl<'a> Iterator for NodesIter<'a> {
+    type Item = &'a ZoneSetNode;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let node = self.next_node()?;
+        self.stack.push(node.children.values());
+        Some(node)
+    }
+}
+
+
 //============ Error Types ===================================================
 
-#[derive(Clone, Copy, Debug)]
-pub struct ZoneExists;
+#[derive(Debug)]
+pub enum InsertZoneError {
+    ZoneExists,
+    Io(io::Error),
+}
 
+impl From<io::Error> for InsertZoneError {
+    fn from(src: io::Error) -> Self {
+        InsertZoneError::Io(src)
+    }
+}
+
+impl From<InsertZoneError> for io::Error {
+    fn from(src: InsertZoneError) -> Self {
+        match src {
+            InsertZoneError::Io(err) => err,
+            InsertZoneError::ZoneExists => {
+                io::Error::new(
+                    io::ErrorKind::Other,
+                    "zone exists"
+                )
+            }
+        }
+    }
+}
+
+pub struct ZoneExists; // XXX
+
+
+//============ Stored Data ===================================================
+
+mod stored {
+    use std::io;
+    use domain::base::iana::Class;
+    use serde::{Deserialize, Serialize};
+    use crate::store::{Area, Store};
+    use crate::zones::StoredDname;
+
+    pub fn area(store: &Store) -> Result<Area, io::Error> {
+        store.area(["zones"])
+    }
+
+    #[derive(Clone, Debug, Deserialize, Serialize)]
+    pub struct ZoneList {
+        pub zones: Vec<(StoredDname, Class)>,
+    }
+}
 

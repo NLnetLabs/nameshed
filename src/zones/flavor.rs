@@ -1,8 +1,10 @@
 //! Types that differ per flavor.
 
+use serde::{Deserialize, Serialize};
+
 //------------ Flavor --------------------------------------------------------
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 pub struct Flavor {
     index: usize,
 }
@@ -44,7 +46,13 @@ impl<T> Flavored<T> {
         self.flavors[flavor.index].as_mut().unwrap()
     }
 
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = &'_ mut T> + '_ {
+    pub fn iter(&self) -> impl Iterator<Item = (Flavor, &'_ T)> + '_ {
+        self.flavors.iter().enumerate().filter_map(|(idx, item)| {
+            item.as_ref().map(|item| (Flavor::new(idx), item))
+        })
+    }
+
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &'_ mut T> + '_ {
         self.flavors.iter_mut().filter_map(|item| item.as_mut())
     }
 }

@@ -18,7 +18,7 @@ pub type StoredRecord = Record<StoredDname, StoredRecordData>;
 
 //------------ SharedRr ------------------------------------------------------
 
-#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SharedRr {
     ttl: u32,
     data: StoredRecordData,
@@ -54,7 +54,7 @@ impl From<StoredRecord> for SharedRr {
 
 //------------ Rrset ---------------------------------------------------------
 
-#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Rrset {
     rtype: Rtype,
     ttl: u32,
@@ -137,7 +137,7 @@ impl From<StoredRecord> for Rrset {
 //------------ SharedRrset ---------------------------------------------------
 
 /// An RRset behind an arc.
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SharedRrset(Arc<Rrset>);
 
 impl SharedRrset {

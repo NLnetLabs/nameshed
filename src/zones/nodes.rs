@@ -1,10 +1,14 @@
 //! The nodes in a zone tree.
 
+use std::io;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
-use domain::base::iana::Rtype;
+use domain::base::iana::{Class, Rtype};
 use domain::base::name::{Label, OwnedLabel, ToDname, ToLabelIter};
 use parking_lot::{RwLock, RwLockUpgradableReadGuard, RwLockWriteGuard};
+use serde::{Deserialize, Serialize};
+use crate::store::{ReadData, ReplaceData};
 use super::flavor::Flavor;
 use super::rrset::{SharedRr, SharedRrset, StoredDname, StoredRecord};
 use super::versioned::{FlavorVersioned, Version};
@@ -14,23 +18,67 @@ use super::versioned::{FlavorVersioned, Version};
 
 pub struct ZoneApex {
     apex_name: StoredDname,
+    apex_name_display: String,
+    class: Class,
     rrsets: NodeRrsets,
     children: NodeChildren,
 }
 
 impl ZoneApex {
     /// Creates a new apex.
-    pub fn new(apex_name: StoredDname) -> Self {
+    pub fn new(apex_name: StoredDname, class: Class) -> Self {
         ZoneApex {
+            apex_name_display: format!("{}", apex_name),
             apex_name,
+            class,
             rrsets: Default::default(),
             children: Default::default(),
         }
     }
 
+    /// Loads the tree from a snapshot
+    pub(super) fn load_snapshot(
+        &mut self, store: &mut ReadData,
+    ) -> Result<(), io::Error> {
+        let zone_data: stored::ZoneSnapshot = store.deserialize()?;
+        if zone_data.apex_name != self.apex_name
+            || zone_data.class != self.class
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!(
+                    "corrupt database: zone apex for {} {} does not match",
+                    self.apex_name, self.class
+                )
+            ))
+        }
+
+        self.rrsets = NodeRrsets::from_snapshot(store)?;
+        self.children = NodeChildren::from_snapshot(store)?;
+        Ok(())
+    }
+
     /// Returns the apex name of the zone.
     pub fn apex_name(&self) -> &StoredDname {
         &self.apex_name
+    }
+
+    /// Returns the string version of the apex name.
+    pub fn apex_name_display(&self) -> &str {
+        &self.apex_name_display
+    }
+
+    /// Returns the class of the zone.
+    pub fn class(&self) -> Class {
+        self.class
+    }
+
+    /// Returns the class name.
+    pub fn display_class(&self) -> Cow<str> {
+        match self.class() {
+            Class::In => Cow::Borrowed("IN"),
+            class => Cow::Owned(class.to_string())
+        }
     }
 
     pub fn prepare_name<'l>(
@@ -72,6 +120,20 @@ impl ZoneApex {
     pub fn clean(&self, version: Version) {
         self.rrsets.clean(version);
         self.children.clean(version);
+    }
+
+    pub fn snapshot(
+        &self, store: &mut ReplaceData, version: Version
+    ) -> Result<(), io::Error> {
+        store.serialize(
+            stored::ZoneSnapshot {
+                apex_name: self.apex_name.clone(),
+                class: self.class
+            }
+        )?;
+        self.rrsets.snapshot(store, version)?;
+        self.children.snapshot(store, version)?;
+        Ok(())
     }
 }
 
@@ -141,6 +203,78 @@ impl ZoneNode {
         self.special.write().clean(version);
         self.children.clean(version);
     }
+
+    fn snapshot(
+        &self, store: &mut ReplaceData, version: Version
+    ) -> Result<(), io::Error> {
+        store.serialize(stored::NodeSnapshot)?;
+        self.rrsets.snapshot(store, version)?;
+        self.snapshot_special(store, version)?;
+        self.children.snapshot(store, version)
+    }
+
+    fn from_snapshot(
+        store: &mut ReadData
+    ) -> Result<Self, io::Error> {
+        let _ = store.deserialize::<stored::NodeSnapshot>()?;
+        Ok(ZoneNode {
+            rrsets: NodeRrsets::from_snapshot(store)?,
+            special: Self::special_from_snapshot(store)?,
+            children: NodeChildren::from_snapshot(store)?,
+        })
+    }
+
+    fn snapshot_special(
+        &self, store: &mut ReplaceData, version: Version
+    ) -> Result<(), io::Error> {
+        use stored::SpecialSnapshot::*;
+
+        for (flavor, special) in self.special.read().iter_version(version) {
+            store.serialize(match *special {
+                None => Regular { flavor },
+                Some(Special::NxDomain) => NxDomain { flavor },
+                Some(Special::Cut(ref cut)) => {
+                    ZoneCut { flavor, cut: cut.clone() }
+                }
+                Some(Special::Cname(ref cname)) => {
+                    Cname { flavor, cname: cname.clone() }
+                }
+            })?;
+        }
+        Ok(())
+    }
+
+    fn special_from_snapshot(
+        store: &mut ReadData
+    ) -> Result<RwLock<FlavorVersioned<Option<Special>>>, io::Error> {
+        let mut special = FlavorVersioned::<Option<Special>>::new();
+        loop {
+            match store.deserialize()? {
+                stored::SpecialSnapshot::Regular { flavor } => {
+                    special.update(flavor, Version::default(), None);
+                }
+                stored::SpecialSnapshot::NxDomain { flavor } => {
+                    special.update(
+                        flavor, Version::default(), Some(Special::NxDomain)
+                    );
+                }
+                stored::SpecialSnapshot::ZoneCut { flavor, cut } => {
+                    special.update(
+                        flavor, Version::default(), Some(Special::Cut(cut))
+                    );
+                }
+                stored::SpecialSnapshot::Cname { flavor, cname } => {
+                    special.update(
+                        flavor, Version::default(), Some(Special::Cname(cname))
+                    );
+                }
+                stored::SpecialSnapshot::Done => {
+                    break;
+                }
+            }
+        }
+        Ok(RwLock::new(special))
+    }
 }
 
 
@@ -204,6 +338,34 @@ impl NodeRrsets {
             rrset.clean(version)
         });
     }
+
+    fn snapshot(
+        &self, store: &mut ReplaceData, version: Version
+    ) -> Result<(), io::Error> {
+        for (&rtype, rrset) in self.rrsets.read().iter() {
+            rrset.snapshot(rtype, store, version)?;
+        }
+        Ok(())
+    }
+
+    fn from_snapshot(
+        store: &mut ReadData
+    ) -> Result<Self, io::Error> {
+        let mut rrsets = HashMap::<Rtype, NodeRrset>::new();
+        loop {
+            match store.deserialize()? {
+                stored::RrsetSnapshot::Rrset { rtype, flavor, rrset } => {
+                    rrsets.entry(rtype).or_default().rrsets.update(
+                        flavor, Version::default(), rrset
+                    );
+                }
+                stored::RrsetSnapshot::Done => {
+                    break
+                }
+            }
+        }
+        Ok(NodeRrsets { rrsets: RwLock::new(rrsets) })
+    }
 }
 
 
@@ -243,6 +405,21 @@ impl NodeRrset {
     pub fn clean(&mut self, version: Version) {
         self.rrsets.rollback(version);
     }
+
+    fn snapshot(
+        &self, rtype: Rtype, store: &mut ReplaceData, version: Version
+    ) -> Result<(), io::Error> {
+        for (flavor, rrset) in self.rrsets.iter_version(version) {
+            store.serialize(
+                stored::RrsetSnapshot::Rrset {
+                    rtype,
+                    flavor,
+                    rrset: rrset.clone()
+                }
+            )?;
+        }
+        store.serialize(stored::RrsetSnapshot::Done)
+    }
 }
 
 
@@ -258,7 +435,7 @@ pub enum Special {
 
 //------------ ZoneCut -------------------------------------------------------
 
-#[derive(Clone)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ZoneCut {
     pub name: StoredDname,
     pub ns: SharedRrset,
@@ -309,6 +486,40 @@ impl NodeChildren {
     fn clean(&self, version: Version) {
         self.children.read().values().for_each(|item| item.clean(version))
     }
+
+    fn snapshot(
+        &self, store: &mut ReplaceData, version: Version
+    ) -> Result<(), io::Error> {
+        for (label, node) in self.children.read().iter() {
+            store.serialize(
+                stored::ChildSnapshot::Node {
+                    label: label.clone()
+                }
+            )?;
+            node.snapshot(store, version)?;
+        }
+        store.serialize(stored::ChildSnapshot::Done)
+    }
+
+    fn from_snapshot(
+        store: &mut ReadData
+    ) -> Result<Self, io::Error> {
+        let mut children = HashMap::<OwnedLabel, Arc<ZoneNode>>::new();
+        loop {
+            match store.deserialize()? {
+                stored::ChildSnapshot::Node { label } => {
+                    children.insert(
+                        label,
+                        Arc::new(ZoneNode::from_snapshot(store)?)
+                    );
+                }
+                stored::ChildSnapshot::Done => {
+                    break
+                }
+            }
+        }
+        Ok(NodeChildren { children: RwLock::new(children) })
+    }
 }
 
 
@@ -317,4 +528,62 @@ impl NodeChildren {
 /// A domain name is not under the zone’s apex.
 #[derive(Clone, Copy, Debug)]
 pub struct OutOfZone;
+
+
+//============ Stored Data ===================================================
+
+mod stored {
+    use serde::{Deserialize, Serialize};
+    use super::*;
+
+    /// The start of a snapshot of a zone.
+    ///
+    /// This struct is followed by a series of `RrsetSnapshot` followed by a
+    /// series of `NodeSnapshot`.
+    #[derive(Clone, Debug, Deserialize, Serialize)]
+    pub struct ZoneSnapshot {
+        pub apex_name: StoredDname,
+        pub class: Class,
+    }
+
+    /// Snapshot of an Rrset or the end of the list of rrsets.
+    #[derive(Clone, Debug, Deserialize, Serialize)]
+    pub enum RrsetSnapshot {
+        Rrset {
+            rtype: Rtype,
+            flavor: Option<Flavor>,
+            rrset: Option<SharedRrset>,
+        },
+        Done
+    }
+
+    /// Snapshof of an child node or end of the list of children.
+    #[derive(Clone, Debug, Deserialize, Serialize)]
+    pub enum ChildSnapshot {
+        /// The snapshot of child node with the given label follows.
+        ///
+        /// This value is followed by a sequence starting with  `NodeSnapshot`.
+        Node {
+            label: OwnedLabel,
+        },
+        Done
+    }
+
+    /// Snapshot of a node.
+    ///
+    /// This is followed by a series of `RrsetSnapshot` followed by a series of
+    /// `SpecialSnapshot` followed by a series of `ChildSnapshot`.
+    #[derive(Clone, Debug, Deserialize, Serialize)]
+    pub struct NodeSnapshot;
+
+    /// Snapshot of the specials of a node.
+    #[derive(Clone, Debug, Deserialize, Serialize)]
+    pub enum SpecialSnapshot {
+        Regular { flavor: Option<Flavor> },
+        NxDomain { flavor: Option<Flavor> },
+        ZoneCut { flavor: Option<Flavor>, cut: ZoneCut, },
+        Cname { flavor: Option<Flavor>, cname: SharedRr, },
+        Done,
+    }
+}
 

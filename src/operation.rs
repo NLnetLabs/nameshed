@@ -15,6 +15,7 @@ use crate::config::{Config, ListenAddr};
 use crate::error::ExitError;
 use crate::net::server::{BufSource, DgramServer, StreamServer, Transaction};
 use crate::process::Process;
+use crate::store::Store;
 use crate::zones::{Answer, StoredDname, SharedZoneSet, /*Zone*/};
 use crate::zonefile::Zonefile;
 
@@ -46,11 +47,22 @@ pub fn run(config: Config) -> Result<(), ExitError> {
         }
         let zone = zonefile.into_zone_builder().unwrap().finalize();
 
-        let zones = SharedZoneSet::default();
+        let store = match Store::init(process.config().data_dir.clone()) {
+            Ok(store) => store,
+            Err(err) => {
+                eprintln!("Failed to open database: {}", err);
+                return Err(ExitError::Generic);
+            }
+        };
+        let zones = match SharedZoneSet::load(store).await {
+            Ok(zones) => zones,
+            Err(err) => {
+                eprintln!("Failed to load zones: {}", err);
+                return Err(ExitError::Generic);
+            }
+        };
 
-        zones.write().await.insert_zone(
-            Class::In, zone,
-        ).unwrap();
+        zones.write().await.insert_zone(zone).await.unwrap();
 
         for addr in process.config().listen.iter().cloned() {
             eprintln!("Binding on {:?}", addr);

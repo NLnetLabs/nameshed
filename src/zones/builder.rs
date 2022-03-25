@@ -6,7 +6,7 @@ use domain::base::name::{Label, ToDname};
 use super::flavor::Flavor;
 use super::nodes::{OutOfZone, Special, ZoneApex, ZoneCut, ZoneNode};
 use super::rrset::{SharedRr, SharedRrset, StoredDname, StoredRecord};
-use super::set::{ZoneExists, ZoneSet};
+use super::set::{InsertZoneError, ZoneSet};
 use super::versioned::Version;
 use super::zone::Zone;
 
@@ -14,14 +14,12 @@ use super::zone::Zone;
 
 pub struct ZoneBuilder {
     apex: ZoneApex,
-    class: Class,
 }
 
 impl ZoneBuilder {
     pub fn new(apex_name: StoredDname, class: Class) -> Self {
         ZoneBuilder {
-            apex: ZoneApex::new(apex_name),
-            class
+            apex: ZoneApex::new(apex_name, class),
         }
     }
 
@@ -29,10 +27,10 @@ impl ZoneBuilder {
         Zone::new(self.apex.into())
     }
 
-    pub fn finalize_into_set(
+    pub async fn finalize_into_set(
         self, zone_set: &mut ZoneSet
-    ) -> Result<(), ZoneExists> {
-        zone_set.insert_zone(self.class, self.finalize())
+    ) -> Result<(), InsertZoneError> {
+        zone_set.insert_zone(self.finalize()).await
     }
 
     pub fn insert_rrset(

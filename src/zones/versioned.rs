@@ -1,10 +1,14 @@
 use domain::base::serial::Serial;
 use super::flavor::{Flavor, Flavored};
+use serde::{Deserialize, Serialize};
 
 
 //------------ Version -------------------------------------------------------
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, PartialOrd,
+    Serialize
+)]
 pub struct Version(Serial);
 
 impl Version {
@@ -106,6 +110,16 @@ impl<T> FlavorVersioned<T> {
         self.default.get(version)
     }
 
+    pub fn iter_version(
+        &self, version: Version,
+    ) -> impl Iterator<Item = (Option<Flavor>, &T)> {
+        self.default.get(version).map(|item| (None, item)).into_iter().chain(
+            self.flavors.iter().filter_map(move |(flavor, item)| {
+                item.get(version).map(|item| (Some(flavor), item))
+            })
+        )
+    }
+
     pub fn update(
         &mut self, flavor: Option<Flavor>, version: Version, value: T
     ) {
@@ -120,14 +134,14 @@ impl<T> FlavorVersioned<T> {
     /// Drops the last version if it is `version`.
     pub fn rollback(&mut self, version: Version) {
         self.default.rollback(version);
-        for flavor in self.flavors.iter_mut() {
+        for flavor in self.flavors.values_mut() {
             flavor.rollback(version)
         }
     }
 
     pub fn clean(&mut self, version: Version) {
         self.default.clean(version);
-        for flavor in self.flavors.iter_mut() {
+        for flavor in self.flavors.values_mut() {
             flavor.clean(version)
         }
     }
