@@ -105,6 +105,14 @@ impl SharedZoneSet {
         }
     }
 
+    pub async fn init(store: Store) -> Result<Self, io::Error> {
+        let zones = ZoneSet::new(store);
+        zones.update_zone_list().await?;
+        Ok(SharedZoneSet {
+            zones: Arc::new(RwLock::new(zones))
+        })
+    }
+
     pub async fn load(store: Store) -> Result<Self, io::Error> {
         let mut zones = ZoneSet::new(store);
         zones.load().await?;

@@ -31,6 +31,9 @@ pub struct Config {
 
     /// The target to log to.
     pub log_target: LogTarget,
+
+    /// Should a new database be initialized?
+    pub initialize: bool,
 }
 
 impl Config {
@@ -107,6 +110,10 @@ impl Config {
              .value_name("PATH")
              .help("Log to this file")
         )
+        .arg(Arg::with_name("init")
+            .long("init")
+            .help("Initialize new database")
+        )
     }
 
     /// Creates a configuration from command line matches.
@@ -181,6 +188,7 @@ impl Config {
                 file.take_from_str("log-level")?.unwrap_or(LevelFilter::Warn)
             },
             log_target,
+            initialize: false,
         };
         file.check_exhausted()?;
         Ok(res)
@@ -293,6 +301,10 @@ impl Config {
                  Please specify the data directory with the -d option."
             );
             return Err(Failed)
+        }
+
+        if matches.is_present("init") {
+            self.initialize = true;
         }
 
         // udp_listen
@@ -420,6 +432,7 @@ impl Default for Config {
             listen: Vec::new(),
             log_level: LevelFilter::Warn,
             log_target: LogTarget::default(),
+            initialize: false,
         }
     }
 }

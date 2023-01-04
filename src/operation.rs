@@ -87,11 +87,24 @@ pub fn run(config: Config) -> Result<(), ExitError> {
                 return Err(ExitError::Generic);
             }
         };
-        let zones = match SharedZoneSet::load(store).await {
-            Ok(zones) => zones,
-            Err(err) => {
-                eprintln!("Failed to load zones: {}", err);
-                return Err(ExitError::Generic);
+        let zones = match process.config().initialize {
+            true => {
+                match SharedZoneSet::init(store).await {
+                    Ok(zones) => zones,
+                    Err(err) => {
+                        eprintln!("Failed to initialize zones: {}", err);
+                        return Err(ExitError::Generic);
+                    }
+                }
+            }
+            false => {
+                match SharedZoneSet::load(store).await {
+                    Ok(zones) => zones,
+                    Err(err) => {
+                        eprintln!("Failed to load zones: {}", err);
+                        return Err(ExitError::Generic);
+                    }
+                }
             }
         };
 

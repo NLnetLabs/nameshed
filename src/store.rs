@@ -39,7 +39,10 @@ impl Store {
     /// Initializes a store at the given file system location.
     pub fn init(base: PathBuf) -> Result<Self, io::Error> {
         fs::create_dir_all(&base)?;
-        Self::open(base)
+        let res = Self::open(base)?;
+        fs::create_dir_all(&res.inner.areas)?;
+        fs::create_dir_all(&res.inner.tmp)?;
+        Ok(res)
     }
 
     /// Opens an existing store at the given file system location.
