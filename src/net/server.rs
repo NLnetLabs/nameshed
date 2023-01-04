@@ -17,7 +17,7 @@ use super::sock::{AsyncAccept, AsyncDgramSock};
 
 /// A type accepts and dispatches incoming DNS requests.
 pub trait Service<RequestOctets: AsRef<[u8]>> {
-    type ResponseOctets: OctetsBuilder + Send + Sync + 'static;
+    type ResponseOctets: OctetsBuilder + Send + Sync + 'static + std::convert::AsRef<[u8]>;
     type Single: Future<
         Output = Result<StreamTarget<Self::ResponseOctets>, io::Error>
     > + Send + 'static;
@@ -35,7 +35,7 @@ Service<RequestOctets> for F
 where
     F: Fn(Message<RequestOctets>) -> Transaction<Single, Strm>,
     RequestOctets: AsRef<[u8]>,
-    ResponseOctets: OctetsBuilder + Send + Sync + 'static,
+    ResponseOctets: OctetsBuilder + Send + Sync + 'static + std::convert::AsRef<[u8]>,
     Single: Future<
         Output = Result<StreamTarget<ResponseOctets>, io::Error>
     > + Send + 'static,

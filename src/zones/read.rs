@@ -311,7 +311,7 @@ impl Answer {
         self.authority = Some(authority)
     }
 
-    pub fn to_message<Target: OctetsBuilder>(
+    pub fn to_message<Target: OctetsBuilder + std::convert::AsMut<[u8]>>(
         &self,
         message: Message<&[u8]>,
         builder: MessageBuilder<Target>
