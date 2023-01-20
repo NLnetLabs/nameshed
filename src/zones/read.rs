@@ -5,7 +5,7 @@ use domain::base::iana::{Rcode, Rtype};
 use domain::base::message::Message;
 use domain::base::message_builder::MessageBuilder;
 use domain::base::name::{Label, ToDname};
-use domain::base::octets::OctetsBuilder;
+use domain::base::wire::Composer;
 use super::flavor::Flavor;
 use super::nodes::{
     NodeChildren, NodeRrsets, OutOfZone, Special, ZoneApex, ZoneCut, ZoneNode,
@@ -311,15 +311,15 @@ impl Answer {
         self.authority = Some(authority)
     }
 
-    pub fn to_message<Target: OctetsBuilder + std::convert::AsMut<[u8]>>(
+    pub fn to_message<Target: Composer>(
         &self,
-        message: Message<&[u8]>,
+        message: &Message<[u8]>,
         builder: MessageBuilder<Target>
     ) -> Target {
         let question = message.sole_question().unwrap();
         let qname = question.qname();
         let qclass = question.qclass();
-        let mut builder = builder.start_answer(&message, self.rcode).unwrap();
+        let mut builder = builder.start_answer(message, self.rcode).unwrap();
 
         match self.content {
             AnswerContent::Data(ref answer) => {

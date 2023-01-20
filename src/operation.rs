@@ -7,13 +7,13 @@ use std::str::FromStr;
 use bytes::Bytes;
 use domain::base::{Message, MessageBuilder, StreamTarget, ToDname};
 use domain::base::iana::Class;
-use domain::base::octets::OctetsRef;
 use domain::base::Dname;
 use domain::rdata::{ZoneRecordData, Cname, Mb, Md, Mf, Minfo, Mr, Mx, Ns, Ptr, Soa, Srv, Rrsig, Nsec};
 use domain::zonefile::inplace::{Zonefile, Entry};
 //use domain::base::RecordData;
 use futures::future::{pending, Pending};
 use futures::stream::Once;
+use octseq::octets::Octets;
 use tokio::net::{TcpListener, UdpSocket};
 use tokio::runtime::Runtime;
 use crate::config::{Config, ListenAddr};
@@ -130,26 +130,22 @@ async fn server(
     }
 }
 
-fn service<RequestOctets: AsRef<[u8]> + Send + Sync + 'static>(
+fn service<RequestOctets: Octets + Send + Sync + 'static>(
     zones: SharedZoneSet,
-) -> impl crate::net::server::Service<RequestOctets>
-where for<'a> &'a RequestOctets: OctetsRef
-{
+) -> impl crate::net::server::Service<RequestOctets> {
     #[allow(clippy::type_complexity)]
-    fn query<RequestOctets: AsRef<[u8]>>(
+    fn query<RequestOctets: Octets>(
         message: Message<RequestOctets>,
         zones: SharedZoneSet,
     ) -> Transaction<
         impl Future<Output = Result<StreamTarget<Vec<u8>>, io::Error>>,
         Once<Pending<Result<StreamTarget<Vec<u8>>, io::Error>>>
-    >
-    where for<'a> &'a RequestOctets: OctetsRef
-    {
+    > {
         Transaction::Single(async move {
+            let zones = zones.read().await;
             let question = message.sole_question().unwrap();
             let zone =
-                zones.read().await
-                .find_zone(question.qname(), question.qclass())
+                zones.find_zone(question.qname(), question.qclass())
                 .map(|zone| zone.read(None));
             let answer = match zone {
                 Some(zone) => {

@@ -11,11 +11,12 @@ bytes	    = "1.0"
 chrono      = "0.4.11"
 clap        = { version = "2.33.0", features = [ "wrap_help" ] }
 dirs        = "4.0"
-domain      = { git = "https://github.com/NLnetLabs/domain.git", features = ["zonefile", "serde", "ring", "sign"] }
+domain      = { git = "https://github.com/NLnetLabs/domain.git", features = ["zonefile", "serde", "ring", "sign"], branch = "maybe-sized" }
 fern        = "0.6.0"
 futures     = "0.3.17"
 log         = "0.4"
 log-reroute = "0.1.5"
+octseq      = { git = "https://github.com/NLnetLabs/octseq.git" }
 parking_lot = "0.11.2"
 tempfile    = "3.3.0"
 tokio       = { version = "1.12", features = [ "io-util", "net", "rt", "rt-multi-thread", "sync" ] }
