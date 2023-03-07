@@ -11,5 +11,5 @@ $ORIGIN example.com.
 @ 3000 IN A 127.0.0.1
 @ 3600 IN A 127.0.0.2
 
-$ nameshed --init -d /tmp/data --listen 127.0.0.1:8080
+$ nameshed --init -d /tmp/data --listen 127.0.0.1:8053
 
