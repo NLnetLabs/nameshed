@@ -7,9 +7,10 @@ use domain::base::{Message, MessageBuilder, ToDname};
 use domain::rdata::{
     Cname, Mb, Md, Mf, Minfo, Mr, Mx, Ns, Nsec, Ptr, Rrsig, Soa, Srv, ZoneRecordData,
 };
-use domain::serve::server::{
-    BufSource, CallResult, DgramServer, Service, ServiceError, StreamServer, Transaction,
-};
+use domain::serve::buf::BufSource;
+use domain::serve::dgram::DgramServer;
+use domain::serve::service::{CallResult, Service, ServiceError, Transaction};
+use domain::serve::stream::StreamServer;
 use domain::zonefile::inplace::{Entry, Zonefile};
 use std::fs::File;
 use std::future::Future;
@@ -189,7 +190,11 @@ async fn server(addr: ListenAddr, zones: SharedZoneSet) -> Result<(), io::Error>
     match addr {
         ListenAddr::Udp(addr) => {
             let sock = UdpSocket::bind(addr).await?;
-            let srv = Arc::new(DgramServer::new(sock, VecBufSource, service(zones).into()));
+            let srv = Arc::new(DgramServer::new(
+                sock,
+                VecBufSource.into(),
+                service(zones).into(),
+            ));
             srv.run().await
         }
         ListenAddr::Tcp(addr) => {
