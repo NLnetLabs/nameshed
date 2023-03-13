@@ -187,20 +187,17 @@ pub fn run(config: Config) -> Result<(), ExitError> {
 }
 
 async fn server(addr: ListenAddr, zones: SharedZoneSet) -> Result<(), io::Error> {
+    let buf = Arc::new(VecBufSource);
+    let svc = Arc::new(service(zones));
     match addr {
         ListenAddr::Udp(addr) => {
             let sock = UdpSocket::bind(addr).await?;
-            let srv = Arc::new(DgramServer::new(
-                sock,
-                VecBufSource.into(),
-                service(zones).into(),
-            ));
+            let srv = Arc::new(DgramServer::new(sock, buf, svc));
             srv.run().await
         }
         ListenAddr::Tcp(addr) => {
             let sock = TcpListener::bind(addr).await?;
-            let svc = Arc::new(service(zones));
-            let srv = Arc::new(StreamServer::new(sock, VecBufSource, svc));
+            let srv = Arc::new(StreamServer::new(sock, buf, svc));
             srv.run().await
         }
     }

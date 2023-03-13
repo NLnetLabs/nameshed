@@ -125,6 +125,7 @@ dependencies = [
 [[package]]
 name = "domain"
 version = "0.8.0-dev"
+source = "git+https://github.com/NLnetLabs/domain.git?branch=serve-poc#3ab4e90e3a91310e5ac09635577c18e557d78db6"
 dependencies = [
  "bytes",
  "chrono",
