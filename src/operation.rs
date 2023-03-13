@@ -174,7 +174,7 @@ pub fn run(config: Config) -> Result<(), ExitError> {
             zones.write().await.insert_zone(zone).await.unwrap();
 
             for addr in process.config().listen.iter().cloned() {
-                eprintln!("Binding on {:?}", addr);
+                eprintln!("Binding on {}", addr);
                 let zones = zones.clone();
                 tokio::spawn(async move {
                     if let Err(err) = server(addr, zones).await {
@@ -184,6 +184,45 @@ pub fn run(config: Config) -> Result<(), ExitError> {
             }
             pending().await
         })
+}
+
+#[cfg(feature = "tls")]
+mod tls {
+    use std::{
+        io,
+        net::SocketAddr,
+        task::{Context, Poll},
+    };
+
+    use domain::serve::sock::AsyncAccept;
+    use tokio::net::{TcpListener, TcpStream};
+
+    pub struct RustlsTcpListener {
+        listener: TcpListener,
+        acceptor: tokio_rustls::TlsAcceptor,
+    }
+
+    impl RustlsTcpListener {
+        pub fn new(listener: TcpListener, acceptor: tokio_rustls::TlsAcceptor) -> Self {
+            Self { listener, acceptor }
+        }
+    }
+
+    impl AsyncAccept for RustlsTcpListener {
+        type Addr = SocketAddr;
+        type Error = io::Error;
+        type StreamType = tokio_rustls::server::TlsStream<TcpStream>;
+        type Stream = tokio_rustls::Accept<TcpStream>;
+
+        #[allow(clippy::type_complexity)]
+        fn poll_accept(
+            &self,
+            cx: &mut Context,
+        ) -> Poll<Result<(Self::Stream, Self::Addr), io::Error>> {
+            TcpListener::poll_accept(&self.listener, cx)
+                .map(|res| res.map(|(stream, addr)| (self.acceptor.accept(stream), addr)))
+        }
+    }
 }
 
 async fn server(addr: ListenAddr, zones: SharedZoneSet) -> Result<(), io::Error> {
@@ -197,6 +236,14 @@ async fn server(addr: ListenAddr, zones: SharedZoneSet) -> Result<(), io::Error>
         }
         ListenAddr::Tcp(addr) => {
             let sock = TcpListener::bind(addr).await?;
+            let srv = Arc::new(StreamServer::new(sock, buf, svc));
+            srv.run().await
+        }
+        #[cfg(feature = "tls")]
+        ListenAddr::Tls(addr, config) => {
+            let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+            let sock = TcpListener::bind(addr).await?;
+            let sock = tls::RustlsTcpListener::new(sock, acceptor);
             let srv = Arc::new(StreamServer::new(sock, buf, svc));
             srv.run().await
         }

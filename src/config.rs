@@ -15,10 +15,12 @@ use std::str::FromStr;
 use std::{env, fmt, fs};
 #[cfg(unix)]
 use syslog::Facility;
+#[cfg(feature = "tls")]
+use tokio_rustls::rustls::ServerConfig;
 
 //------------ Config --------------------------------------------------------
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct Config {
     /// Database directory.
     pub data_dir: PathBuf,
@@ -61,6 +63,7 @@ impl Config {
         .arg(
             Arg::with_name("plain-listen")
                 .long("listen")
+                .display_order(1000)
                 .value_name("ADDR:PORT")
                 .help("Listen on address/port for both plain UDP and TCP")
                 .takes_value(true)
@@ -70,6 +73,7 @@ impl Config {
         .arg(
             Arg::with_name("udp-listen")
                 .long("udp")
+                .display_order(1001)
                 .value_name("ADDR:PORT")
                 .help("Listen on address/port for plain UDP")
                 .takes_value(true)
@@ -79,11 +83,32 @@ impl Config {
         .arg(
             Arg::with_name("tcp-listen")
                 .long("tcp")
+                .display_order(1002)
                 .value_name("ADDR:PORT")
                 .help("Listen on address/port for plain TCP")
                 .takes_value(true)
                 .multiple(true)
                 .number_of_values(1),
+        )
+        .arg(
+            Arg::with_name("tls-listen")
+                .long("tls")
+                .display_order(1003)
+                .value_name("ADDR:PORT,CERT,KEY")
+                .help("CERT and KEY must be paths to PEM encoded certificate and key files")
+                .takes_value(true)
+                .multiple(true)
+                .number_of_values(1),
+        )
+        .arg(
+            Arg::with_name("tls-key")
+                .long("key")
+                .display_order(1004)
+                .help("Path to a PEM encoded key file to use for TLS encrypted TCP")
+                .takes_value(true)
+                .multiple(true)
+                .number_of_values(1)
+                .requires("listen-tcp"),
         )
         .arg(
             Arg::with_name("verbose")
@@ -323,6 +348,43 @@ impl Config {
             }
         }
 
+        // tls_listen
+        #[cfg(feature = "tls")]
+        {
+            let list = matches.values_of("tls-listen").unwrap_or_default();
+            for value in list {
+                let parts = value.splitn(3, ',').collect::<Vec<_>>();
+                if parts.len() < 3 {
+                    error!("Invalid value for tls: insufficient comma-separated values");
+                    return Err(Failed);
+                }
+                let (addr, cert_path, key_path) = (parts[0], parts[1], parts[2]);
+                match SocketAddr::from_str(addr) {
+                    Ok(addr) => {
+                        let cert = tls::load_certs(Path::new(cert_path)).map_err(|err| {
+                            error!("Invalid CERT for tls: {}", err);
+                            Failed
+                        })?;
+                        let mut key = tls::load_keys(Path::new(key_path)).map_err(|err| {
+                            error!("Invalid KEY for tls: {}", err);
+                            Failed
+                        })?;
+                        let key = key.remove(0);
+                        let config = tokio_rustls::rustls::ServerConfig::builder()
+                            .with_safe_defaults()
+                            .with_no_client_auth()
+                            .with_single_cert(cert, key)
+                            .unwrap();
+                        self.listen.push(ListenAddr::Tls(addr, config))
+                    }
+                    Err(_) => {
+                        error!("Invalid ADDR:PORT for tls: {}", value);
+                        return Err(Failed);
+                    }
+                }
+            }
+        }
+
         // log_level
         match (
             matches.occurrences_of("verbose"),
@@ -423,13 +485,28 @@ impl fmt::Display for Config {
 //------------ ListenAddr ----------------------------------------------------
 
 /// An address and the protocol to serve queries on.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum ListenAddr {
     /// Plain, unencrypted UDP.
     Udp(SocketAddr),
 
     /// Plain, unencrypted TCP.
     Tcp(SocketAddr),
+
+    /// Encrypted TCP.
+    #[cfg(feature = "tls")]
+    Tls(SocketAddr, ServerConfig),
+}
+
+impl std::fmt::Display for ListenAddr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ListenAddr::Udp(addr) => write!(f, "Udp({})", addr),
+            ListenAddr::Tcp(addr) => write!(f, "Tcp({})", addr),
+            #[cfg(feature = "tls")]
+            ListenAddr::Tls(addr, _) => write!(f, "Tls({})", addr),
+        }
+    }
 }
 
 impl FromStr for ListenAddr {
@@ -1062,5 +1139,30 @@ impl ConfigFile {
         } else {
             Ok(())
         }
+    }
+}
+
+//------------ tls -----------------------------------------------------------
+
+#[cfg(feature = "tls")]
+mod tls {
+    use rustls_pemfile::{certs, rsa_private_keys};
+    use std::{
+        fs::File,
+        io::{self, BufReader},
+        path::Path,
+    };
+    use tokio_rustls::rustls::{Certificate, PrivateKey};
+
+    pub fn load_certs(path: &Path) -> io::Result<Vec<Certificate>> {
+        certs(&mut BufReader::new(File::open(path)?))
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid cert"))
+            .map(|mut certs| certs.drain(..).map(Certificate).collect())
+    }
+
+    pub fn load_keys(path: &Path) -> io::Result<Vec<PrivateKey>> {
+        rsa_private_keys(&mut BufReader::new(File::open(path)?))
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid key"))
+            .map(|mut keys| keys.drain(..).map(PrivateKey).collect())
     }
 }
