@@ -10,10 +10,10 @@
 use std::{fs, io};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
-use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
+use tokio::sync::{Mutex, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 
 
 //------------ Store ---------------------------------------------------------
@@ -74,13 +74,13 @@ impl Store {
     }
 
     async fn read_area(&self, path: PathBuf) -> OwnedRwLockReadGuard<()> {
-        self.inner.current.lock().unwrap()
+        self.inner.current.lock().await
             .entry(path).or_default().clone()
             .read_owned().await
     }
 
     async fn write_area(&self, path: PathBuf) -> OwnedRwLockWriteGuard<()> {
-        self.inner.current.lock().unwrap()
+        self.inner.current.lock().await
             .entry(path).or_default().clone()
             .write_owned().await
     }
@@ -104,7 +104,7 @@ impl Area {
 
     pub fn area(&self, name: &str) -> Result<Self, io::Error> {
         Ok(Area::new(
-            self.store.clone(), self.path.join("areas").join(name).into()
+            self.store.clone(), self.path.join("areas").join(name)
         ))
     }
 
@@ -133,7 +133,7 @@ impl Area {
     }
 
     pub async fn replace_data(&self) -> Result<ReplaceData, io::Error> {
-        ReplaceData::new(&self).await
+        ReplaceData::new(self).await
     }
 }
 

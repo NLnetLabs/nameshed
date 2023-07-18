@@ -2,8 +2,7 @@
 use std::io;
 use std::sync::{Arc, Weak};
 use domain::base::iana::Class;
-use parking_lot::RwLock;
-use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::{Mutex, RwLock};
 use crate::store::Store;
 use super::flavor::Flavor;
 use super::nodes::ZoneApex;
@@ -18,7 +17,7 @@ use super::write::WriteZone;
 pub struct Zone {
     apex: Arc<ZoneApex>,
     versions: Arc<RwLock<ZoneVersions>>,
-    update_lock: Arc<AsyncMutex<()>>,
+    update_lock: Arc<Mutex<()>>,
 }
 
 impl Zone {
@@ -40,7 +39,7 @@ impl Zone {
         WriteZone::new(
             zone.apex.clone(),
             zone.update_lock.clone().lock_owned().await,
-            zone.versions.read().current.0.next(),
+            zone.versions.read().await.current.0.next(),
             zone.versions.clone(),
             None
         ).load(&mut store)?;
@@ -60,7 +59,7 @@ impl Zone {
     }
 
     pub fn read(&self, flavor: Option<Flavor>) -> ReadZone {
-        let (version, marker) = self.versions.read().current.clone();
+        let (version, marker) = self.versions.blocking_read().current.clone();
         ReadZone::new(self.apex.clone(), flavor, version, marker)
     }
 
@@ -68,7 +67,7 @@ impl Zone {
         Ok(WriteZone::new(
             self.apex.clone(),
             self.update_lock.clone().lock_owned().await,
-            self.versions.read().current.0.next(),
+            self.versions.read().await.current.0.next(),
             self.versions.clone(),
             Some(stored::area(store, &self.apex)?.append_data().await?),
         ))
@@ -76,7 +75,7 @@ impl Zone {
 
     pub async fn snapshot(&self, store: &Store) -> Result<(), io::Error> {
         let _ = self.update_lock.clone().lock_owned().await;
-        let (version, _) = self.versions.read().current.clone();
+        let (version, _) = self.versions.read().await.current.clone();
         let mut store = stored::area(store, &self.apex)?.replace_data().await?;
         self.apex.snapshot(&mut store, version)?;
         store.commit()

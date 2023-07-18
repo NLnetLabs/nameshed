@@ -174,7 +174,7 @@ impl ZoneNode {
     ) -> R {
         op(
             self.special.read().get(flavor, version)
-                .map(Option::as_ref).flatten()
+                .and_then(Option::as_ref)
         )
     }
 
@@ -352,17 +352,13 @@ impl NodeRrsets {
         store: &mut ReadData
     ) -> Result<Self, io::Error> {
         let mut rrsets = HashMap::<Rtype, NodeRrset>::new();
-        loop {
-            match store.deserialize()? {
-                stored::RrsetSnapshot::Rrset { rtype, flavor, rrset } => {
-                    rrsets.entry(rtype).or_default().rrsets.update(
-                        flavor, Version::default(), rrset
-                    );
-                }
-                stored::RrsetSnapshot::Done => {
-                    break
-                }
-            }
+        while let
+            stored::RrsetSnapshot::Rrset { rtype, flavor, rrset }
+                = store.deserialize()?
+        {
+            rrsets.entry(rtype).or_default().rrsets.update(
+                flavor, Version::default(), rrset
+            );
         }
         Ok(NodeRrsets { rrsets: RwLock::new(rrsets) })
     }
@@ -385,7 +381,7 @@ impl NodeRrset {
     fn get(
         &self, flavor: Option<Flavor>, version: Version
     ) -> Option<&SharedRrset> {
-        self.rrsets.get(flavor, version).map(Option::as_ref).flatten()
+        self.rrsets.get(flavor, version).and_then(Option::as_ref)
     }
 
     fn update(
@@ -493,7 +489,7 @@ impl NodeChildren {
         for (label, node) in self.children.read().iter() {
             store.serialize(
                 stored::ChildSnapshot::Node {
-                    label: label.clone()
+                    label: *label
                 }
             )?;
             node.snapshot(store, version)?;
@@ -505,18 +501,13 @@ impl NodeChildren {
         store: &mut ReadData
     ) -> Result<Self, io::Error> {
         let mut children = HashMap::<OwnedLabel, Arc<ZoneNode>>::new();
-        loop {
-            match store.deserialize()? {
-                stored::ChildSnapshot::Node { label } => {
-                    children.insert(
-                        label,
-                        Arc::new(ZoneNode::from_snapshot(store)?)
-                    );
-                }
-                stored::ChildSnapshot::Done => {
-                    break
-                }
-            }
+        while let stored::ChildSnapshot::Node { label }
+            = store.deserialize()?
+        {
+            children.insert(
+                label,
+                Arc::new(ZoneNode::from_snapshot(store)?)
+            );
         }
         Ok(NodeChildren { children: RwLock::new(children) })
     }
