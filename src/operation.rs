@@ -1,14 +1,17 @@
 //! Running the daemon.
 
+use std::fs::File;
 use std::{io};
 use std::future::Future;
 use std::str::FromStr;
 use domain::base::{Message, MessageBuilder, StreamTarget};
 use domain::base::iana::Class;
-use domain::base::octets::OctetsRef;
+use domain::base::name::{Dname, FlattenInto};
+use domain::zonefile::inplace::{Zonefile, Entry};
 //use domain::base::RecordData;
 use futures::future::{pending, Pending};
 use futures::stream::Once;
+use octseq::octets::Octets;
 use tokio::net::{TcpListener, UdpSocket};
 use tokio::runtime::Runtime;
 use crate::config::{Config, ListenAddr};
@@ -16,8 +19,7 @@ use crate::error::ExitError;
 use crate::net::server::{BufSource, DgramServer, StreamServer, Transaction};
 use crate::process::Process;
 use crate::store::Store;
-use crate::zones::{Answer, StoredDname, SharedZoneSet, /*Zone*/};
-use crate::zonefile::Zonefile;
+use crate::zones::{Answer, SharedZoneSet};
 
 pub fn prepare() -> Result<(), ExitError> {
     Process::init()?;
@@ -30,17 +32,15 @@ pub fn run(config: Config) -> Result<(), ExitError> {
     process.switch_logging(false)?;
 
     Runtime::new().map_err(|_| ExitError::Generic)?.block_on(async move {
-        let reader = domain::master::reader::Reader::open(
-            "/etc/nsd/example.com.zone"
-        ).unwrap();
-        let mut zonefile = Zonefile::new(
-            StoredDname::from_str("example.com.").unwrap(),
+        let reader = Zonefile::load(&mut File::open("/etc/nsd/example.com.zone").unwrap()).unwrap();
+        let mut zonefile = crate::zonefile::Zonefile::new(
+            Dname::from_str("example.com.").unwrap(),
             Class::In
         );
         for item in reader {
             match item.unwrap() {
-                domain::master::reader::ReaderItem::Record(record) => {
-                    zonefile.insert(record).unwrap();
+                Entry::Record(record) => {
+                    zonefile.insert(record.flatten_into()).unwrap();
                 }
                 _ => panic!("unsupported item")
             }
@@ -97,26 +97,22 @@ async fn server(
     }
 }
 
-fn service<RequestOctets: AsRef<[u8]> + Send + Sync + 'static>(
+fn service<RequestOctets: Octets + Send + Sync + 'static>(
     zones: SharedZoneSet,
-) -> impl crate::net::server::Service<RequestOctets>
-where for<'a> &'a RequestOctets: OctetsRef
-{
+) -> impl crate::net::server::Service<RequestOctets> {
     #[allow(clippy::type_complexity)]
-    fn query<RequestOctets: AsRef<[u8]>>(
+    fn query<RequestOctets: Octets>(
         message: Message<RequestOctets>,
         zones: SharedZoneSet,
     ) -> Transaction<
         impl Future<Output = Result<StreamTarget<Vec<u8>>, io::Error>>,
         Once<Pending<Result<StreamTarget<Vec<u8>>, io::Error>>>
-    >
-    where for<'a> &'a RequestOctets: OctetsRef
-    {
+    > {
         Transaction::Single(async move {
+            let zones = zones.read().await;
             let question = message.sole_question().unwrap();
             let zone =
-                zones.read().await
-                .find_zone(question.qname(), question.qclass())
+                zones.find_zone(question.qname(), question.qclass())
                 .map(|zone| zone.read(None));
             let answer = match zone {
                 Some(zone) => {
