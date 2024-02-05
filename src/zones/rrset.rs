@@ -2,7 +2,7 @@
 use std::ops;
 use std::sync::Arc;
 use bytes::Bytes;
-use domain::base::iana::Rtype;
+use domain::base::{iana::Rtype, Ttl};
 use domain::base::name::Dname;
 use domain::base::record::Record;
 use domain::base::rdata::RecordData;
@@ -20,12 +20,12 @@ pub type StoredRecord = Record<StoredDname, StoredRecordData>;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SharedRr {
-    ttl: u32,
+    ttl: Ttl,
     data: StoredRecordData,
 }
 
 impl SharedRr {
-    pub fn new(ttl: u32, data: StoredRecordData) -> Self {
+    pub fn new(ttl: Ttl, data: StoredRecordData) -> Self {
         SharedRr { ttl, data }
     }
 
@@ -33,7 +33,7 @@ impl SharedRr {
         self.data.rtype()
     }
 
-    pub fn ttl(&self) -> u32 {
+    pub fn ttl(&self) -> Ttl {
         self.ttl
     }
 
@@ -57,7 +57,7 @@ impl From<StoredRecord> for SharedRr {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Rrset {
     rtype: Rtype,
-    ttl: u32,
+    ttl: Ttl,
     data: Vec<StoredRecordData>,
 }
 
@@ -68,7 +68,7 @@ impl Rrset {
     }
     */
 
-    pub fn new(rtype: Rtype, ttl: u32) -> Self {
+    pub fn new(rtype: Rtype, ttl: Ttl) -> Self {
         Rrset {
             rtype,
             ttl,
@@ -80,7 +80,7 @@ impl Rrset {
         self.rtype
     }
 
-    pub fn ttl(&self) -> u32 {
+    pub fn ttl(&self) -> Ttl {
         self.ttl
     }
 
@@ -98,11 +98,11 @@ impl Rrset {
         })
     }
 
-    pub fn set_ttl(&mut self, ttl: u32) {
+    pub fn set_ttl(&mut self, ttl: Ttl) {
         self.ttl = ttl;
     }
 
-    pub fn limit_ttl(&mut self, ttl: u32) {
+    pub fn limit_ttl(&mut self, ttl: Ttl) {
         if self.ttl > ttl {
             self.ttl = ttl
         }

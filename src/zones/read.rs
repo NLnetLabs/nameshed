@@ -3,9 +3,10 @@
 use std::sync::Arc;
 use domain::base::iana::{Rcode, Rtype};
 use domain::base::message::Message;
-use domain::base::message_builder::MessageBuilder;
+use domain::base::message_builder::{AdditionalBuilder, MessageBuilder};
 use domain::base::name::{Label, ToDname};
-use domain::base::octets::OctetsBuilder;
+use domain::base::wire::Composer;
+use domain::dep::octseq::Octets;
 use super::flavor::Flavor;
 use super::nodes::{
     NodeChildren, NodeRrsets, OutOfZone, Special, ZoneApex, ZoneCut, ZoneNode,
@@ -311,11 +312,11 @@ impl Answer {
         self.authority = Some(authority)
     }
 
-    pub fn to_message<Target: OctetsBuilder + std::convert::AsMut<[u8]>>(
+    pub fn to_message<RequestOctets: Octets, Target: Composer>(
         &self,
-        message: Message<&[u8]>,
+        message: &Message<RequestOctets>,
         builder: MessageBuilder<Target>
-    ) -> Target {
+    ) -> AdditionalBuilder<Target> {
         let question = message.sole_question().unwrap();
         let qname = question.qname();
         let qclass = question.qclass();
@@ -360,7 +361,8 @@ impl Answer {
             }
         }
 
-        builder.finish()
+        // builder.finish()
+        builder.additional()
     }
 }
 

@@ -2,29 +2,39 @@
 
 use bytes::Bytes;
 use domain::base::iana::Class;
-use domain::base::Dname;
-use domain::base::{Message, MessageBuilder, ToDname};
+use domain::base::wire::Composer;
+use domain::base::{Dname, MessageBuilder, StreamTarget};
+use domain::base::{Message, ToDname};
+use domain::dep::octseq::{self, FreezeBuilder, Octets};
+use domain::net::server::buf::VecBufSource;
+use domain::net::server::dgram::DgramServer;
+use domain::net::server::middleware::builder::MiddlewareBuilder;
+use domain::net::server::mk_service;
+use domain::net::server::service::{
+    CallResult, ServiceError, ServiceResult, ServiceResultItem, Transaction,
+};
+use domain::net::server::stream::StreamServer;
+use domain::net::server::ContextAwareMessage;
 use domain::rdata::{
     Cname, Mb, Md, Mf, Minfo, Mr, Mx, Ns, Nsec, Ptr, Rrsig, Soa, Srv, ZoneRecordData,
 };
-use domain::serve::buf::BufSource;
-use domain::serve::dgram::DgramServer;
-use domain::serve::service::{CallResult, Service, ServiceError, Transaction};
-use domain::serve::stream::StreamServer;
 use domain::zonefile::inplace::{Entry, Zonefile};
+use futures::stream::Once;
+use futures::Stream;
+use std::fmt::Debug;
 use std::fs::File;
-use std::future::Future;
+use std::future::{Future, Pending};
 use std::io;
+use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::Arc;
-//use domain::base::RecordData;
+use std::task::{Context, Poll};
 use crate::config::{Config, ListenAddr};
 use crate::error::ExitError;
 use crate::process::Process;
 use crate::store::Store;
 use crate::zones::{Answer, SharedZoneSet, StoredDname, StoredRecord /*Zone*/};
-use futures::future::{pending, Pending};
-use futures::stream::Once;
+use futures::future::pending;
 use tokio::net::{TcpListener, UdpSocket};
 use tokio::runtime::Runtime;
 
@@ -57,7 +67,7 @@ pub fn run(config: Config) -> Result<(), ExitError> {
                             ZoneRecordData::A(v) => v.into(),
                             ZoneRecordData::Cname(v) => {
                                 ZoneRecordData::<Bytes, StoredDname>::Cname(Cname::new(
-                                    v.to_dname().unwrap(),
+                                    v.into_cname().to_canonical_dname().unwrap(),
                                 ))
                             }
                             ZoneRecordData::Hinfo(v) => v.into(),
@@ -111,17 +121,20 @@ pub fn run(config: Config) -> Result<(), ExitError> {
                             ZoneRecordData::Aaaa(v) => v.into(),
                             ZoneRecordData::Dnskey(v) => v.into(),
                             ZoneRecordData::Rrsig(v) => {
-                                ZoneRecordData::<Bytes, StoredDname>::Rrsig(Rrsig::new(
-                                    v.type_covered(),
-                                    v.algorithm(),
-                                    v.labels(),
-                                    v.original_ttl(),
-                                    v.expiration(),
-                                    v.inception(),
-                                    v.key_tag(),
-                                    v.signer_name().to_dname().unwrap(),
-                                    v.signature().clone(),
-                                ))
+                                ZoneRecordData::<Bytes, StoredDname>::Rrsig(
+                                    Rrsig::new(
+                                        v.type_covered(),
+                                        v.algorithm(),
+                                        v.labels(),
+                                        v.original_ttl(),
+                                        v.expiration(),
+                                        v.inception(),
+                                        v.key_tag(),
+                                        v.signer_name().to_dname().unwrap(),
+                                        v.signature().clone(),
+                                    )
+                                    .unwrap(),
+                                )
                             }
                             ZoneRecordData::Nsec(v) => ZoneRecordData::<Bytes, StoredDname>::Nsec(
                                 Nsec::new(v.next_name().to_dname().unwrap(), v.types().clone()),
@@ -129,7 +142,7 @@ pub fn run(config: Config) -> Result<(), ExitError> {
                             ZoneRecordData::Ds(v) => v.into(),
                             ZoneRecordData::Dname(v) => {
                                 ZoneRecordData::<Bytes, StoredDname>::Dname(
-                                    domain::rdata::Dname::new(v.to_dname().unwrap()),
+                                    domain::rdata::Dname::new(v.dname().clone().unwrap().1),
                                 )
                             }
                             ZoneRecordData::Nsec3(v) => v.into(),
@@ -194,7 +207,7 @@ mod tls {
         task::{Context, Poll},
     };
 
-    use domain::serve::sock::AsyncAccept;
+    use domain::net::server::sock::AsyncAccept;
     use tokio::net::{TcpListener, TcpStream};
 
     pub struct RustlsTcpListener {
@@ -209,7 +222,6 @@ mod tls {
     }
 
     impl AsyncAccept for RustlsTcpListener {
-        type Addr = SocketAddr;
         type Error = io::Error;
         type StreamType = tokio_rustls::server::TlsStream<TcpStream>;
         type Stream = tokio_rustls::Accept<TcpStream>;
@@ -218,7 +230,7 @@ mod tls {
         fn poll_accept(
             &self,
             cx: &mut Context,
-        ) -> Poll<Result<(Self::Stream, Self::Addr), io::Error>> {
+        ) -> Poll<Result<(Self::Stream, SocketAddr), io::Error>> {
             TcpListener::poll_accept(&self.listener, cx)
                 .map(|res| res.map(|(stream, addr)| (self.acceptor.accept(stream), addr)))
         }
@@ -227,67 +239,77 @@ mod tls {
 
 async fn server(addr: ListenAddr, zones: SharedZoneSet) -> Result<(), io::Error> {
     let buf = Arc::new(VecBufSource);
-    let svc = Arc::new(service(zones));
+    let middleware = MiddlewareBuilder::<Vec<u8>>::default().finish();
+    let svc = mk_service(query, zones).into();
     match addr {
         ListenAddr::Udp(addr) => {
             let sock = UdpSocket::bind(addr).await?;
-            let srv = Arc::new(DgramServer::new(sock, buf, svc));
-            srv.run().await
+            let srv = DgramServer::new(sock, buf, svc);
+            let srv = srv.with_middleware(middleware);
+            let srv = Arc::new(srv);
+            srv.run().await;
         }
         ListenAddr::Tcp(addr) => {
             let sock = TcpListener::bind(addr).await?;
-            let srv = Arc::new(StreamServer::new(sock, buf, svc));
-            srv.run().await
+            let srv = StreamServer::new(sock, buf, svc);
+            let srv = srv.with_middleware(middleware);
+            let srv = Arc::new(srv);
+            srv.run().await;
         }
         #[cfg(feature = "tls")]
         ListenAddr::Tls(addr, config) => {
             let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
             let sock = TcpListener::bind(addr).await?;
             let sock = tls::RustlsTcpListener::new(sock, acceptor);
-            let srv = Arc::new(StreamServer::new(sock, buf, svc));
-            srv.run().await
+            let srv = StreamServer::new(sock, buf, svc);
+            let srv = srv.with_middleware(middleware);
+            let srv = Arc::new(srv);
+            srv.run().await;
         }
     }
+    Ok(())
 }
 
-fn service(zones: SharedZoneSet) -> impl Service<Vec<u8>> {
-    #[allow(clippy::type_complexity)]
-    fn query(
-        message: Message<Vec<u8>>,
-        zones: SharedZoneSet,
-    ) -> Transaction<
-        impl Future<Output = Result<CallResult<Vec<u8>>, ServiceError<()>>>,
-        Once<Pending<Result<CallResult<Vec<u8>>, ServiceError<()>>>>,
-    > {
-        Transaction::Single(async move {
-            let question = message.sole_question().unwrap();
-            let zone = zones
-                .read()
-                .await
-                .find_zone(question.qname(), question.qclass())
-                .map(|zone| zone.read(None));
-            let answer = match zone {
-                Some(zone) => zone.query(question.qname(), question.qtype()).unwrap(),
-                None => Answer::refused(),
-            };
-            let target = answer.to_message(message.for_slice(), MessageBuilder::new_stream_vec());
-            Ok(CallResult::new(target))
-        })
-    }
+struct UnreachableStream;
 
-    move |message| Ok(query(message, zones.clone()))
+impl Stream for UnreachableStream {
+    type Item = Result<CallResult<Vec<u8>, Vec<u8>>, ServiceError<()>>;
+
+    fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        unreachable!()
+    }
 }
 
-struct VecBufSource;
+fn query<Target>(
+    msg: ContextAwareMessage<Message<Vec<u8>>>,
+    zones: SharedZoneSet,
+) -> ServiceResult<
+    Vec<u8>,
+    Target,
+    (),
+    impl Future<Output = ServiceResultItem<Vec<u8>, Target, ()>>,
+    Once<Pending<ServiceResultItem<Vec<u8>, Target, ()>>>,
+>
+where
+    Target: Composer + Default + Octets + FreezeBuilder<Octets = Target> + Send + Sync + 'static,
+    <Target as octseq::OctetsBuilder>::AppendError: Debug,
+{
+    let res = async move {
+        let question = msg.sole_question().unwrap();
+        let zone = zones
+            .read()
+            .await // ERROR! No async here yet!
+            .find_zone(question.qname(), question.qclass())
+            .map(|zone| zone.read(None));
+        let answer = match zone {
+            Some(zone) => zone.query(question.qname(), question.qtype()).unwrap(),
+            None => Answer::refused(),
+        };
 
-impl BufSource for VecBufSource {
-    type Output = Vec<u8>;
-
-    fn create_buf(&self) -> Vec<u8> {
-        vec![0; 64 * 1024]
-    }
-
-    fn create_sized(&self, size: usize) -> Vec<u8> {
-        vec![0; size]
-    }
+        let target = StreamTarget::new(Target::default()).unwrap(); // SAFETY
+        let builder = MessageBuilder::from_target(target).unwrap(); // SAFETY
+        let additional = answer.to_message(&msg, builder);
+        Ok(CallResult::new(msg, additional))
+    };
+    Ok(Transaction::single(Box::pin(res)))
 }

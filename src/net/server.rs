@@ -4,7 +4,7 @@ use std::io;
 use std::future::Future;
 use std::sync::Arc;
 use domain::base::{Message, StreamTarget};
-use domain::base::octets::OctetsBuilder;
+use domain::dep::octseq::OctetsBuilder;
 use futures::pin_mut;
 use futures::future::poll_fn;
 use futures::stream::{Stream, StreamExt};
