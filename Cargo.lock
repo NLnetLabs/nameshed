@@ -200,8 +200,8 @@ dependencies = [
 
 [[package]]
 name = "domain"
-version = "0.9.4-dev"
-source = "git+https://github.com/NLnetLabs/domain.git?branch=serve-poc#8c854f152d1c82e1d2000dc3ccca2d5b07115253"
+version = "0.10.0-dev"
+source = "git+https://github.com/NLnetLabs/domain.git?branch=serve-poc#777c94fa8a44d33e6719c291ba7741c20090c76f"
 dependencies = [
  "bytes",
  "chrono",
@@ -573,9 +573,9 @@ dependencies = [
 
 [[package]]
 name = "octseq"
-version = "0.3.2"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d92b38a4aabbacf619b8083841713216e7668178422decfe06bbc70643024c5d"
+checksum = "3448b4aff39e7af602304013f0e1fac3c3e867dc0df2214a6de2f9e8ff60a539"
 dependencies = [
  "bytes",
  "serde",
