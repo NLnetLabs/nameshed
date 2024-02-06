@@ -1,40 +1,37 @@
 //! Running the daemon.
 
-use bytes::Bytes;
-use domain::base::iana::Class;
-use domain::base::wire::Composer;
-use domain::base::{Dname, MessageBuilder, StreamTarget};
-use domain::base::{Message, ToDname};
-use domain::dep::octseq::{self, FreezeBuilder, Octets};
-use domain::net::server::buf::VecBufSource;
-use domain::net::server::dgram::DgramServer;
-use domain::net::server::middleware::builder::MiddlewareBuilder;
-use domain::net::server::mk_service;
-use domain::net::server::service::{
-    CallResult, ServiceError, ServiceResult, ServiceResultItem, Transaction,
-};
-use domain::net::server::stream::StreamServer;
-use domain::net::server::ContextAwareMessage;
-use domain::rdata::{
-    Cname, Mb, Md, Mf, Minfo, Mr, Mx, Ns, Nsec, Ptr, Rrsig, Soa, Srv, ZoneRecordData,
-};
-use domain::zonefile::inplace::{Entry, Zonefile};
-use futures::stream::Once;
-use futures::Stream;
-use std::fmt::Debug;
-use std::fs::File;
-use std::future::{Future, Pending};
-use std::io;
-use std::pin::Pin;
-use std::str::FromStr;
-use std::sync::Arc;
-use std::task::{Context, Poll};
 use crate::config::{Config, ListenAddr};
 use crate::error::ExitError;
 use crate::process::Process;
 use crate::store::Store;
 use crate::zones::{Answer, SharedZoneSet, StoredDname, StoredRecord /*Zone*/};
+use bytes::Bytes;
+use domain::base::iana::Class;
+use domain::base::wire::Composer;
+use domain::base::{Dname, MessageBuilder, Rtype, StreamTarget};
+use domain::base::{Message, ToDname};
+use domain::dep::octseq::{self, FreezeBuilder, Octets};
+use domain::net::server::buf::VecBufSource;
+use domain::net::server::middleware::builder::MiddlewareBuilder;
+use domain::net::server::servers::dgram::server::DgramServer;
+use domain::net::server::servers::stream::server::StreamServer;
+use domain::net::server::traits::message::ContextAwareMessage;
+use domain::net::server::traits::server::Server;
+use domain::net::server::traits::service::{
+    CallResult, ServiceResult, ServiceResultItem, Transaction,
+};
+use domain::net::server::util::mk_service;
+use domain::rdata::{
+    Cname, Mb, Md, Mf, Minfo, Mr, Mx, Ns, Nsec, Ptr, Rrsig, Soa, Srv, ZoneRecordData,
+};
+use domain::zonefile::inplace::{Entry, Zonefile};
 use futures::future::pending;
+use std::fmt::Debug;
+use std::fs::File;
+use std::future::Future;
+use std::io;
+use std::str::FromStr;
+use std::sync::Arc;
 use tokio::net::{TcpListener, UdpSocket};
 use tokio::runtime::Runtime;
 
@@ -207,7 +204,7 @@ mod tls {
         task::{Context, Poll},
     };
 
-    use domain::net::server::sock::AsyncAccept;
+    use domain::net::server::traits::sock::AsyncAccept;
     use tokio::net::{TcpListener, TcpStream};
 
     pub struct RustlsTcpListener {
@@ -270,46 +267,74 @@ async fn server(addr: ListenAddr, zones: SharedZoneSet) -> Result<(), io::Error>
     Ok(())
 }
 
-struct UnreachableStream;
-
-impl Stream for UnreachableStream {
-    type Item = Result<CallResult<Vec<u8>, Vec<u8>>, ServiceError<()>>;
-
-    fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        unreachable!()
-    }
-}
-
 fn query<Target>(
-    msg: ContextAwareMessage<Message<Vec<u8>>>,
+    msg: Arc<ContextAwareMessage<Message<Vec<u8>>>>,
     zones: SharedZoneSet,
-) -> ServiceResult<
-    Vec<u8>,
-    Target,
-    (),
-    impl Future<Output = ServiceResultItem<Vec<u8>, Target, ()>>,
-    Once<Pending<ServiceResultItem<Vec<u8>, Target, ()>>>,
->
+) -> ServiceResult<Target, (), impl Future<Output = ServiceResultItem<Target, ()>> + Send>
 where
     Target: Composer + Default + Octets + FreezeBuilder<Octets = Target> + Send + Sync + 'static,
     <Target as octseq::OctetsBuilder>::AppendError: Debug,
 {
-    let res = async move {
-        let question = msg.sole_question().unwrap();
-        let zone = zones
-            .read()
-            .await // ERROR! No async here yet!
-            .find_zone(question.qname(), question.qclass())
-            .map(|zone| zone.read(None));
-        let answer = match zone {
-            Some(zone) => zone.query(question.qname(), question.qtype()).unwrap(),
-            None => Answer::refused(),
-        };
+    let qtype = msg.sole_question().unwrap().qtype();
+    if qtype == Rtype::Axfr {
+        let mut txn = Transaction::stream();
 
-        let target = StreamTarget::new(Target::default()).unwrap(); // SAFETY
-        let builder = MessageBuilder::from_target(target).unwrap(); // SAFETY
-        let additional = answer.to_message(&msg, builder);
-        Ok(CallResult::new(msg, additional))
-    };
-    Ok(Transaction::single(Box::pin(res)))
+        let cloned_msg = msg.clone();
+        let cloned_zones = zones.clone();
+        txn.push(async move {
+            let question = cloned_msg.sole_question().unwrap();
+            let zone = cloned_zones
+                .read()
+                .await
+                .find_zone(question.qname(), question.qclass())
+                .map(|zone| zone.read(None));
+            let answer = match zone {
+                Some(zone) => zone.query(question.qname(), Rtype::Soa).unwrap(),
+                None => Answer::refused(),
+            };
+            let target = StreamTarget::new(Target::default()).unwrap(); // SAFETY
+            let builder = MessageBuilder::from_target(target).unwrap(); // SAFETY
+            let additional = answer.to_message(&cloned_msg, builder);
+            Ok(CallResult::new(additional))
+        });
+
+        let cloned_msg = msg.clone();
+        let cloned_zones = zones.clone();
+        txn.push(async move {
+            let question = cloned_msg.sole_question().unwrap();
+            let zone = cloned_zones
+                .read()
+                .await
+                .find_zone(question.qname(), question.qclass())
+                .map(|zone| zone.read(None));
+            let answer = match zone {
+                Some(zone) => zone.query(question.qname(), Rtype::Soa).unwrap(),
+                None => Answer::refused(),
+            };
+            let target = StreamTarget::new(Target::default()).unwrap(); // SAFETY
+            let builder = MessageBuilder::from_target(target).unwrap(); // SAFETY
+            let additional = answer.to_message(&cloned_msg, builder);
+            Ok(CallResult::new(additional))
+        });
+        Ok(txn)
+    } else {
+        let fut = async move {
+            let question = msg.sole_question().unwrap();
+            let zone = zones
+                .read()
+                .await // ERROR! No async here yet!
+                .find_zone(question.qname(), question.qclass())
+                .map(|zone| zone.read(None));
+            let answer = match zone {
+                Some(zone) => zone.query(question.qname(), question.qtype()).unwrap(),
+                None => Answer::refused(),
+            };
+
+            let target = StreamTarget::new(Target::default()).unwrap(); // SAFETY
+            let builder = MessageBuilder::from_target(target).unwrap(); // SAFETY
+            let additional = answer.to_message(&msg, builder);
+            Ok(CallResult::new(additional))
+        };
+        Ok(Transaction::single(fut))
+    }
 }
