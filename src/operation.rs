@@ -16,7 +16,6 @@ use domain::net::server::middleware::builder::MiddlewareBuilder;
 use domain::net::server::servers::dgram::server::DgramServer;
 use domain::net::server::servers::stream::server::StreamServer;
 use domain::net::server::traits::message::ContextAwareMessage;
-use domain::net::server::traits::server::Server;
 use domain::net::server::traits::service::{
     CallResult, ServiceResult, ServiceResultItem, Transaction,
 };
