@@ -7,27 +7,19 @@ use crate::store::Store;
 use crate::zones::{Answer, SharedZoneSet, StoredDname, StoredRecord /*Zone*/};
 use bytes::Bytes;
 use domain::base::iana::Class;
-use domain::base::wire::Composer;
-use domain::base::{Dname, MessageBuilder, Rtype, StreamTarget};
-use domain::base::{Message, ToDname};
-use domain::dep::octseq::{self, FreezeBuilder, Octets};
+use domain::base::{Dname, Rtype, ToDname};
 use domain::net::server::buf::VecBufSource;
+use domain::net::server::dgram::DgramServer;
 use domain::net::server::middleware::builder::MiddlewareBuilder;
-use domain::net::server::servers::dgram::server::DgramServer;
-use domain::net::server::servers::stream::server::StreamServer;
-use domain::net::server::traits::message::ContextAwareMessage;
-use domain::net::server::traits::service::{
-    CallResult, ServiceResult, ServiceResultItem, Transaction,
-};
-use domain::net::server::util::mk_service;
+use domain::net::server::prelude::*;
+use domain::net::server::service::{CallResult, Transaction};
+use domain::net::server::stream::StreamServer;
 use domain::rdata::{
     Cname, Mb, Md, Mf, Minfo, Mr, Mx, Ns, Nsec, Ptr, Rrsig, Soa, Srv, ZoneRecordData,
 };
 use domain::zonefile::inplace::{Entry, Zonefile};
 use futures::future::pending;
-use std::fmt::Debug;
 use std::fs::File;
-use std::future::Future;
 use std::io;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -203,7 +195,7 @@ mod tls {
         task::{Context, Poll},
     };
 
-    use domain::net::server::traits::sock::AsyncAccept;
+    use domain::net::server::sock::AsyncAccept;
     use tokio::net::{TcpListener, TcpStream};
 
     pub struct RustlsTcpListener {
@@ -236,7 +228,7 @@ mod tls {
 async fn server(addr: ListenAddr, zones: SharedZoneSet) -> Result<(), io::Error> {
     let buf = Arc::new(VecBufSource);
     let middleware = MiddlewareBuilder::<Vec<u8>>::default().finish();
-    let svc = mk_service(query, zones).into();
+    let svc = mk_service(query::<Vec<u8>>, zones).into();
     match addr {
         ListenAddr::Udp(addr) => {
             let sock = UdpSocket::bind(addr).await?;
@@ -266,14 +258,12 @@ async fn server(addr: ListenAddr, zones: SharedZoneSet) -> Result<(), io::Error>
     Ok(())
 }
 
+type MyError = ();
+
 fn query<Target>(
-    msg: Arc<ContextAwareMessage<Message<Vec<u8>>>>,
+    msg: MkServiceRequest<Vec<u8>>,
     zones: SharedZoneSet,
-) -> ServiceResult<Target, (), impl Future<Output = ServiceResultItem<Target, ()>> + Send>
-where
-    Target: Composer + Default + Octets + FreezeBuilder<Octets = Target> + Send + Sync + 'static,
-    <Target as octseq::OctetsBuilder>::AppendError: Debug,
-{
+) -> MkServiceResult<Vec<u8>, MyError> {
     let qtype = msg.sole_question().unwrap().qtype();
     if qtype == Rtype::Axfr {
         let mut txn = Transaction::stream();
@@ -291,8 +281,7 @@ where
                 Some(zone) => zone.query(question.qname(), Rtype::Soa).unwrap(),
                 None => Answer::refused(),
             };
-            let target = StreamTarget::new(Target::default()).unwrap(); // SAFETY
-            let builder = MessageBuilder::from_target(target).unwrap(); // SAFETY
+            let builder = mk_builder_for_target();
             let additional = answer.to_message(&cloned_msg, builder);
             Ok(CallResult::new(additional))
         });
@@ -310,8 +299,7 @@ where
                 Some(zone) => zone.query(question.qname(), Rtype::Soa).unwrap(),
                 None => Answer::refused(),
             };
-            let target = StreamTarget::new(Target::default()).unwrap(); // SAFETY
-            let builder = MessageBuilder::from_target(target).unwrap(); // SAFETY
+            let builder = mk_builder_for_target();
             let additional = answer.to_message(&cloned_msg, builder);
             Ok(CallResult::new(additional))
         });
@@ -329,11 +317,10 @@ where
                 None => Answer::refused(),
             };
 
-            let target = StreamTarget::new(Target::default()).unwrap(); // SAFETY
-            let builder = MessageBuilder::from_target(target).unwrap(); // SAFETY
+            let builder = mk_builder_for_target();
             let additional = answer.to_message(&msg, builder);
             Ok(CallResult::new(additional))
         };
-        Ok(Transaction::single(fut))
+        Ok(Transaction::single(Box::pin(fut)))
     }
 }
