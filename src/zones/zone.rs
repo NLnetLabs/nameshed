@@ -3,7 +3,7 @@ use std::io;
 use std::sync::{Arc, Weak};
 use domain::base::iana::Class;
 use parking_lot::RwLock;
-use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::Mutex;
 use crate::store::Store;
 use super::flavor::Flavor;
 use super::nodes::ZoneApex;
@@ -18,7 +18,7 @@ use super::write::WriteZone;
 pub struct Zone {
     apex: Arc<ZoneApex>,
     versions: Arc<RwLock<ZoneVersions>>,
-    update_lock: Arc<AsyncMutex<()>>,
+    update_lock: Arc<Mutex<()>>,
 }
 
 impl Zone {

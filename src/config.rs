@@ -205,7 +205,7 @@ impl Config {
         let res = Config {
             data_dir: file.take_mandatory_path("data-dir")?,
             listen: {
-                file.take_from_str_array("listen")?.unwrap_or_else(Vec::new)
+                file.take_from_str_array("listen")?.unwrap_or_default()
             },
             log_level: {
                 file.take_from_str("log-level")?.unwrap_or(LevelFilter::Warn)
@@ -324,6 +324,10 @@ impl Config {
                  Please specify the data directory with the -d option."
             );
             return Err(Failed);
+        }
+
+        if matches.is_present("init") {
+            self.initialize = true;
         }
 
         if matches.is_present("init") {
@@ -538,7 +542,7 @@ impl FromStr for ListenAddr {
     type Err = String;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let (protocol, addr) = match value.split_once(":") {
+        let (protocol, addr) = match value.split_once(':') {
             Some(stuff) => stuff,
             None => {
                 return Err("expected string '<protocol>:<addr>'".into())
@@ -611,15 +615,15 @@ impl PartialEq for LogTarget {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             #[cfg(unix)]
-            (&LogTarget::Default(s), &LogTarget::Default(o)) => {
-                (s as usize) == (o as usize)
+            (LogTarget::Default(s), LogTarget::Default(o)) => {
+                (*s as usize) == (*o as usize)
             }
             #[cfg(unix)]
-            (&LogTarget::Syslog(s), &LogTarget::Syslog(o)) => {
-                (s as usize) == (o as usize)
+            (LogTarget::Syslog(s), LogTarget::Syslog(o)) => {
+                (*s as usize) == (*o as usize)
             }
-            (&LogTarget::Stderr, &LogTarget::Stderr) => true,
-            (&LogTarget::File(ref s), &LogTarget::File(ref o)) => {
+            (LogTarget::Stderr, LogTarget::Stderr) => true,
+            (LogTarget::File(s), LogTarget::File(o)) => {
                 s == o
             }
             _ => false

@@ -68,8 +68,12 @@ impl WriteZone {
 
         // The order here is important so we don’t accidentally remove the
         // newly created version right away.
-        let marker = self.zone_versions.write().update_current(self.version);
-        if let Some(version) = self.zone_versions.write().clean_versions() {
+        let marker = self.zone_versions.write().update_current(
+            self.version
+        );
+        if let Some(version)
+            = self.zone_versions.write().clean_versions()
+        {
             self.apex.clean(version)
         }
         self.zone_versions.write().push_version(self.version, marker);
@@ -82,15 +86,10 @@ impl WriteZone {
     }
 
     pub fn load(&mut self, store: &mut ReadData) -> Result<(), io::Error> {
-        loop {
-            match store.deserialize()? {
-                stored::ZoneUpdate::UpdateApex { flavor } => {
-                    self.apex(flavor)?.load(store)?;
-                }
-                stored::ZoneUpdate::Done => {
-                    break;
-                }
-            }
+        while let stored::ZoneUpdate::UpdateApex { flavor }
+            = store.deserialize()?
+        {
+            self.apex(flavor)?.load(store)?;
         }
         Ok(())
     }
@@ -240,7 +239,7 @@ impl<'a> WriteNode<'a> {
         &mut self, cut: ZoneCut,
     ) -> Result<(), WriteApexError> {
         match self.node {
-            Either::Left(_) => return Err(WriteApexError::NotAllowed),
+            Either::Left(_) => Err(WriteApexError::NotAllowed),
             Either::Right(ref node) => {
                 if let Some(store) = self.zone.store.as_mut() {
                     store.serialize(
@@ -249,7 +248,7 @@ impl<'a> WriteNode<'a> {
                 }
                 node.update_special(
                     self.flavor, self.zone.version,
-                    Some(Special::Cut(cut.into()))
+                    Some(Special::Cut(cut))
                 );
                 Ok(())
             }
@@ -260,7 +259,7 @@ impl<'a> WriteNode<'a> {
         &mut self, cname: SharedRr,
     ) -> Result<(), WriteApexError> {
         match self.node {
-            Either::Left(_) => return Err(WriteApexError::NotAllowed),
+            Either::Left(_) => Err(WriteApexError::NotAllowed),
             Either::Right(ref node) => {
                 if let Some(store) = self.zone.store.as_mut() {
                     store.serialize(

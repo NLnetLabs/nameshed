@@ -320,7 +320,7 @@ impl Answer {
         let question = message.sole_question().unwrap();
         let qname = question.qname();
         let qclass = question.qclass();
-        let mut builder = builder.start_answer(&message, self.rcode).unwrap();
+        let mut builder = builder.start_answer(message, self.rcode).unwrap();
 
         match self.content {
             AnswerContent::Data(ref answer) => {
