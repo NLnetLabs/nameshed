@@ -330,10 +330,6 @@ impl Config {
             self.initialize = true;
         }
 
-        if matches.is_present("init") {
-            self.initialize = true;
-        }
-
         // udp_listen
         let list = matches.values_of("udp-listen").unwrap_or_default();
         let list = list.chain(matches.values_of("plain-listen").unwrap_or_default());
