@@ -215,7 +215,7 @@ fn query<Target>(
             let question = msg.sole_question().unwrap();
             let zone = zones
                 .read()
-                .await // ERROR! No async here yet!
+                .await
                 .find_zone(question.qname(), question.qclass())
                 .map(|zone| zone.read(None));
             let answer = match zone {
