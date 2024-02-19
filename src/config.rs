@@ -50,14 +50,14 @@ impl Config {
             .long("config")
             .takes_value(true)
             .value_name("PATH")
-            .help("Read base configuration from this file"),
+            .help("Read base configuration from this file")
         )
         .arg(Arg::with_name("data-dir")
             .long("data-dir")
             .short("d")
             .value_name("PATH")
             .help("Path to the directory with the database")
-            .takes_value(true),
+            .takes_value(true)
         )
         .arg(Arg::with_name("plain-listen")
             .long("listen")
@@ -66,7 +66,7 @@ impl Config {
             .help("Listen on address/port for both plain UDP and TCP")
             .takes_value(true)
             .multiple(true)
-            .number_of_values(1),
+            .number_of_values(1)
         )
         .arg(Arg::with_name("udp-listen")
             .long("udp")
@@ -75,7 +75,7 @@ impl Config {
             .help("Listen on address/port for plain UDP")
             .takes_value(true)
             .multiple(true)
-            .number_of_values(1),
+            .number_of_values(1)
         )
         .arg(Arg::with_name("tcp-listen")
             .long("tcp")
@@ -84,7 +84,7 @@ impl Config {
             .help("Listen on address/port for plain TCP")
             .takes_value(true)
             .multiple(true)
-            .number_of_values(1),
+            .number_of_values(1)
         )
         .arg(Arg::with_name("tls-listen")
             .long("tls")
@@ -93,7 +93,7 @@ impl Config {
             .help("CERT and KEY must be paths to PEM encoded certificate and key files")
             .takes_value(true)
             .multiple(true)
-            .number_of_values(1),
+            .number_of_values(1)
         )
         .arg(Arg::with_name("tls-key")
             .long("key")
@@ -102,40 +102,40 @@ impl Config {
             .takes_value(true)
             .multiple(true)
             .number_of_values(1)
-            .requires("listen-tcp"),
+            .requires("listen-tcp")
         )
         .arg(Arg::with_name("verbose")
             .short("v")
             .long("verbose")
             .multiple(true)
-            .help("Log more information, twice for even more"),
+            .help("Log more information, twice for even more")
         )
         .arg(Arg::with_name("quiet")
             .short("q")
             .long("quiet")
             .multiple(true)
             .conflicts_with("verbose")
-            .help("Log less information, twice for no information"),
+            .help("Log less information, twice for no information")
         )
         .arg(Arg::with_name("syslog")
             .long("syslog")
-            .help("Log to syslog"),
+            .help("Log to syslog")
         )
         .arg(Arg::with_name("syslog-facility")
             .long("syslog-facility")
             .takes_value(true)
             .default_value("daemon")
-            .help("Facility to use for syslog logging"),
+            .help("Facility to use for syslog logging")
         )
         .arg(Arg::with_name("logfile")
             .long("logfile")
             .takes_value(true)
             .value_name("PATH")
-            .help("Log to this file"),
+            .help("Log to this file")
         )
         .arg(Arg::with_name("init")
             .long("init")
-            .help("Initialize new database"),
+            .help("Initialize new database")
         )
     }
 
