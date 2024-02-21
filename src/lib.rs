@@ -7,7 +7,3 @@ pub mod config;
 pub mod error;
 pub mod operation;
 pub mod process;
-pub mod store;
-pub mod zonefile;
-pub mod zones;
-

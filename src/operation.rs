@@ -1,28 +1,28 @@
 //! Running the daemon.
 
-
-use std::fs::File;
-use std::io;
-use std::sync::Arc;
-use std::str::FromStr;
-use domain::base::Rtype;
+use crate::config::{Config, ListenAddr};
+use crate::error::ExitError;
+use crate::process::Process;
 use domain::base::iana::Class;
 use domain::base::name::{Dname, FlattenInto};
+use domain::base::Rtype;
 use domain::net::server::buf::VecBufSource;
 use domain::net::server::dgram::DgramServer;
 use domain::net::server::middleware::builder::MiddlewareBuilder;
 use domain::net::server::service::{CallResult, Transaction};
 use domain::net::server::stream::StreamServer;
-use domain::net::server::util::{mk_builder_for_target, mk_service, MkServiceRequest, MkServiceResult};
-use domain::zonefile::inplace::{Zonefile, Entry};
+use domain::net::server::util::{
+    mk_builder_for_target, mk_service, MkServiceRequest, MkServiceResult,
+};
+use domain::zonefile::inplace::{Entry, Zonefile};
+use domain::zonetree::{Answer, ZoneSet};
 use futures::future::pending;
+use std::fs::File;
+use std::io;
+use std::str::FromStr;
+use std::sync::Arc;
 use tokio::net::{TcpListener, UdpSocket};
 use tokio::runtime::Runtime;
-use crate::config::{Config, ListenAddr};
-use crate::error::ExitError;
-use crate::process::Process;
-use crate::store::Store;
-use crate::zones::{Answer, SharedZoneSet};
 
 pub fn prepare() -> Result<(), ExitError> {
     Process::init()?;
@@ -34,63 +34,42 @@ pub fn run(config: Config) -> Result<(), ExitError> {
     let process = Process::new(config);
     process.switch_logging(false)?;
 
-    Runtime::new().map_err(|_| ExitError::Generic)?.block_on(async move {
-        let reader = Zonefile::load(&mut File::open("/etc/nsd/example.com.zone").unwrap()).unwrap();
-        let mut zonefile = crate::zonefile::Zonefile::new(
-            Dname::from_str("example.com.").unwrap(),
-            Class::In
-        );
-        for item in reader {
-            match item.unwrap() {
-                Entry::Record(record) => {
-                    zonefile.insert(record.flatten_into()).unwrap();
-                }
-                _ => panic!("unsupported item")
-            }
-        }
-        let zone = zonefile.into_zone_builder().unwrap().finalize();
-
-        let store = match Store::init(process.config().data_dir.clone()) {
-            Ok(store) => store,
-            Err(err) => {
-                eprintln!("Failed to open database: {}", err);
-                return Err(ExitError::Generic);
-            }
-        };
-        let zones = match process.config().initialize {
-            true => {
-                match SharedZoneSet::init(store).await {
-                    Ok(zones) => zones,
-                    Err(err) => {
-                        eprintln!("Failed to initialize zones: {}", err);
-                        return Err(ExitError::Generic);
+    Runtime::new()
+        .map_err(|_| ExitError::Generic)?
+        .block_on(async move {
+            let reader =
+                Zonefile::load(&mut File::open("/etc/nsd/example.com.zone").unwrap()).unwrap();
+            let mut zonefile = domain::zonefile::parsed::Zonefile::new(
+                Dname::from_str("example.com.").unwrap(),
+                Class::In,
+            );
+            for item in reader {
+                match item.unwrap() {
+                    Entry::Record(record) => {
+                        zonefile.insert(record.flatten_into()).unwrap();
                     }
+                    _ => panic!("unsupported item"),
                 }
             }
-            false => {
-                match SharedZoneSet::load(store).await {
-                    Ok(zones) => zones,
-                    Err(err) => {
-                        eprintln!("Failed to load zones: {}", err);
-                        return Err(ExitError::Generic);
+            let zone = zonefile.into_zone_builder().unwrap().finalize();
+
+            let mut zones = ZoneSet::new();
+
+            zones.insert_zone(zone).unwrap();
+
+            let zones = Arc::new(zones);
+
+            for addr in process.config().listen.iter().cloned() {
+                eprintln!("Binding on {:?}", addr);
+                let zones = zones.clone();
+                tokio::spawn(async move {
+                    if let Err(err) = server(addr, zones).await {
+                        println!("{}", err);
                     }
-                }
+                });
             }
-        };
-
-        zones.write().await.insert_zone(zone).await.unwrap();
-
-        for addr in process.config().listen.iter().cloned() {
-            eprintln!("Binding on {:?}", addr);
-            let zones = zones.clone();
-            tokio::spawn(async move {
-                if let Err(err) = server(addr, zones).await {
-                    println!("{}", err);
-                }
-            });
-        }
-        pending().await
-    })
+            pending().await
+        })
 }
 
 #[cfg(feature = "tls")]
@@ -131,7 +110,7 @@ mod tls {
     }
 }
 
-async fn server(addr: ListenAddr, zones: SharedZoneSet) -> Result<(), io::Error> {
+async fn server(addr: ListenAddr, zones: Arc<ZoneSet>) -> Result<(), io::Error> {
     let buf = VecBufSource;
     let middleware = MiddlewareBuilder::<Vec<u8>>::default().finish();
     let svc = mk_service(query::<Vec<u8>>, zones);
@@ -168,7 +147,7 @@ type MyError = ();
 
 fn query<Target>(
     msg: MkServiceRequest<Vec<u8>>,
-    zones: SharedZoneSet,
+    zones: Arc<ZoneSet>,
 ) -> MkServiceResult<Vec<u8>, MyError> {
     let qtype = msg.sole_question().unwrap().qtype();
     if qtype == Rtype::Axfr {
@@ -178,15 +157,11 @@ fn query<Target>(
         let cloned_zones = zones.clone();
         txn.push(async move {
             let question = cloned_msg.sole_question().unwrap();
-            let zone = cloned_zones
-                .read()
-                .await
+            let answer = cloned_zones
                 .find_zone(question.qname(), question.qclass())
-                .map(|zone| zone.read(None));
-            let answer = match zone {
-                Some(zone) => zone.query(question.qname(), Rtype::Soa).unwrap(),
-                None => Answer::refused(),
-            };
+                .map(|zone| zone.read(None))
+                .and_then(|zone| zone.query(question.qname(), Rtype::Soa).ok())
+                .unwrap_or_else(|| Answer::refused());
             let builder = mk_builder_for_target();
             let additional = answer.to_message(&cloned_msg, builder);
             Ok(CallResult::new(additional))
@@ -197,8 +172,6 @@ fn query<Target>(
         txn.push(async move {
             let question = cloned_msg.sole_question().unwrap();
             let zone = cloned_zones
-                .read()
-                .await
                 .find_zone(question.qname(), question.qclass())
                 .map(|zone| zone.read(None));
             let answer = match zone {
@@ -214,8 +187,6 @@ fn query<Target>(
         let fut = async move {
             let question = msg.sole_question().unwrap();
             let zone = zones
-                .read()
-                .await
                 .find_zone(question.qname(), question.qclass())
                 .map(|zone| zone.read(None));
             let answer = match zone {

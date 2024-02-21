@@ -201,15 +201,14 @@ dependencies = [
 [[package]]
 name = "domain"
 version = "0.10.0-dev"
-source = "git+https://github.com/NLnetLabs/domain.git?branch=serve-poc#c89407cd9d14a64771c3e1606235246cb08d36b3"
 dependencies = [
  "bytes",
  "chrono",
- "futures",
  "futures-util",
  "hex",
  "libc",
  "octseq",
+ "parking_lot",
  "pin-project-lite",
  "rand",
  "ring 0.17.8",
