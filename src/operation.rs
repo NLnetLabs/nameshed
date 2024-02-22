@@ -116,7 +116,7 @@ mod tls {
 async fn server(addr: ListenAddr, zones: Arc<ZoneSet>) -> Result<(), io::Error> {
     let buf = VecBufSource;
     let middleware = MiddlewareBuilder::<Vec<u8>>::default().finish();
-    let svc = mk_service(query::<Vec<u8>>, zones);
+    let svc = mk_service(query, zones);
     match addr {
         ListenAddr::Udp(addr) => {
             let sock = UdpSocket::bind(addr).await?;
@@ -187,10 +187,7 @@ fn set_axfr_header<Target>(
     header.set_cd(false);
 }
 
-fn query<Target>(
-    msg: MkServiceRequest<Vec<u8>>,
-    zones: Arc<ZoneSet>,
-) -> MkServiceResult<Vec<u8>, MyError> {
+fn query(msg: MkServiceRequest<Vec<u8>>, zones: Arc<ZoneSet>) -> MkServiceResult<Vec<u8>, MyError> {
     let qtype = msg.sole_question().unwrap().qtype();
     if qtype == Rtype::Axfr {
         let stream_fut = async move {
@@ -286,8 +283,7 @@ fn query<Target>(
             }
 
             let mutex = Arc::into_inner(stream).unwrap();
-            let stream = mutex.into_inner().unwrap();
-            stream
+            mutex.into_inner().unwrap()
         };
 
         Ok(Transaction::stream(Box::pin(stream_fut)))
