@@ -8,8 +8,7 @@ bytes	       = "1.0"
 chrono         = "0.4.11"
 clap           = { version = "2.33.0", features = [ "wrap_help" ] }
 dirs           = "4.0"
-#domain         = { git = "https://github.com/NLnetLabs/domain.git", features = ["zonefile", "serde", "ring", "sign", "net", "unstable-server-transport"], branch = "serve-poc" }
-domain         = { path = "../domain", features = ["zonefile", "serde", "ring", "sign", "net", "unstable-server-transport"] }
+domain         = { git = "https://github.com/NLnetLabs/domain.git", features = ["zonefile", "serde", "ring", "sign", "net", "unstable-server-transport"], branch = "zonetree" }
 fern           = "0.6.0"
 futures        = "0.3.17"
 log            = "0.4"

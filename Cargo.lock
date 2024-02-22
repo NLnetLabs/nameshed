@@ -99,9 +99,9 @@ checksum = "ed570934406eb16438a4e976b1b4500774099c13b8cb96eec99f620f05090ddf"
 
 [[package]]
 name = "bumpalo"
-version = "3.15.1"
+version = "3.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c764d619ca78fccbf3069b37bd7af92577f044bb15236036662d79b6559f25b7"
+checksum = "a3b1be7772ee4501dba05acbe66bb1e8760f6a6c474a36035631638e4415f130"
 
 [[package]]
 name = "bytes"
@@ -189,6 +189,7 @@ dependencies = [
 [[package]]
 name = "domain"
 version = "0.10.0-dev"
+source = "git+https://github.com/NLnetLabs/domain.git?branch=zonetree#b213db38c721aca4fc464b95d2bd17c1afe5ee34"
 dependencies = [
  "bytes",
  "chrono",
