@@ -1,11 +1,10 @@
 //! Managing the process Nameshed runs in.
 
-use std::io;
-use std::path::Path;
-use log::{error, LevelFilter};
 use crate::config::{Config, LogTarget};
 use crate::error::Failed;
-
+use log::{error, LevelFilter};
+use std::io;
+use std::path::Path;
 
 //------------ Process -------------------------------------------------------
 
@@ -27,9 +26,7 @@ impl Process {
     /// Creates a new process object.
     ///
     pub fn new(config: Config) -> Self {
-        Process { 
-            config
-        }
+        Process { config }
     }
 
     /// Returns a reference to the config.
@@ -58,12 +55,13 @@ impl Process {
         log::set_max_level(LevelFilter::Warn);
         if let Err(err) = log_reroute::init() {
             eprintln!("Failed to initialize logger: {}.\nAborting.", err);
-            return Err(Failed)
+            return Err(Failed);
         };
         let dispatch = fern::Dispatch::new()
             .level(LevelFilter::Error)
             .chain(io::stderr())
-            .into_log().1;
+            .into_log()
+            .1;
         log_reroute::reroute_boxed(dispatch);
         Ok(())
     }
@@ -73,30 +71,20 @@ impl Process {
     /// Once the configuration has been successfully loaded, logging should
     /// be switched to whatever the user asked for via this method.
     #[allow(unused_variables)] // for cfg(not(unix))
-    pub fn switch_logging(
-        &self,
-        daemon: bool,
-    ) -> Result<(), Failed> {
+    pub fn switch_logging(&self, daemon: bool) -> Result<(), Failed> {
         let logger = match self.config.log_target {
             #[cfg(unix)]
             LogTarget::Default(fac) => {
                 if daemon {
                     self.syslog_logger(fac)?
-                }
-                else {
+                } else {
                     self.stderr_logger(false)
                 }
             }
             #[cfg(unix)]
-            LogTarget::Syslog(fac) => {
-                self.syslog_logger(fac)?
-            }
-            LogTarget::Stderr => {
-                self.stderr_logger(daemon)
-            }
-            LogTarget::File(ref path) => {
-                self.file_logger(path)?
-            }
+            LogTarget::Syslog(fac) => self.syslog_logger(fac)?,
+            LogTarget::Stderr => self.stderr_logger(daemon),
+            LogTarget::File(ref path) => self.file_logger(path)?,
         };
 
         log_reroute::reroute_boxed(logger.into_log().1);
@@ -106,33 +94,28 @@ impl Process {
 
     /// Creates a syslog logger and configures correctly.
     #[cfg(unix)]
-    fn syslog_logger(
-        &self,
-        facility: syslog::Facility
-    ) -> Result<fern::Dispatch, Failed> {
-        let process = std::env::current_exe().ok().and_then(|path|
-            path.file_name()
-                .and_then(std::ffi::OsStr::to_str)
-                .map(ToString::to_string)
-        ).unwrap_or_else(|| String::from("routinator"));
+    fn syslog_logger(&self, facility: syslog::Facility) -> Result<fern::Dispatch, Failed> {
+        let process = std::env::current_exe()
+            .ok()
+            .and_then(|path| {
+                path.file_name()
+                    .and_then(std::ffi::OsStr::to_str)
+                    .map(ToString::to_string)
+            })
+            .unwrap_or_else(|| String::from("routinator"));
         let formatter = syslog::Formatter3164 {
             facility,
             hostname: None,
             process,
-            pid: nix::unistd::getpid().as_raw()
+            pid: nix::unistd::getpid().as_raw(),
         };
-        let logger = syslog::unix(formatter.clone()).or_else(|_| {
-            syslog::tcp(formatter.clone(), ("127.0.0.1", 601))
-        }).or_else(|_| {
-            syslog::udp(formatter, ("127.0.0.1", 0), ("127.0.0.1", 514))
-        });
+        let logger = syslog::unix(formatter.clone())
+            .or_else(|_| syslog::tcp(formatter.clone(), ("127.0.0.1", 601)))
+            .or_else(|_| syslog::udp(formatter, ("127.0.0.1", 0), ("127.0.0.1", 514)));
         match logger {
-            Ok(logger) => {
-                Ok(self.fern_logger(false).chain(
-                    Box::new(syslog::BasicLogger::new(logger))
-                    as Box::<dyn log::Log>
-                ))
-            }
+            Ok(logger) => Ok(self
+                .fern_logger(false)
+                .chain(Box::new(syslog::BasicLogger::new(logger)) as Box<dyn log::Log>)),
             Err(err) => {
                 error!("Cannot connect to syslog: {}", err);
                 Err(Failed)
@@ -152,11 +135,8 @@ impl Process {
         let file = match fern::log_file(path) {
             Ok(file) => file,
             Err(err) => {
-                error!(
-                    "Failed to open log file '{}': {}",
-                    path.display(), err
-                );
-                return Err(Failed)
+                error!("Failed to open log file '{}': {}", path.display(), err);
+                return Err(Failed);
             }
         };
         Ok(self.fern_logger(true).chain(file))
@@ -191,4 +171,3 @@ impl Process {
         res
     }
 }
-

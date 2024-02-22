@@ -9,9 +9,7 @@
 ///
 /// Secondly, [`ExitError`] is used when the program should be terminated. It
 /// provides enough information to determine the exit code of the program.
-
 use log::error;
-
 
 //------------ Failed --------------------------------------------------------
 
@@ -22,7 +20,6 @@ use log::error;
 /// really do anything to recover.
 #[derive(Clone, Copy, Debug)]
 pub struct Failed;
-
 
 //------------ ExitError -----------------------------------------------------
 
@@ -41,4 +38,3 @@ impl From<Failed> for ExitError {
         ExitError::Generic
     }
 }
-
