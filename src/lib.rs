@@ -3,6 +3,7 @@
 pub use crate::config::Config;
 pub use crate::error::ExitError;
 
+pub mod archive;
 pub mod config;
 pub mod error;
 pub mod operation;

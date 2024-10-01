@@ -35,14 +35,17 @@ pub struct Config {
     /// The zone names and corresponding zone file paths to load.
     pub zones: HashMap<String, String>,
 
-    /// XFR in per zone: Allow NOTIFY from, and when with a port also request XFR from
+    /// XFR in per zone: Allow NOTIFY from, and when with a port also request XFR from.
     pub xfr_in: HashMap<String, String>,
 
-    /// XFR out per zone: Allow XFR to, and when with a port also send NOTIFY to
+    /// XFR out per zone: Allow XFR to, and when with a port also send NOTIFY to.
     pub xfr_out: HashMap<String, String>,
 
-    /// TSIG keys
+    /// TSIG keys.
     pub tsig_keys: HashMap<String, String>,
+
+    /// Directory to write XFR updated zones to.
+    pub xfr_store_path: Option<PathBuf>,
 }
 
 impl Config {
@@ -218,6 +221,7 @@ impl Config {
             xfr_in: { file.take_string_map("xfr_in")?.unwrap_or_default() },
             xfr_out: { file.take_string_map("xfr_out")?.unwrap_or_default() },
             tsig_keys: { file.take_string_map("tsig_keys")?.unwrap_or_default() },
+            xfr_store_path: { file.take_path("xfr_store_path")? },
         };
         file.check_exhausted()?;
         Ok(res)
@@ -457,6 +461,7 @@ impl Default for Config {
             xfr_in: HashMap::new(),
             xfr_out: HashMap::new(),
             tsig_keys: HashMap::new(),
+            xfr_store_path: None,
         }
     }
 }
@@ -856,6 +861,7 @@ impl ConfigFile {
             .map(|opt| opt.map(|path| self.dir.join(path)))
     }
 
+    /*
     /// Takes a mandatory path value from the config file.
     ///
     /// This is the pretty much the same as [`take_path`] but also returns
@@ -876,7 +882,6 @@ impl ConfigFile {
         }
     }
 
-    /*
     /// Takes an array of strings from the config file.
     ///
     /// The value is taken from the entry with the given `key` and, if

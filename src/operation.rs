@@ -33,6 +33,10 @@ use domain::tsig::{Algorithm, Key, KeyName};
 use domain::zonefile::inplace;
 use domain::zonetree::{Answer, Zone, ZoneBuilder};
 
+use crate::archive::ArchiveZone;
+use crate::config::{Config, ListenAddr};
+use crate::error::ExitError;
+use crate::process::Process;
 use crate::zonemaintenance::maintainer::{
     DefaultConnFactory, TypedZone, ZoneLookup, ZoneMaintainer,
 };
@@ -40,9 +44,6 @@ use crate::zonemaintenance::types::{
     CompatibilityMode, NotifyConfig, TransportStrategy, XfrConfig, XfrStrategy, ZoneConfig,
     ZoneMaintainerKeyStore,
 };
-use crate::config::{Config, ListenAddr};
-use crate::error::ExitError;
-use crate::process::Process;
 
 pub fn prepare() -> Result<(), ExitError> {
     Process::init()?;
@@ -121,7 +122,7 @@ pub fn run(config: Config) -> Result<(), ExitError> {
             let zones = Arc::new(ZoneMaintainer::new_with_config(maintainer_config));
 
             for (zone_name, zone_path) in process.config().zones.iter() {
-                let zone = if !zone_path.is_empty() {
+                let mut zone = if !zone_path.is_empty() {
                     // Load the specified zone file.
                     println!("Loading primary zone '{zone_name}' from '{zone_path}'..");
                     let mut zone_bytes = File::open(zone_path)
@@ -181,6 +182,11 @@ pub fn run(config: Config) -> Result<(), ExitError> {
 
                     println!("Allowing XFR requests from {} for zone '{zone_name}'", dst.ip());
                     zone_cfg.provide_xfr_to.add_src(dst.ip(), xfr_cfg.clone());
+                }
+
+                if let Some(xfr_store_path) = &process.config().xfr_store_path {
+                    let archive_zone = ArchiveZone::new(zone, &xfr_store_path);
+                    zone = Zone::new(archive_zone);
                 }
 
                 let zone = TypedZone::new(zone, zone_cfg);
