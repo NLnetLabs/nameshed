@@ -8,6 +8,7 @@ use crate::error::Failed;
 use clap::{App, Arg, ArgMatches};
 use dirs::home_dir;
 use log::{error, LevelFilter};
+use std::collections::HashMap;
 use std::io::Read;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -22,9 +23,6 @@ use tokio_rustls::rustls::ServerConfig;
 
 #[derive(Clone, Debug)]
 pub struct Config {
-    /// Database directory.
-    pub data_dir: PathBuf,
-
     /// Addresses and protocols to listen on.
     pub listen: Vec<ListenAddr>,
 
@@ -34,8 +32,17 @@ pub struct Config {
     /// The target to log to.
     pub log_target: LogTarget,
 
-    /// Should a new database be initialized?
-    pub initialize: bool,
+    /// The zone names and corresponding zone file paths to load.
+    pub zones: HashMap<String, String>,
+
+    /// XFR in per zone: Allow NOTIFY from, and when with a port also request XFR from
+    pub xfr_in: HashMap<String, String>,
+
+    /// XFR out per zone: Allow XFR to, and when with a port also send NOTIFY to
+    pub xfr_out: HashMap<String, String>,
+
+    /// TSIG keys
+    pub tsig_keys: HashMap<String, String>,
 }
 
 impl Config {
@@ -51,14 +58,6 @@ impl Config {
                 .takes_value(true)
                 .value_name("PATH")
                 .help("Read base configuration from this file"),
-        )
-        .arg(
-            Arg::with_name("data-dir")
-                .long("data-dir")
-                .short("d")
-                .value_name("PATH")
-                .help("Path to the directory with the database")
-                .takes_value(true),
         )
         .arg(
             Arg::with_name("plain-listen")
@@ -207,15 +206,18 @@ impl Config {
     /// Creates a base config from a config file.
     fn from_config_file(mut file: ConfigFile) -> Result<Self, Failed> {
         let log_target = Self::log_target_from_config_file(&mut file)?;
+        eprintln!("Constructing config");
         let res = Config {
-            data_dir: file.take_mandatory_path("data-dir")?,
             listen: { file.take_from_str_array("listen")?.unwrap_or_default() },
             log_level: {
                 file.take_from_str("log-level")?
                     .unwrap_or(LevelFilter::Warn)
             },
             log_target,
-            initialize: false,
+            zones: { file.take_string_map("zones")?.unwrap_or_default() },
+            xfr_in: { file.take_string_map("xfr_in")?.unwrap_or_default() },
+            xfr_out: { file.take_string_map("xfr_out")?.unwrap_or_default() },
+            tsig_keys: { file.take_string_map("tsig_keys")?.unwrap_or_default() },
         };
         file.check_exhausted()?;
         Ok(res)
@@ -305,23 +307,6 @@ impl Config {
     /// `cur_dir`.
     #[allow(clippy::cognitive_complexity)]
     fn apply_arg_matches(&mut self, matches: &ArgMatches, cur_dir: &Path) -> Result<(), Failed> {
-        // data_dir
-        if let Some(dir) = matches.value_of("data-dir") {
-            self.data_dir = cur_dir.join(dir)
-        }
-        if self.data_dir == Path::new("") {
-            error!(
-                "Couldn’t determine default repository directory: \
-                 no home directory.\n\
-                 Please specify the data directory with the -d option."
-            );
-            return Err(Failed);
-        }
-
-        if matches.is_present("init") {
-            self.initialize = true;
-        }
-
         // udp_listen
         let list = matches.values_of("udp-listen").unwrap_or_default();
         let list = list.chain(matches.values_of("plain-listen").unwrap_or_default());
@@ -465,11 +450,13 @@ impl Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            data_dir: PathBuf::from(""),
             listen: Vec::new(),
             log_level: LevelFilter::Warn,
             log_target: LogTarget::default(),
-            initialize: false,
+            zones: HashMap::new(),
+            xfr_in: HashMap::new(),
+            xfr_out: HashMap::new(),
+            tsig_keys: HashMap::new(),
         }
     }
 }
@@ -1035,13 +1022,10 @@ impl ConfigFile {
             }
             None => Ok(None)
         }
-    }
+    }*/
 
     /// Takes a string-to-string hashmap from the config file.
-    fn take_string_map(
-        &mut self,
-        key: &str
-    ) -> Result<Option<HashMap<String, String>>, Failed> {
+    fn take_string_map(&mut self, key: &str) -> Result<Option<HashMap<String, String>>, Failed> {
         match self.content.remove(key) {
             Some(toml::Value::Array(vec)) => {
                 let mut res = HashMap::new();
@@ -1107,14 +1091,14 @@ impl ConfigFile {
                 error!(
                     "Failed in config file {}: \
                      '{}' expected to be a array of string pairs.",
-                    self.path.display(), key
+                    self.path.display(),
+                    key
                 );
                 Err(Failed)
             }
-            None => Ok(None)
+            None => Ok(None),
         }
     }
-    */
 
     /// Checks whether the config file is now empty.
     ///
