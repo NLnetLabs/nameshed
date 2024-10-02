@@ -9,7 +9,7 @@ bytes	       = "1.0"
 chrono         = "0.4.11"
 clap           = { version = "2.33.0", features = [ "wrap_help" ] }
 dirs           = "4.0"
-domain         = { git = "https://github.com/NLnetLabs/domain.git", features = ["zonefile", "serde", "ring", "sign", "net", "tsig", "unstable-client-transport", "unstable-server-transport", "unstable-zonetree", "unstable-xfr", "tokio-stream"], branch = "zone-tweaks" }
+domain         = { git = "https://github.com/NLnetLabs/domain.git", features = ["zonefile", "serde", "ring", "sign", "net", "tsig", "unstable-client-transport", "unstable-server-transport", "unstable-zonetree", "unstable-xfr", "tokio-stream"], branch = "xfr-should-not-exclude-glue" }
 fern           = "0.6.0"
 futures        = "0.3.17"
 futures-util   = "0.3"

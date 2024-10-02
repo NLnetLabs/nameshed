@@ -134,7 +134,7 @@ impl WritableZone for WritableArchiveZone {
                 }
             });
 
-            read.walk(Box::new(move |owner, rrset| {
+            read.walk(Box::new(move |owner, rrset, _at_zone_cut| {
                 dump_rrset(owner, rrset, &tx);
             }));
 
