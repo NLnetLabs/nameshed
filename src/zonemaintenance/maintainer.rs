@@ -33,7 +33,7 @@ use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
 use tokio::time::Instant;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, enabled, error, info, trace, warn, Level};
 
 use domain::base::iana::{Class, Opcode, OptRcode};
 use domain::base::net::IpAddr;
@@ -1439,13 +1439,13 @@ where
                     return Err(ZoneMaintainerError::ResponseError(msg.opt_rcode()));
                 }
 
-                // TODO: process response, either a complete IXFR or AXFR
-                // inside a single UDP packet (which could be a single SOA
-                // either indicating that the client is up-to-date, or if
-                // newer that the client should fallback to TCP).
                 let it = xfr_interpreter
                     .interpret_response(msg)
                     .map_err(ZoneMaintainerError::ProcessingError)?;
+
+                let mut progress_reporter =
+                    XfrProgressReporter::new(zone.apex_name().to_owned(), Duration::from_secs(5));
+                let mut num_updates_applied = 0;
 
                 trace!("Processing XFR events");
                 for update in it {
@@ -1459,11 +1459,27 @@ where
                         .apply(update)
                         .await
                         .map_err(ZoneMaintainerError::ZoneUpdateError)?;
+
+                    num_updates_applied += 1;
+
+                    if enabled!(Level::INFO) {
+                        if let Some(report) =
+                            progress_reporter.create_report(1, num_updates_applied)
+                        {
+                            info!("{}", report);
+                        }
+                    }
                 }
 
                 if !xfr_interpreter.is_finished() {
                     trace!("Processing XFR events complete: incomplete response");
                     return Err(ZoneMaintainerError::IncompleteResponse);
+                }
+
+                if enabled!(Level::INFO) {
+                    if let Some(report) = progress_reporter.create_report(1, num_updates_applied) {
+                        info!("{}", report);
+                    }
                 }
 
                 trace!("Processing XFR events complete");
@@ -1493,6 +1509,11 @@ where
                 let req = RequestMessageMulti::new(msg).unwrap();
                 let mut send_request = tcp_client.send_request(req);
 
+                let mut progress_reporter =
+                    XfrProgressReporter::new(zone.apex_name().to_owned(), Duration::from_secs(5));
+                let mut num_responses_received = 0;
+                let mut num_updates_applied = 0;
+
                 trace!("Fetching XFR responses");
                 while !xfr_interpreter.is_finished() {
                     trace!("Fetching XFR response");
@@ -1509,6 +1530,8 @@ where
                         return Err(ZoneMaintainerError::ResponseError(msg.opt_rcode()));
                     }
 
+                    num_responses_received += 1;
+
                     let it = xfr_interpreter
                         .interpret_response(msg)
                         .map_err(ZoneMaintainerError::ProcessingError)?;
@@ -1523,9 +1546,27 @@ where
                         })?;
 
                         zone_updater.apply(update).await?;
+
+                        num_updates_applied += 1;
+
+                        if enabled!(Level::INFO) {
+                            if let Some(report) = progress_reporter
+                                .create_report(num_responses_received, num_updates_applied)
+                            {
+                                info!("{}", report);
+                            }
+                        }
                     }
 
                     trace!("Processing XFR events complete");
+                }
+
+                if enabled!(Level::INFO) {
+                    if let Some(report) =
+                        progress_reporter.create_report(num_responses_received, num_updates_applied)
+                    {
+                        info!("{}", report);
+                    }
                 }
 
                 trace!("Fetching XFR responses complete");
@@ -1774,6 +1815,50 @@ where
             if let Ok(nameservers) = Self::identify_nameservers(zone).await {
                 *cat_zone.info().nameservers.lock().await = Some(nameservers);
             };
+        }
+    }
+}
+
+struct XfrProgressReporter {
+    zone_apex: StoredName,
+    start_time: Instant,
+    last_reported_at: Option<Instant>,
+    report_every: Duration,
+}
+
+impl XfrProgressReporter {
+    fn new(zone_apex: StoredName, report_every: Duration) -> Self {
+        Self {
+            zone_apex,
+            start_time: Instant::now(),
+            last_reported_at: None,
+            report_every,
+        }
+    }
+
+    fn create_report(
+        &mut self,
+        num_responses_received: usize,
+        num_updates_applied: usize,
+    ) -> Option<String> {
+        let now = Instant::now();
+        if now.duration_since(self.last_reported_at.unwrap_or(self.start_time)) > self.report_every
+        {
+            let seconds_so_far = now.duration_since(self.start_time).as_secs() as f64;
+            let records_per_second = ((num_updates_applied as f64) / seconds_so_far).floor() as i64;
+
+            let report = format!("XFR progress report for zone '{}': Received {} records in {} responses in {} seconds ({} records/second)",
+                self.zone_apex,
+                num_updates_applied,
+                num_responses_received,
+                seconds_so_far,
+                records_per_second);
+
+            self.last_reported_at = Some(now);
+
+            Some(report)
+        } else {
+            None
         }
     }
 }
