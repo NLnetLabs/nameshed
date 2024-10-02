@@ -11,7 +11,6 @@ use tokio::net::{TcpListener, UdpSocket};
 use tokio::runtime::Runtime;
 use tracing_subscriber::EnvFilter;
 
-use domain::utils::base64;
 use domain::base::iana::{Class, Rcode};
 use domain::base::name::Name;
 use domain::base::wire::Composer;
@@ -30,6 +29,7 @@ use domain::net::server::stream::{self, StreamServer};
 use domain::net::server::util::{mk_builder_for_target, service_fn};
 use domain::net::server::ConnectionConfig;
 use domain::tsig::{Algorithm, Key, KeyName};
+use domain::utils::base64;
 use domain::zonefile::inplace;
 use domain::zonetree::{Answer, Zone, ZoneBuilder};
 
@@ -112,7 +112,7 @@ pub fn run(config: Config) -> Result<(), ExitError> {
                 let key_id = (key.name().clone(), key.algorithm());
                 key_store.insert(key_id.clone(), key);
             }
- 
+
             let key_store = Arc::new(key_store);
             let maintainer_config = crate::zonemaintenance::maintainer::Config::<
                 _,
@@ -205,7 +205,7 @@ pub fn run(config: Config) -> Result<(), ExitError> {
             let svc = Arc::new(svc);
 
             tokio::spawn(async move { zones.run().await });
-        
+
             for addr in process.config().listen.iter().cloned() {
                 eprintln!("Binding on {:?}", addr);
                 let svc = svc.clone();
@@ -219,16 +219,22 @@ pub fn run(config: Config) -> Result<(), ExitError> {
         })
 }
 
-fn parse_xfr_acl(xfr_in: &str, xfr_cfg: &mut XfrConfig, notify_cfg: &mut NotifyConfig, key_store: &Arc<ZoneMaintainerKeyStore>) -> Result<SocketAddr, ExitError> {
-    let parts: Vec<String> = xfr_in
-    .split(" KEY ").map(ToString::to_string).collect();
+fn parse_xfr_acl(
+    xfr_in: &str,
+    xfr_cfg: &mut XfrConfig,
+    notify_cfg: &mut NotifyConfig,
+    key_store: &Arc<ZoneMaintainerKeyStore>,
+) -> Result<SocketAddr, ExitError> {
+    let parts: Vec<String> = xfr_in.split(" KEY ").map(ToString::to_string).collect();
     let (addr, key_name) = match parts.len() {
         1 => (&parts[0], None),
         2 => (&parts[0], Some(&parts[1])),
         _ => {
-            eprintln!("Invalid XFR ACL specification: Should be <addr>[:<port>][ KEY <TSIG key name>]");
+            eprintln!(
+                "Invalid XFR ACL specification: Should be <addr>[:<port>][ KEY <TSIG key name>]"
+            );
             return Err(ExitError::Generic);
-        }    
+        }
     };
     let addr = SocketAddr::from_str(addr)
         .or(IpAddr::from_str(addr).map(|ip| SocketAddr::new(ip, 0)))
@@ -239,7 +245,9 @@ fn parse_xfr_acl(xfr_in: &str, xfr_cfg: &mut XfrConfig, notify_cfg: &mut NotifyC
     notify_cfg.tsig_key = None;
 
     if let Some(key_name) = key_name {
-        let encoded_key_name = KeyName::from_str(key_name).inspect_err(|err| eprintln!("Error: Invalid TSIG key name '{key_name}': {err}")).map_err(|_| ExitError::Generic)?;
+        let encoded_key_name = KeyName::from_str(key_name)
+            .inspect_err(|err| eprintln!("Error: Invalid TSIG key name '{key_name}': {err}"))
+            .map_err(|_| ExitError::Generic)?;
         for (name, alg) in key_store.keys() {
             if name == &encoded_key_name {
                 xfr_cfg.tsig_key = Some((encoded_key_name.clone(), *alg));
