@@ -23,7 +23,7 @@ use domain::base::net::IpAddr;
 use domain::base::{CanonicalOrd, Name, Serial, Ttl};
 use domain::rdata::Soa;
 use domain::tsig::{self, Algorithm, Key, KeyName};
-use domain::zonetree::{InMemoryZoneDiff, StoredName, ZoneKey};
+use domain::zonetree::{InMemoryZoneDiff, StoredName, ZoneTuple};
 
 //------------ Constants -----------------------------------------------------
 
@@ -475,7 +475,7 @@ impl Default for ZoneRefreshState {
 #[derive(Clone, Debug)]
 pub(super) struct ZoneRefreshInstant {
     pub cause: ZoneRefreshCause,
-    pub key: ZoneKey,
+    pub key: ZoneTuple,
     pub end_instant: Instant,
 }
 
@@ -730,7 +730,7 @@ pub(super) struct ZoneChangedMsg {
 
 #[derive(Debug)]
 pub struct ZoneReport {
-    pub(super) key: ZoneKey,
+    pub(super) key: ZoneTuple,
     pub(super) details: ZoneReportDetails,
     pub(super) timers: Vec<ZoneRefreshInstant>,
     pub(super) zone_info: ZoneInfo,
@@ -738,7 +738,7 @@ pub struct ZoneReport {
 
 impl ZoneReport {
     pub(super) fn new(
-        key: ZoneKey,
+        key: ZoneTuple,
         details: ZoneReportDetails,
         timers: Vec<ZoneRefreshInstant>,
         zone_info: ZoneInfo,
@@ -920,18 +920,18 @@ impl Display for ZoneReportDetails {
 pub(super) enum Event {
     ZoneRefreshRequested {
         cause: ZoneRefreshCause,
-        key: ZoneKey,
+        key: ZoneTuple,
         at: Option<Ttl>,
     },
 
     ZoneStatusRequested {
-        key: ZoneKey,
+        key: ZoneTuple,
         tx: oneshot::Sender<ZoneReport>,
     },
 
     ZoneChanged(ZoneChangedMsg),
 
-    ZoneAdded(ZoneKey),
+    ZoneAdded(ZoneTuple),
     // TODO?
-    //ZoneRemoved(ZoneKey),
+    //ZoneRemoved(ZoneTuple),
 }

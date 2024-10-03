@@ -55,7 +55,7 @@ use domain::zonetree::error::{OutOfZone, ZoneTreeModificationError};
 use domain::zonetree::update::ZoneUpdater;
 use domain::zonetree::{
     AnswerContent, InMemoryZoneDiff, ReadableZone, SharedRrset, StoredName, WritableZone,
-    WritableZoneNode, Zone, ZoneKey, ZoneStore, ZoneTree,
+    WritableZoneNode, Zone, ZoneStore, ZoneTree, ZoneTuple,
 };
 
 use super::types::{
@@ -159,7 +159,7 @@ where
     KS::Target: KeyStore,
 {
     config: Arc<ArcSwap<Config<KS, CF>>>,
-    pending_zones: Arc<RwLock<HashMap<ZoneKey, Zone>>>,
+    pending_zones: Arc<RwLock<HashMap<ZoneTuple, Zone>>>,
     member_zones: Arc<ArcSwap<ZoneTree>>,
     loaded_arc: std::sync::RwLock<Arc<ZoneTree>>,
     event_rx: Mutex<Receiver<Event>>,
@@ -225,7 +225,7 @@ where
         // know that the Hash impl for StoredName hashes only over the u8
         // label slice values which are fixed for a given StoredName.
         #[allow(clippy::mutable_key_type)]
-        let time_tracking = HashMap::<ZoneKey, ZoneRefreshState>::new();
+        let time_tracking = HashMap::<ZoneTuple, ZoneRefreshState>::new();
         let time_tracking = Arc::new(RwLock::new(time_tracking));
 
         for zone in self.zones().iter_zones() {
@@ -696,7 +696,7 @@ where
     // Returns an error if the zone is not a secondary.
     async fn track_zone_freshness(
         zone: &Zone,
-        time_tracking: Arc<RwLock<HashMap<ZoneKey, ZoneRefreshState>>>,
+        time_tracking: Arc<RwLock<HashMap<ZoneTuple, ZoneRefreshState>>>,
     ) -> Result<Option<Ttl>, ()> {
         let cat_zone: &MaintainedZone = zone.into();
 
@@ -730,7 +730,7 @@ where
 
     fn refresh_zone_at(
         cause: ZoneRefreshCause,
-        key: ZoneKey,
+        key: ZoneTuple,
         at: Option<Ttl>,
         refresh_timers: &mut FuturesUnordered<ZoneRefreshTimer>,
     ) {
@@ -782,9 +782,9 @@ where
     #[allow(clippy::mutable_key_type)]
     async fn handle_notify(
         zones: Arc<ZoneTree>,
-        pending_zones: Arc<RwLock<HashMap<ZoneKey, Zone>>>,
+        pending_zones: Arc<RwLock<HashMap<ZoneTuple, Zone>>>,
         msg: ZoneChangedMsg,
-        time_tracking: Arc<RwLock<HashMap<ZoneKey, ZoneRefreshState>>>,
+        time_tracking: Arc<RwLock<HashMap<ZoneTuple, ZoneRefreshState>>>,
         event_tx: Sender<Event>,
         config: Arc<ArcSwap<Config<KS, CF>>>,
     ) {
@@ -914,7 +914,7 @@ where
         //
         // We only support the original SOA qtype for NOTIFY. The unique tuple
         // that identifies an in-progress NOTIFY is thus only <QNAME,QCLASS>.
-        // This is the same tuple as that of `ZoneKey`, thus we only have one
+        // This is the same tuple as that of `ZoneTuple`, thus we only have one
         // zone for each unique tuple in our set of zones. Thus to avoid
         // processing a NOTIFY when one is already in progress for a unique
         // tuple we only have to look at the status of the zone for which the
@@ -1795,7 +1795,7 @@ where
     async fn schedule_zone_refresh(
         cause: ZoneRefreshCause,
         event_tx: &Sender<Event>,
-        key: ZoneKey,
+        key: ZoneTuple,
         at: Ttl,
     ) {
         event_tx
