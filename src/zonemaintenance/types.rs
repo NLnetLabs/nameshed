@@ -23,7 +23,7 @@ use domain::base::net::IpAddr;
 use domain::base::{CanonicalOrd, Name, Serial, Ttl};
 use domain::rdata::Soa;
 use domain::tsig::{self, Algorithm, Key, KeyName};
-use domain::zonetree::{InMemoryZoneDiff, StoredName, ZoneTuple};
+use domain::zonetree::{InMemoryZoneDiff, StoredName, Zone};
 
 //------------ Constants -----------------------------------------------------
 
@@ -37,6 +37,39 @@ pub(super) const MIN_DURATION_BETWEEN_ZONE_REFRESHES: tokio::time::Duration =
 
 /// A store of TSIG keys index by key name and algorithm.
 pub type ZoneMaintainerKeyStore = HashMap<(KeyName, Algorithm), Key>;
+
+//------------ ZoneId --------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ZoneId {
+    pub name: StoredName,
+    pub class: Class,
+}
+
+impl ZoneId {
+    pub fn new(name: StoredName, class: Class) -> Self {
+        Self { name, class }
+    }
+}
+
+impl From<&Zone> for ZoneId {
+    fn from(zone: &Zone) -> Self {
+        ZoneId {
+            name: zone.apex_name().to_owned(),
+            class: zone.class(),
+        }
+    }
+}
+
+
+impl From<Zone> for ZoneId {
+    fn from(zone: Zone) -> Self {
+        ZoneId {
+            name: zone.apex_name().to_owned(),
+            class: zone.class(),
+        }
+    }
+}
 
 //------------ SrcDstConfig --------------------------------------------------
 
@@ -475,21 +508,21 @@ impl Default for ZoneRefreshState {
 #[derive(Clone, Debug)]
 pub(super) struct ZoneRefreshInstant {
     pub cause: ZoneRefreshCause,
-    pub key: ZoneTuple,
+    pub zone_id: ZoneId,
     pub end_instant: Instant,
 }
 
 impl ZoneRefreshInstant {
-    pub fn new(key: (Name<Bytes>, Class), refresh: Ttl, cause: ZoneRefreshCause) -> Self {
+    pub fn new(zone_id: ZoneId, refresh: Ttl, cause: ZoneRefreshCause) -> Self {
         trace!(
             "Creating ZoneRefreshInstant for zone {} with refresh duration {} seconds and cause {cause}",
-            key.0,
+            zone_id.name,
             refresh.into_duration().as_secs()
         );
         let end_instant = Instant::now().checked_add(refresh.into_duration()).unwrap();
         Self {
             cause,
-            key,
+            zone_id,
             end_instant,
         }
     }
@@ -517,7 +550,7 @@ impl Display for ZoneRefreshCause {
         match self {
             ZoneRefreshCause::ManualTrigger => f.write_str("manual trigger"),
             ZoneRefreshCause::NotifyFromPrimary(primary) => {
-                f.write_fmt(format_args!("NOTIFY from {primary}"))
+                write!(f, "NOTIFY from {primary}")
             }
             ZoneRefreshCause::SoaRefreshTimer => f.write_str("SOA REFRESH periodic timer expired"),
             ZoneRefreshCause::SoaRefreshTimerAfterStartup => {
@@ -572,7 +605,20 @@ impl Future for ZoneRefreshTimer {
 
 //------------ NameServerNameAddr --------------------------------------------
 
-pub type NameServerNameAddr = (StoredName, HashSet<SocketAddr>);
+#[derive(Clone, Debug)]
+pub struct NameServerNameAddr {
+    pub name: StoredName,
+    pub addrs: HashSet<SocketAddr>,
+}
+
+impl NameServerNameAddr {
+    pub fn new<T: IntoIterator<Item = SocketAddr>>(name: StoredName, addrs: T) -> Self {
+        Self {
+            name,
+            addrs: HashSet::from_iter(addrs.into_iter()),
+        }
+    }
+}
 
 //------------ ZoneNameServers -----------------------------------------------
 
@@ -585,7 +631,7 @@ pub(super) struct ZoneNameServers {
 impl ZoneNameServers {
     pub fn new(primary_name: StoredName, ips: &[IpAddr]) -> Self {
         let unique_ips = Self::to_socket_addrs(ips);
-        let primary = (primary_name, unique_ips);
+        let primary = NameServerNameAddr::new(primary_name, unique_ips);
         Self {
             primary,
             other: vec![],
@@ -594,22 +640,22 @@ impl ZoneNameServers {
 
     pub fn add_ns(&mut self, name: StoredName, ips: &[IpAddr]) {
         let unique_ips = Self::to_socket_addrs(ips);
-        self.other.push((name, unique_ips));
+        self.other.push(NameServerNameAddr::new(name, unique_ips));
     }
 
-    pub fn _primary(&self) -> &NameServerNameAddr {
+    pub fn primary(&self) -> &NameServerNameAddr {
         &self.primary
     }
 
-    pub fn _others(&self) -> &[NameServerNameAddr] {
+    pub fn others(&self) -> &[NameServerNameAddr] {
         &self.other
     }
 
-    pub fn _addrs(&self) -> impl Iterator<Item = &SocketAddr> {
+    pub fn addrs(&self) -> impl Iterator<Item = &SocketAddr> {
         self.primary
-            .1
+            .addrs
             .iter()
-            .chain(self.other.iter().flat_map(|(_name, addrs)| addrs.iter()))
+            .chain(self.other.iter().flat_map(|ns| ns.addrs.iter()))
     }
 
     pub fn notify_set(&self) -> impl Iterator<Item = &SocketAddr> {
@@ -624,7 +670,7 @@ impl ZoneNameServers {
         //                    stealth servers)."
         self.other
             .iter()
-            .flat_map(|(_name, addrs)| addrs.difference(&self.primary.1))
+            .flat_map(|ns| ns.addrs.difference(&self.primary.addrs))
     }
 
     fn to_socket_addrs(ips: &[IpAddr]) -> HashSet<SocketAddr> {
@@ -730,7 +776,7 @@ pub(super) struct ZoneChangedMsg {
 
 #[derive(Debug)]
 pub struct ZoneReport {
-    pub(super) key: ZoneTuple,
+    pub(super) zone_id: ZoneId,
     pub(super) details: ZoneReportDetails,
     pub(super) timers: Vec<ZoneRefreshInstant>,
     pub(super) zone_info: ZoneInfo,
@@ -738,13 +784,13 @@ pub struct ZoneReport {
 
 impl ZoneReport {
     pub(super) fn new(
-        key: ZoneTuple,
+        zone_id: ZoneId,
         details: ZoneReportDetails,
         timers: Vec<ZoneRefreshInstant>,
         zone_info: ZoneInfo,
     ) -> Self {
         Self {
-            key,
+            zone_id,
             details,
             timers,
             zone_info,
@@ -756,30 +802,33 @@ impl ZoneReport {
 
 impl Display for ZoneReport {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_fmt(format_args!("zone:   {}\n", self.key.0))?;
-        f.write_fmt(format_args!("{}", self.details))?;
+        write!(f, "zone:   {}\n", self.zone_id.name)?;
+        write!(f, "{}", self.details)?;
         if let Ok(nameservers) = self.zone_info.nameservers.try_lock() {
             if let Some(nameservers) = nameservers.as_ref() {
                 f.write_str("        nameservers:\n")?;
 
-                let (name, ips) = &nameservers.primary;
-                f.write_fmt(format_args!("           {name}: [PRIMARY]"))?;
+                let name = &nameservers.primary.name;
+                let ips = &nameservers.primary.addrs;
+                write!(f, "           {name}: [PRIMARY]")?;
                 if ips.is_empty() {
                     f.write_str(" unresolved")?;
                 } else {
                     for ip in ips {
-                        f.write_fmt(format_args!(" {ip}"))?;
+                        write!(f, " {ip}")?;
                     }
                 }
                 f.write_str("\n")?;
 
-                for (name, ips) in &nameservers.other {
-                    f.write_fmt(format_args!("           {name}:"))?;
+                for ns in &nameservers.other {
+                    let name = &ns.name;
+                    let ips = &ns.addrs;
+                    write!(f, "           {name}:")?;
                     if ips.is_empty() {
                         f.write_str(" unresolved")?;
                     } else {
                         for ip in ips {
-                            f.write_fmt(format_args!(" {ip}"))?;
+                            write!(f, " {ip}")?;
                         }
                     }
                     f.write_str("\n")?;
@@ -797,7 +846,7 @@ impl Display for ZoneReport {
                     .map(|d| format!("            wait {}s", d.as_secs()))
                     .unwrap_or_else(|| "            wait ?s".to_string());
 
-                f.write_fmt(format_args!("{at} until {cause}\n"))?;
+                write!(f, "{at} until {cause}\n")?;
             }
         }
         Ok(())
@@ -837,8 +886,8 @@ impl Display for ZoneReportDetails {
                     }
                     None => "unknown".to_string(),
                 };
-                f.write_fmt(format_args!("        created at: {at}\n"))?;
-                f.write_fmt(format_args!("        state: {}\n", state.status))?;
+                write!(f, "        created at: {at}\n")?;
+                write!(f, "        state: {}\n", state.status)?;
 
                 if state.metrics.last_refreshed_at.is_some() {
                     let last_refreshed_at = state.metrics.last_refreshed_at.unwrap();
@@ -850,7 +899,7 @@ impl Display for ZoneReportDetails {
                         None => "unknown".to_string(),
                     };
 
-                    f.write_fmt(format_args!("        serial: {serial} ({at})\n",))?;
+                    write!(f, "        serial: {serial} ({at})\n")?;
                 }
 
                 let at = match state.metrics.last_refresh_phase_started_at {
@@ -862,9 +911,7 @@ impl Display for ZoneReportDetails {
                     },
                     None => "never".to_string(),
                 };
-                f.write_fmt(format_args!(
-                    "        last refresh phase started at: {at}\n"
-                ))?;
+                write!(f, "        last refresh phase started at: {at}\n")?;
 
                 let at = match state.metrics.last_refresh_attempted_at {
                     Some(at) => match now.checked_duration_since(at) {
@@ -875,7 +922,7 @@ impl Display for ZoneReportDetails {
                     },
                     None => "never".to_string(),
                 };
-                f.write_fmt(format_args!("        last refresh attempted at: {at}\n"))?;
+                write!(f, "        last refresh attempted at: {at}\n")?;
 
                 let at = match state.metrics.last_soa_serial_check_succeeded_at {
                     Some(at) => match now.checked_duration_since(at) {
@@ -890,7 +937,7 @@ impl Display for ZoneReportDetails {
                     },
                     None => "never".to_string(),
                 };
-                f.write_fmt(format_args!("        last successful soa check at: {at}\n"))?;
+                write!(f, "        last successful soa check at: {at}\n")?;
 
                 let at = match state.metrics.last_soa_serial_check_succeeded_at {
                     Some(at) => match now.checked_duration_since(at) {
@@ -905,7 +952,7 @@ impl Display for ZoneReportDetails {
                     },
                     None => "never".to_string(),
                 };
-                f.write_fmt(format_args!("        last soa check attempted at: {at}\n"))?;
+                write!(f, "        last soa check attempted at: {at}\n")?;
 
                 Ok(())
             }
@@ -920,18 +967,18 @@ impl Display for ZoneReportDetails {
 pub(super) enum Event {
     ZoneRefreshRequested {
         cause: ZoneRefreshCause,
-        key: ZoneTuple,
+        zone_id: ZoneId,
         at: Option<Ttl>,
     },
 
     ZoneStatusRequested {
-        key: ZoneTuple,
+        zone_id: ZoneId,
         tx: oneshot::Sender<ZoneReport>,
     },
 
     ZoneChanged(ZoneChangedMsg),
 
-    ZoneAdded(ZoneTuple),
+    ZoneAdded(ZoneId),
     // TODO?
-    //ZoneRemoved(ZoneTuple),
+    //ZoneRemoved(ZoneId),
 }

@@ -55,12 +55,12 @@ use domain::zonetree::error::{OutOfZone, ZoneTreeModificationError};
 use domain::zonetree::update::ZoneUpdater;
 use domain::zonetree::{
     AnswerContent, InMemoryZoneDiff, ReadableZone, SharedRrset, StoredName, WritableZone,
-    WritableZoneNode, Zone, ZoneStore, ZoneTree, ZoneTuple,
+    WritableZoneNode, Zone, ZoneStore, ZoneTree,
 };
 
 use super::types::{
     CompatibilityMode, Event, NotifySrcDstConfig, NotifyStrategy, TransportStrategy, XfrConfig,
-    XfrStrategy, ZoneChangedMsg, ZoneConfig, ZoneDiffs, ZoneInfo, ZoneNameServers,
+    XfrStrategy, ZoneChangedMsg, ZoneConfig, ZoneDiffs, ZoneId, ZoneInfo, ZoneNameServers,
     ZoneRefreshCause, ZoneRefreshInstant, ZoneRefreshState, ZoneRefreshStatus, ZoneRefreshTimer,
     ZoneReport, ZoneReportDetails, IANA_DNS_PORT_NUMBER, MIN_DURATION_BETWEEN_ZONE_REFRESHES,
 };
@@ -159,7 +159,7 @@ where
     KS::Target: KeyStore,
 {
     config: Arc<ArcSwap<Config<KS, CF>>>,
-    pending_zones: Arc<RwLock<HashMap<ZoneTuple, Zone>>>,
+    pending_zones: Arc<RwLock<HashMap<ZoneId, Zone>>>,
     member_zones: Arc<ArcSwap<ZoneTree>>,
     loaded_arc: std::sync::RwLock<Arc<ZoneTree>>,
     event_rx: Mutex<Receiver<Event>>,
@@ -225,7 +225,7 @@ where
         // know that the Hash impl for StoredName hashes only over the u8
         // label slice values which are fixed for a given StoredName.
         #[allow(clippy::mutable_key_type)]
-        let time_tracking = HashMap::<ZoneTuple, ZoneRefreshState>::new();
+        let time_tracking = HashMap::<ZoneId, ZoneRefreshState>::new();
         let time_tracking = Arc::new(RwLock::new(time_tracking));
 
         for zone in self.zones().iter_zones() {
@@ -256,7 +256,7 @@ where
                         //    checking with the primary for a new serial."
                         Self::refresh_zone_at(
                             ZoneRefreshCause::SoaRefreshTimerAfterStartup,
-                            zone.key(),
+                            zone.into(),
                             soa_refresh,
                             &mut refresh_timers,
                         );
@@ -297,7 +297,7 @@ where
                             );
                         }
 
-                        Event::ZoneAdded(key) => {
+                        Event::ZoneAdded(zone_id) => {
                             // https://datatracker.ietf.org/doc/html/rfc1034#section-4.3.5
                             // 4.3.5. Zone maintenance and transfers
                             //   ..
@@ -306,19 +306,19 @@ where
                             //    new serial."
 
                             let mut pending_zones = self.pending_zones.write().await;
-                            if let Some(zone) = pending_zones.get(&key) {
+                            if let Some(zone) = pending_zones.get(&zone_id) {
                                 if let Ok(soa_refresh) = Self::track_zone_freshness(zone, time_tracking.clone()).await {
                                     // If the zone already has a SOA REFRESH
                                     // it is not empty and we can make it
                                     // active immediately.
                                     if soa_refresh.is_some() {
-                                        trace!("Removing zone '{}' from the pending set as it has a SOA REFRESH", key.0);
-                                        let zone = pending_zones.remove(&key).unwrap();
+                                        trace!("Removing zone '{}' from the pending set as it has a SOA REFRESH", zone_id.name);
+                                        let zone = pending_zones.remove(&zone_id).unwrap();
                                         self.insert_active_zone(zone).await.unwrap();
                                     }
                                     Self::refresh_zone_at(
                                         ZoneRefreshCause::SoaRefreshTimerAfterZoneAdded,
-                                        key,
+                                        zone_id,
                                         soa_refresh,
                                         &mut refresh_timers);
                                 }
@@ -329,14 +329,14 @@ where
                         // Event::ZoneRemoved(_key) => {
                         // }
 
-                        Event::ZoneRefreshRequested { key, at, cause } => {
-                            Self::refresh_zone_at(cause, key, at, &mut refresh_timers);
+                        Event::ZoneRefreshRequested { zone_id, at, cause } => {
+                            Self::refresh_zone_at(cause, zone_id, at, &mut refresh_timers);
                         }
 
-                        Event::ZoneStatusRequested { key, tx } => {
-                            let details = if self.pending_zones.read().await.contains_key(&key) {
+                        Event::ZoneStatusRequested { zone_id, tx } => {
+                            let details = if self.pending_zones.read().await.contains_key(&zone_id) {
                                 ZoneReportDetails::PendingSecondary
-                            } else if let Some(zone_refresh_info) = time_tracking.read().await.get(&key) {
+                            } else if let Some(zone_refresh_info) = time_tracking.read().await.get(&zone_id) {
                                 ZoneReportDetails::Secondary(*zone_refresh_info)
                             } else {
                                 ZoneReportDetails::Primary
@@ -345,7 +345,7 @@ where
                             let timers = refresh_timers
                                 .iter()
                                 .filter_map(|timer| {
-                                    if timer.refresh_instant.key == key {
+                                    if timer.refresh_instant.zone_id == zone_id {
                                         Some(timer.refresh_instant.clone())
                                     } else {
                                         None
@@ -354,18 +354,18 @@ where
                                 .collect();
 
                             let zones = self.zones();
-                            if let Some(zone) = self.pending_zones.read().await.get(&key).or_else(|| zones.get_zone(&key.0, key.1)) {
+                            if let Some(zone) = self.pending_zones.read().await.get(&zone_id).or_else(|| zones.get_zone(&zone_id.name, zone_id.class)) {
                                 let cat_zone: &MaintainedZone = zone.into();
 
                                 let zone_info = cat_zone.info().clone();
 
-                                let report = ZoneReport::new(key, details, timers, zone_info);
+                                let report = ZoneReport::new(zone_id, details, timers, zone_info);
 
                                 if let Err(_err) = tx.send(report) {
                                     // TODO
                                 }
                             } else {
-                                warn!("Zone '{}' not found for zone status request.", key.0);
+                                warn!("Zone '{}' not found for zone status request.", zone_id.name);
                             };
                         }
                     }
@@ -389,19 +389,18 @@ where
 
                     // Are we actively managing refreshing of this zone?
                     let mut tt = time_tracking.write().await;
-                    if let Some(zone_refresh_info) = tt.get_mut(&timer_info.key) {
+                    if let Some(zone_refresh_info) = tt.get_mut(&timer_info.zone_id) {
                         // Do we have the zone that is being updated?
                         let pending_zones = self.pending_zones.read().await;
                         let zones = self.zones();
-                        let key = timer_info.key;
+                        let zone_id = timer_info.zone_id.clone();
 
                         let (is_pending_zone, zone) = {
                             // Is the zone pending?
-                            if let Some(zone) = pending_zones.get(&key) {
+                            if let Some(zone) = pending_zones.get(&zone_id) {
                                 (true, zone)
                             } else {
-                                let (apex_name, class) = key.clone();
-                                let Some(zone) = zones.get_zone(&apex_name, class) else {
+                                let Some(zone) = zones.get_zone(&zone_id.name, zone_id.class) else {
                                     // The zone no longer exists, ignore.
                                     continue;
                                 };
@@ -429,10 +428,10 @@ where
                             {
                                 Ok(()) => {
                                     if is_pending_zone {
-                                        trace!("Removing zone '{}' from the pending set as it was successfully refreshed", key.0);
+                                        trace!("Removing zone '{}' from the pending set as it was successfully refreshed", zone_id.name);
                                         drop(pending_zones);
                                         let mut pending_zones = self.pending_zones.write().await;
-                                        let zone = pending_zones.remove(&key).unwrap();
+                                        let zone = pending_zones.remove(&zone_id).unwrap();
                                         self.insert_active_zone(zone).await.unwrap();
                                     }
                                 }
@@ -467,8 +466,7 @@ where
         for zone in zones {
             let is_secondary = zone.zone_type().is_secondary();
             let zone = Self::wrap_zone(zone, self.event_tx.clone());
-            let key = zone.key();
-            let zone_name = &key.0;
+            let zone_id = ZoneId::from(&zone);
 
             if is_secondary {
                 // Don't add secondary zones immediately as they may be empty
@@ -476,15 +474,24 @@ where
                 // determined if they are empty or that the initial refresh
                 // has been performed successfully. This prevents callers of
                 // get_zone() or find_zone() attempting to use an empty zone.
-                trace!("Adding new secondary zone '{zone_name}' to the pending set");
-                self.pending_zones.write().await.insert(zone.key(), zone);
+                trace!(
+                    "Adding new secondary zone '{}' to the pending set",
+                    zone.apex_name()
+                );
+                self.pending_zones
+                    .write()
+                    .await
+                    .insert(zone_id.clone(), zone);
             } else {
-                trace!("Adding new primary zone '{zone_name}' to the active set");
+                trace!(
+                    "Adding new primary zone '{}' to the active set",
+                    zone.apex_name()
+                );
                 Self::update_known_nameservers_for_zone(&zone).await;
                 new_zones.insert_zone(zone)?;
             }
 
-            self.event_tx.send(Event::ZoneAdded(key)).await.unwrap();
+            self.event_tx.send(Event::ZoneAdded(zone_id)).await.unwrap();
         }
 
         self.member_zones.store(Arc::new(new_zones));
@@ -530,7 +537,7 @@ where
         // running so cannot respond to the request.
         self.event_tx
             .send(Event::ZoneStatusRequested {
-                key: (apex_name.clone(), class),
+                zone_id: ZoneId::new(apex_name.clone(), class),
                 tx,
             })
             .await
@@ -547,7 +554,7 @@ where
         self.event_tx
             .send(Event::ZoneRefreshRequested {
                 cause: ZoneRefreshCause::ManualTrigger,
-                key: (apex_name.clone(), class),
+                zone_id: ZoneId::new(apex_name.clone(), class),
                 at: None,
             })
             .await
@@ -696,7 +703,7 @@ where
     // Returns an error if the zone is not a secondary.
     async fn track_zone_freshness(
         zone: &Zone,
-        time_tracking: Arc<RwLock<HashMap<ZoneTuple, ZoneRefreshState>>>,
+        time_tracking: Arc<RwLock<HashMap<ZoneId, ZoneRefreshState>>>,
     ) -> Result<Option<Ttl>, ()> {
         let cat_zone: &MaintainedZone = zone.into();
 
@@ -706,9 +713,8 @@ where
         }
 
         let apex_name = zone.apex_name().clone();
-        let class = zone.class();
-        let key = (apex_name.clone(), class);
-        match time_tracking.write().await.entry(key.clone()) {
+        let zone_id = ZoneId::from(zone);
+        match time_tracking.write().await.entry(zone_id) {
             Vacant(e) => {
                 let read = zone.read();
                 if let Ok(Some((soa, _))) = Self::read_soa(&read, apex_name).await {
@@ -730,7 +736,7 @@ where
 
     fn refresh_zone_at(
         cause: ZoneRefreshCause,
-        key: ZoneTuple,
+        key: ZoneId,
         at: Option<Ttl>,
         refresh_timers: &mut FuturesUnordered<ZoneRefreshTimer>,
     ) {
@@ -756,7 +762,7 @@ where
         // would fire earlier than the existing one, update the existing one.
         let timer_for_this_zone = refresh_timers
             .iter_mut()
-            .find(|timer| timer.refresh_instant.key == key);
+            .find(|timer| timer.refresh_instant.zone_id == key);
 
         if let Some(timer) = timer_for_this_zone {
             if timer
@@ -782,18 +788,19 @@ where
     #[allow(clippy::mutable_key_type)]
     async fn handle_notify(
         zones: Arc<ZoneTree>,
-        pending_zones: Arc<RwLock<HashMap<ZoneTuple, Zone>>>,
+        pending_zones: Arc<RwLock<HashMap<ZoneId, Zone>>>,
         msg: ZoneChangedMsg,
-        time_tracking: Arc<RwLock<HashMap<ZoneTuple, ZoneRefreshState>>>,
+        time_tracking: Arc<RwLock<HashMap<ZoneId, ZoneRefreshState>>>,
         event_tx: Sender<Event>,
         config: Arc<ArcSwap<Config<KS, CF>>>,
     ) {
         // Do we have the zone that is being updated?
         let readable_pending_zones = pending_zones.read().await;
         let mut is_pending = false;
+        let zone_id = ZoneId::new(msg.apex_name.clone(), msg.class);
         let zone = if let Some(zone) = zones.get_zone(&msg.apex_name, msg.class) {
             zone
-        } else if let Some(zone) = readable_pending_zones.get(&(msg.apex_name.clone(), msg.class)) {
+        } else if let Some(zone) = readable_pending_zones.get(&zone_id) {
             is_pending = true;
             zone
         } else {
@@ -892,15 +899,13 @@ where
         //    given QNAME, with QTYPE=SOA and QR=0, it should enter the
         //    state it would if the zone's refresh timer had expired."
 
-        let apex_name = zone.apex_name().clone();
-        let class = zone.class();
-        let key = (apex_name, class);
+        let zone_id = ZoneId::from(zone);
         let tt = &mut time_tracking.write().await;
-        let Some(zone_refresh_info) = tt.get_mut(&key) else {
+        let Some(zone_refresh_info) = tt.get_mut(&zone_id) else {
             // TODO
             warn!(
                 "NOTIFY for {}, from {source}: refused, missing internal state",
-                msg.apex_name
+                zone_id.name
             );
             return;
         };
@@ -914,7 +919,7 @@ where
         //
         // We only support the original SOA qtype for NOTIFY. The unique tuple
         // that identifies an in-progress NOTIFY is thus only <QNAME,QCLASS>.
-        // This is the same tuple as that of `ZoneTuple`, thus we only have one
+        // This is the same tuple as that of `ZoneId`, thus we only have one
         // zone for each unique tuple in our set of zones. Thus to avoid
         // processing a NOTIFY when one is already in progress for a unique
         // tuple we only have to look at the status of the zone for which the
@@ -952,7 +957,7 @@ where
 
         // Trigger migration of the zone from the pending set to the active set.
         if is_pending {
-            event_tx.send(Event::ZoneAdded(key)).await.unwrap();
+            event_tx.send(Event::ZoneAdded(zone_id)).await.unwrap();
         }
     }
 
@@ -981,9 +986,7 @@ where
             }
         }
 
-        let apex_name = zone.apex_name().clone();
-        let class = zone.class();
-        let key = (apex_name, class);
+        let zone_id = ZoneId::from(zone);
 
         info!("Refreshing zone '{}' due to {cause}", zone.apex_name());
 
@@ -1046,7 +1049,7 @@ where
                 Self::schedule_zone_refresh(
                     ZoneRefreshCause::SoaRetryTimer,
                     &event_tx,
-                    key,
+                    zone_id,
                     zone_refresh_info.retry(),
                 )
                 .await;
@@ -1070,7 +1073,7 @@ where
                 Self::schedule_zone_refresh(
                     ZoneRefreshCause::SoaRefreshTimer,
                     &event_tx,
-                    key,
+                    zone_id,
                     zone_refresh_info.refresh(),
                 )
                 .await;
@@ -1763,23 +1766,24 @@ where
         let nameservers = locked_nameservers.as_ref().unwrap();
         let source_addr = SocketAddr::new(*source, IANA_DNS_PORT_NUMBER);
 
-        if nameservers.primary.1.contains(&source_addr) {
+        if nameservers.primary.addrs.contains(&source_addr) {
             trace!(
                 "Source IP {source} matches primary nameserver '{}' ({source}) for zone '{}'.",
-                nameservers.primary.0,
+                nameservers.primary.name,
                 zone.apex_name()
             );
             return true;
         }
 
-        let res = nameservers
+        let find_res = nameservers
             .other
             .iter()
-            .find(|(_name, ips)| ips.contains(&source_addr));
+            .find(|ns| ns.addrs.contains(&source_addr));
 
-        if let Some((name, _)) = res {
+        if let Some(found_ns) = find_res {
             trace!(
-                "Source IP {source} matches nameserver '{name}' ({source}) for zone '{}'.",
+                "Source IP {source} matches nameserver '{}' ({source}) for zone '{}'.",
+                found_ns.name,
                 zone.apex_name()
             );
             true
@@ -1795,13 +1799,13 @@ where
     async fn schedule_zone_refresh(
         cause: ZoneRefreshCause,
         event_tx: &Sender<Event>,
-        key: ZoneTuple,
+        key: ZoneId,
         at: Ttl,
     ) {
         event_tx
             .send(Event::ZoneRefreshRequested {
                 cause,
-                key,
+                zone_id: key,
                 at: Some(at),
             })
             .await
@@ -1885,8 +1889,8 @@ where
             }
 
             if self.zones().get_zone(&apex_name, class).is_none() {
-                let key = (apex_name.clone(), class);
-                if !self.pending_zones.read().await.contains_key(&key) {
+                let zone_id = ZoneId::new(apex_name.clone(), class);
+                if !self.pending_zones.read().await.contains_key(&zone_id) {
                     return Err(NotifyError::NotAuthForZone);
                 }
             }
