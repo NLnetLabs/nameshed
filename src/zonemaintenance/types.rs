@@ -61,7 +61,6 @@ impl From<&Zone> for ZoneId {
     }
 }
 
-
 impl From<Zone> for ZoneId {
     fn from(zone: Zone) -> Self {
         ZoneId {
@@ -615,7 +614,7 @@ impl NameServerNameAddr {
     pub fn new<T: IntoIterator<Item = SocketAddr>>(name: StoredName, addrs: T) -> Self {
         Self {
             name,
-            addrs: HashSet::from_iter(addrs.into_iter()),
+            addrs: HashSet::from_iter(addrs),
         }
     }
 }
@@ -643,14 +642,17 @@ impl ZoneNameServers {
         self.other.push(NameServerNameAddr::new(name, unique_ips));
     }
 
+    #[allow(dead_code)]
     pub fn primary(&self) -> &NameServerNameAddr {
         &self.primary
     }
 
+    #[allow(dead_code)]
     pub fn others(&self) -> &[NameServerNameAddr] {
         &self.other
     }
 
+    #[allow(dead_code)]
     pub fn addrs(&self) -> impl Iterator<Item = &SocketAddr> {
         self.primary
             .addrs
@@ -802,11 +804,11 @@ impl ZoneReport {
 
 impl Display for ZoneReport {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "zone:   {}\n", self.zone_id.name)?;
+        writeln!(f, "zone:   {}", self.zone_id.name)?;
         write!(f, "{}", self.details)?;
         if let Ok(nameservers) = self.zone_info.nameservers.try_lock() {
             if let Some(nameservers) = nameservers.as_ref() {
-                f.write_str("        nameservers:\n")?;
+                writeln!(f, "        nameservers:")?;
 
                 let name = &nameservers.primary.name;
                 let ips = &nameservers.primary.addrs;
@@ -818,7 +820,7 @@ impl Display for ZoneReport {
                         write!(f, " {ip}")?;
                     }
                 }
-                f.write_str("\n")?;
+                writeln!(f)?;
 
                 for ns in &nameservers.other {
                     let name = &ns.name;
@@ -846,7 +848,7 @@ impl Display for ZoneReport {
                     .map(|d| format!("            wait {}s", d.as_secs()))
                     .unwrap_or_else(|| "            wait ?s".to_string());
 
-                write!(f, "{at} until {cause}\n")?;
+                writeln!(f, "{at} until {cause}")?;
             }
         }
         Ok(())
@@ -886,8 +888,8 @@ impl Display for ZoneReportDetails {
                     }
                     None => "unknown".to_string(),
                 };
-                write!(f, "        created at: {at}\n")?;
-                write!(f, "        state: {}\n", state.status)?;
+                writeln!(f, "        created at: {at}")?;
+                writeln!(f, "        state: {}", state.status)?;
 
                 if state.metrics.last_refreshed_at.is_some() {
                     let last_refreshed_at = state.metrics.last_refreshed_at.unwrap();
@@ -899,7 +901,7 @@ impl Display for ZoneReportDetails {
                         None => "unknown".to_string(),
                     };
 
-                    write!(f, "        serial: {serial} ({at})\n")?;
+                    writeln!(f, "        serial: {serial} ({at})")?;
                 }
 
                 let at = match state.metrics.last_refresh_phase_started_at {
@@ -911,7 +913,7 @@ impl Display for ZoneReportDetails {
                     },
                     None => "never".to_string(),
                 };
-                write!(f, "        last refresh phase started at: {at}\n")?;
+                writeln!(f, "        last refresh phase started at: {at}")?;
 
                 let at = match state.metrics.last_refresh_attempted_at {
                     Some(at) => match now.checked_duration_since(at) {
@@ -922,7 +924,7 @@ impl Display for ZoneReportDetails {
                     },
                     None => "never".to_string(),
                 };
-                write!(f, "        last refresh attempted at: {at}\n")?;
+                writeln!(f, "        last refresh attempted at: {at}")?;
 
                 let at = match state.metrics.last_soa_serial_check_succeeded_at {
                     Some(at) => match now.checked_duration_since(at) {
@@ -937,7 +939,7 @@ impl Display for ZoneReportDetails {
                     },
                     None => "never".to_string(),
                 };
-                write!(f, "        last successful soa check at: {at}\n")?;
+                writeln!(f, "        last successful soa check at: {at}")?;
 
                 let at = match state.metrics.last_soa_serial_check_succeeded_at {
                     Some(at) => match now.checked_duration_since(at) {
@@ -952,7 +954,7 @@ impl Display for ZoneReportDetails {
                     },
                     None => "never".to_string(),
                 };
-                write!(f, "        last soa check attempted at: {at}\n")?;
+                writeln!(f, "        last soa check attempted at: {at}")?;
 
                 Ok(())
             }

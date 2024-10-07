@@ -184,7 +184,7 @@ pub fn run(config: Config) -> Result<(), ExitError> {
                 }
 
                 if let Some(xfr_store_path) = &process.config().xfr_store_path {
-                    let archive_zone = ArchiveZone::new(zone, &xfr_store_path);
+                    let archive_zone = ArchiveZone::new(zone, xfr_store_path);
                     zone = Zone::new(archive_zone);
                 }
 
