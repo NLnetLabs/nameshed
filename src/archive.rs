@@ -53,7 +53,7 @@ pub struct ArchiveZone {
 
 impl ArchiveZone {
     pub fn new(zone: Zone, write_path: &Path) -> Self {
-        let write_path = write_path.join(format!("{}.zone", zone.apex_name().to_string()));
+        let write_path = write_path.join(format!("{}.zone", zone.apex_name()));
         Self {
             store: zone.into_inner(),
             write_path,
