@@ -4,25 +4,25 @@
 //! configuration used. It can be loaded both from a TOML
 //! formatted config file and command line options.
 
-use std::{env, fmt, fs};
+use crate::error::Failed;
+use clap::{App, Arg, ArgMatches};
+use dirs::home_dir;
+use log::{error, LevelFilter};
+use std::collections::HashMap;
 use std::io::Read;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use clap::{App, Arg, ArgMatches};
-use dirs::home_dir;
-use log::{LevelFilter, error};
-#[cfg(unix)] use syslog::Facility;
-use crate::error::Failed;
+use std::{env, fmt, fs};
+#[cfg(unix)]
+use syslog::Facility;
+#[cfg(feature = "tls")]
+use tokio_rustls::rustls::ServerConfig;
 
+//------------ Config --------------------------------------------------------
 
-//------------ Config --------------------------------------------------------  
-
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct Config {
-    /// Database directory.
-    pub data_dir: PathBuf,
-
     /// Addresses and protocols to listen on.
     pub listen: Vec<ListenAddr>,
 
@@ -32,8 +32,20 @@ pub struct Config {
     /// The target to log to.
     pub log_target: LogTarget,
 
-    /// Should a new database be initialized?
-    pub initialize: bool,
+    /// The zone names and corresponding zone file paths to load.
+    pub zones: HashMap<String, String>,
+
+    /// XFR in per zone: Allow NOTIFY from, and when with a port also request XFR from.
+    pub xfr_in: HashMap<String, String>,
+
+    /// XFR out per zone: Allow XFR to, and when with a port also send NOTIFY to.
+    pub xfr_out: HashMap<String, String>,
+
+    /// TSIG keys.
+    pub tsig_keys: HashMap<String, String>,
+
+    /// Directory to write XFR updated zones to.
+    pub xfr_store_path: Option<PathBuf>,
 }
 
 impl Config {
@@ -42,77 +54,102 @@ impl Config {
     /// The function follows clap’s builder pattern: it takes an app,
     /// adds a bunch of arguments to it and returns it at the end.
     pub fn config_args<'a: 'b, 'b>(app: App<'a, 'b>) -> App<'a, 'b> {
-        app
-        .arg(Arg::with_name("config")
-             .short("c")
-             .long("config")
-             .takes_value(true)
-             .value_name("PATH")
-             .help("Read base configuration from this file")
+        app.arg(
+            Arg::with_name("config")
+                .short("c")
+                .long("config")
+                .takes_value(true)
+                .value_name("PATH")
+                .help("Read base configuration from this file"),
         )
-        .arg(Arg::with_name("data-dir")
-            .long("data-dir")
-            .short("d")
-            .value_name("PATH")
-            .help("Path to the directory with the database")
-            .takes_value(true)
+        .arg(
+            Arg::with_name("plain-listen")
+                .long("listen")
+                .display_order(1000)
+                .value_name("ADDR:PORT")
+                .help("Listen on address/port for both plain UDP and TCP")
+                .takes_value(true)
+                .multiple(true)
+                .number_of_values(1),
         )
-        .arg(Arg::with_name("plain-listen")
-            .long("listen")
-            .value_name("ADDR:PORT")
-            .help("Listen on address/port for both plain UDP and TCP")
-            .takes_value(true)
-            .multiple(true)
-            .number_of_values(1)
+        .arg(
+            Arg::with_name("udp-listen")
+                .long("udp")
+                .display_order(1001)
+                .value_name("ADDR:PORT")
+                .help("Listen on address/port for plain UDP")
+                .takes_value(true)
+                .multiple(true)
+                .number_of_values(1),
         )
-        .arg(Arg::with_name("udp-listen")
-            .long("udp")
-            .value_name("ADDR:PORT")
-            .help("Listen on address/port for plain UDP")
-            .takes_value(true)
-            .multiple(true)
-            .number_of_values(1)
+        .arg(
+            Arg::with_name("tcp-listen")
+                .long("tcp")
+                .display_order(1002)
+                .value_name("ADDR:PORT")
+                .help("Listen on address/port for plain TCP")
+                .takes_value(true)
+                .multiple(true)
+                .number_of_values(1),
         )
-        .arg(Arg::with_name("tcp-listen")
-            .long("tcp")
-            .value_name("ADDR:PORT")
-            .help("Listen on address/port for plain TCP")
-            .takes_value(true)
-            .multiple(true)
-            .number_of_values(1)
+        .arg(
+            Arg::with_name("tls-listen")
+                .long("tls")
+                .display_order(1003)
+                .value_name("ADDR:PORT,CERT,KEY")
+                .help("CERT and KEY must be paths to PEM encoded certificate and key files")
+                .takes_value(true)
+                .multiple(true)
+                .number_of_values(1),
         )
-        .arg(Arg::with_name("verbose")
-             .short("v")
-             .long("verbose")
-             .multiple(true)
-             .help("Log more information, twice for even more")
+        .arg(
+            Arg::with_name("tls-key")
+                .long("key")
+                .display_order(1004)
+                .help("Path to a PEM encoded key file to use for TLS encrypted TCP")
+                .takes_value(true)
+                .multiple(true)
+                .number_of_values(1)
+                .requires("listen-tcp"),
         )
-        .arg(Arg::with_name("quiet")
-             .short("q")
-             .long("quiet")
-             .multiple(true)
-             .conflicts_with("verbose")
-             .help("Log less information, twice for no information")
+        .arg(
+            Arg::with_name("verbose")
+                .short("v")
+                .long("verbose")
+                .multiple(true)
+                .help("Log more information, twice for even more"),
         )
-        .arg(Arg::with_name("syslog")
-             .long("syslog")
-             .help("Log to syslog")
+        .arg(
+            Arg::with_name("quiet")
+                .short("q")
+                .long("quiet")
+                .multiple(true)
+                .conflicts_with("verbose")
+                .help("Log less information, twice for no information"),
         )
-        .arg(Arg::with_name("syslog-facility")
-             .long("syslog-facility")
-             .takes_value(true)
-             .default_value("daemon")
-             .help("Facility to use for syslog logging")
+        .arg(
+            Arg::with_name("syslog")
+                .long("syslog")
+                .help("Log to syslog"),
         )
-        .arg(Arg::with_name("logfile")
-             .long("logfile")
-             .takes_value(true)
-             .value_name("PATH")
-             .help("Log to this file")
+        .arg(
+            Arg::with_name("syslog-facility")
+                .long("syslog-facility")
+                .takes_value(true)
+                .default_value("daemon")
+                .help("Facility to use for syslog logging"),
         )
-        .arg(Arg::with_name("init")
-            .long("init")
-            .help("Initialize new database")
+        .arg(
+            Arg::with_name("logfile")
+                .long("logfile")
+                .takes_value(true)
+                .value_name("PATH")
+                .help("Log to this file"),
+        )
+        .arg(
+            Arg::with_name("init")
+                .long("init")
+                .help("Initialize new database"),
         )
     }
 
@@ -132,13 +169,11 @@ impl Config {
     /// arguments via [`apply_server_arg_matches`].
     ///
     /// [`apply_server_arg_matches`]: #method.apply_server_arg_matches
-    pub fn from_arg_matches(
-        matches: &ArgMatches,
-        cur_dir: &Path,
-    ) -> Result<Self, Failed> {
+    pub fn from_arg_matches(matches: &ArgMatches, cur_dir: &Path) -> Result<Self, Failed> {
         let mut res = Self::create_base_config(
             Self::path_value_of(matches, "config", cur_dir)
-                .as_ref().map(AsRef::as_ref)
+                .as_ref()
+                .map(AsRef::as_ref),
         )?;
 
         res.apply_arg_matches(matches, cur_dir)?;
@@ -147,31 +182,26 @@ impl Config {
     }
 
     /// Creates the correct base configuration for the given config file path.
-    /// 
+    ///
     /// If no config path is given, tries to read the default config in
     /// `$HOME/.nameshed.conf`. If that doesn’t exist, creates a default
     /// config.
     fn create_base_config(path: Option<&Path>) -> Result<Self, Failed> {
         let file = match path {
-            Some(path) => {
-                match ConfigFile::read(path)? {
+            Some(path) => match ConfigFile::read(path)? {
+                Some(file) => file,
+                None => {
+                    error!("Cannot read config file {}", path.display());
+                    return Err(Failed);
+                }
+            },
+            None => match home_dir() {
+                Some(dir) => match ConfigFile::read(&dir.join(".nameshed.conf"))? {
                     Some(file) => file,
-                    None => {
-                        error!("Cannot read config file {}", path.display());
-                        return Err(Failed);
-                    }
-                }
-            }
-            None => {
-                match home_dir() {
-                    Some(dir) => match ConfigFile::read(
-                                            &dir.join(".nameshed.conf"))? {
-                        Some(file) => file,
-                        None => return Ok(Self::default()),
-                    }
-                    None => return Ok(Self::default())
-                }
-            }
+                    None => return Ok(Self::default()),
+                },
+                None => return Ok(Self::default()),
+            },
         };
         Self::from_config_file(file)
     }
@@ -179,16 +209,19 @@ impl Config {
     /// Creates a base config from a config file.
     fn from_config_file(mut file: ConfigFile) -> Result<Self, Failed> {
         let log_target = Self::log_target_from_config_file(&mut file)?;
+        eprintln!("Constructing config");
         let res = Config {
-            data_dir: file.take_mandatory_path("data-dir")?,
-            listen: {
-                file.take_from_str_array("listen")?.unwrap_or_default()
-            },
+            listen: { file.take_from_str_array("listen")?.unwrap_or_default() },
             log_level: {
-                file.take_from_str("log-level")?.unwrap_or(LevelFilter::Warn)
+                file.take_from_str("log-level")?
+                    .unwrap_or(LevelFilter::Warn)
             },
             log_target,
-            initialize: false,
+            zones: { file.take_string_map("zones")?.unwrap_or_default() },
+            xfr_in: { file.take_string_map("xfr_in")?.unwrap_or_default() },
+            xfr_out: { file.take_string_map("xfr_out")?.unwrap_or_default() },
+            tsig_keys: { file.take_string_map("tsig_keys")?.unwrap_or_default() },
+            xfr_store_path: { file.take_path("xfr_store_path")? },
         };
         file.check_exhausted()?;
         Ok(res)
@@ -198,12 +231,9 @@ impl Config {
     ///
     /// This is the Unix version that also deals with syslog.
     #[cfg(unix)]
-    fn log_target_from_config_file(
-        file: &mut ConfigFile
-    ) -> Result<LogTarget, Failed> {
+    fn log_target_from_config_file(file: &mut ConfigFile) -> Result<LogTarget, Failed> {
         let facility = file.take_string("syslog-facility")?;
-        let facility = facility.as_ref().map(AsRef::as_ref)
-                               .unwrap_or("daemon");
+        let facility = facility.as_ref().map(AsRef::as_ref).unwrap_or("daemon");
         let facility = match Facility::from_str(facility) {
             Ok(value) => value,
             Err(_) => {
@@ -219,26 +249,24 @@ impl Config {
         match log_target.as_ref().map(AsRef::as_ref) {
             Some("default") | None => Ok(LogTarget::Default(facility)),
             Some("syslog") => Ok(LogTarget::Syslog(facility)),
-            Some("stderr") =>  Ok(LogTarget::Stderr),
-            Some("file") => {
-                match log_file {
-                    Some(file) => Ok(LogTarget::File(file)),
-                    None => {
-                        error!(
-                            "Failed in config file {}: \
+            Some("stderr") => Ok(LogTarget::Stderr),
+            Some("file") => match log_file {
+                Some(file) => Ok(LogTarget::File(file)),
+                None => {
+                    error!(
+                        "Failed in config file {}: \
                              log target \"file\" requires 'log-file' value.",
-                            file.path.display()
-                        );
-                        Err(Failed)
-                    }
+                        file.path.display()
+                    );
+                    Err(Failed)
                 }
-            }
+            },
             Some(value) => {
                 error!(
                     "Failed in config file {}: \
                      invalid log target '{}'",
-                     file.path.display(),
-                     value
+                    file.path.display(),
+                    value
                 );
                 Err(Failed)
             }
@@ -249,31 +277,28 @@ impl Config {
     ///
     /// This is the non-Unix version that only logs to stderr or a file.
     #[cfg(not(unix))]
-    fn log_target_from_config_file(
-        file: &mut ConfigFile
-    ) -> Result<LogTarget, Failed> {
+    fn log_target_from_config_file(file: &mut ConfigFile) -> Result<LogTarget, Failed> {
         let log_target = file.take_string("log")?;
         let log_file = file.take_path("log-file")?;
         match log_target.as_ref().map(AsRef::as_ref) {
             Some("default") | Some("stderr") | None => Ok(LogTarget::Stderr),
-            Some("file") => {
-                match log_file {
-                    Some(file) => Ok(LogTarget::File(file)),
-                    None => {
-                        error!(
-                            "Failed in config file {}: \
+            Some("file") => match log_file {
+                Some(file) => Ok(LogTarget::File(file)),
+                None => {
+                    error!(
+                        "Failed in config file {}: \
                              log target \"file\" requires 'log-file' value.",
-                            file.path.display()
-                        );
-                        Err(Failed)
-                    }
+                        file.path.display()
+                    );
+                    Err(Failed)
                 }
-            }
+            },
             Some(value) => {
                 error!(
                     "Failed in config file {}: \
                      invalid log target '{}'",
-                    file.path.display(), value
+                    file.path.display(),
+                    value
                 );
                 Err(Failed)
             }
@@ -285,64 +310,82 @@ impl Config {
     /// The path arguments in `matches` will be interpreted relative to
     /// `cur_dir`.
     #[allow(clippy::cognitive_complexity)]
-    fn apply_arg_matches(
-        &mut self,
-        matches: &ArgMatches,
-        cur_dir: &Path,
-    ) -> Result<(), Failed> {
-        // data_dir
-        if let Some(dir) = matches.value_of("data-dir") {
-            self.data_dir = cur_dir.join(dir)
-        }
-        if self.data_dir == Path::new("") {
-            error!(
-                "Couldn’t determine default repository directory: \
-                 no home directory.\n\
-                 Please specify the data directory with the -d option."
-            );
-            return Err(Failed)
-        }
-
-        if matches.is_present("init") {
-            self.initialize = true;
-        }
-
+    fn apply_arg_matches(&mut self, matches: &ArgMatches, cur_dir: &Path) -> Result<(), Failed> {
         // udp_listen
-        if let Some(list) = matches.values_of("udp-listen") {
-            for value in list {
-                match SocketAddr::from_str(value) {
-                    Ok(some) => self.listen.push(ListenAddr::Udp(some)),
-                    Err(_) => {
-                        error!("Invalid value for udp: {}", value);
-                        return Err(Failed)
-                    }
+        let list = matches.values_of("udp-listen").unwrap_or_default();
+        let list = list.chain(matches.values_of("plain-listen").unwrap_or_default());
+        for value in list {
+            match SocketAddr::from_str(value) {
+                Ok(some) => self.listen.push(ListenAddr::Udp(some)),
+                Err(_) => {
+                    error!("Invalid value for udp: {}", value);
+                    return Err(Failed);
                 }
             }
         }
 
         // tcp_listen
-        if let Some(list) = matches.values_of("tcp-listen") {
+        let list = matches.values_of("tcp-listen").unwrap_or_default();
+        let list = list.chain(matches.values_of("plain-listen").unwrap_or_default());
+        for value in list {
+            match SocketAddr::from_str(value) {
+                Ok(some) => self.listen.push(ListenAddr::Tcp(some)),
+                Err(_) => {
+                    error!("Invalid value for tcp: {}", value);
+                    return Err(Failed);
+                }
+            }
+        }
+
+        // tls_listen
+        #[cfg(feature = "tls")]
+        {
+            let list = matches.values_of("tls-listen").unwrap_or_default();
             for value in list {
-                match SocketAddr::from_str(value) {
-                    Ok(some) => self.listen.push(ListenAddr::Tcp(some)),
+                let parts = value.splitn(3, ',').collect::<Vec<_>>();
+                if parts.len() < 3 {
+                    error!("Invalid value for tls: insufficient comma-separated values");
+                    return Err(Failed);
+                }
+                let (addr, cert_path, key_path) = (parts[0], parts[1], parts[2]);
+                match SocketAddr::from_str(addr) {
+                    Ok(addr) => {
+                        let cert = tls::load_certs(Path::new(cert_path)).map_err(|err| {
+                            error!("Invalid CERT for tls: {}", err);
+                            Failed
+                        })?;
+                        let mut key = tls::load_keys(Path::new(key_path)).map_err(|err| {
+                            error!("Invalid KEY for tls: {}", err);
+                            Failed
+                        })?;
+                        let key = key.remove(0);
+                        let config = tokio_rustls::rustls::ServerConfig::builder()
+                            .with_safe_defaults()
+                            .with_no_client_auth()
+                            .with_single_cert(cert, key)
+                            .unwrap();
+                        self.listen.push(ListenAddr::Tls(addr, config))
+                    }
                     Err(_) => {
-                        error!("Invalid value for tcp: {}", value);
-                        return Err(Failed)
+                        error!("Invalid ADDR:PORT for tls: {}", value);
+                        return Err(Failed);
                     }
                 }
             }
         }
 
         // log_level
-        match (matches.occurrences_of("verbose"),
-                                            matches.occurrences_of("quiet")) {
+        match (
+            matches.occurrences_of("verbose"),
+            matches.occurrences_of("quiet"),
+        ) {
             // This assumes that -v and -q are conflicting.
-            (0, 0) => { }
+            (0, 0) => {}
             (1, 0) => self.log_level = LevelFilter::Info,
             (_, 0) => self.log_level = LevelFilter::Debug,
             (0, 1) => self.log_level = LevelFilter::Error,
             (0, _) => self.log_level = LevelFilter::Off,
-            _ => { }
+            _ => {}
         }
 
         // log_target
@@ -356,28 +399,21 @@ impl Config {
     /// This is the Unix version that also considers syslog as a valid
     /// target.
     #[cfg(unix)]
-    fn apply_log_matches(
-        &mut self,
-        matches: &ArgMatches,
-        cur_dir: &Path,
-    ) -> Result<(), Failed> {
+    fn apply_log_matches(&mut self, matches: &ArgMatches, cur_dir: &Path) -> Result<(), Failed> {
         if matches.is_present("syslog") {
             self.log_target = LogTarget::Syslog(
-                match Facility::from_str(
-                               matches.value_of("syslog-facility").unwrap()) {
+                match Facility::from_str(matches.value_of("syslog-facility").unwrap()) {
                     Ok(value) => value,
                     Err(_) => {
                         error!("Invalid value for syslog-facility.");
                         return Err(Failed);
                     }
-                }
+                },
             )
-        }
-        else if let Some(file) = matches.value_of("logfile") {
+        } else if let Some(file) = matches.value_of("logfile") {
             if file == "-" {
                 self.log_target = LogTarget::Stderr
-            }
-            else {
+            } else {
                 self.log_target = LogTarget::File(cur_dir.join(file))
             }
         }
@@ -389,16 +425,11 @@ impl Config {
     /// This is the non-Unix version that does not use syslog.
     #[cfg(not(unix))]
     #[allow(clippy::unnecessary_wraps)]
-    fn apply_log_matches(
-        &mut self,
-        matches: &ArgMatches,
-        cur_dir: &Path,
-    ) -> Result<(), Failed> {
+    fn apply_log_matches(&mut self, matches: &ArgMatches, cur_dir: &Path) -> Result<(), Failed> {
         if let Some(file) = matches.value_of("logfile") {
             if file == "-" {
                 self.log_target = LogTarget::Stderr
-            }
-            else {
+            } else {
                 self.log_target = LogTarget::File(cur_dir.join(file))
             }
         }
@@ -413,30 +444,27 @@ impl Config {
     /// Returns a path value in arg matches.
     ///
     /// This expands a relative path based on the given directory.
-    fn path_value_of(
-        matches: &ArgMatches,
-        key: &str,
-        dir: &Path
-    ) -> Option<PathBuf> {
+    fn path_value_of(matches: &ArgMatches, key: &str, dir: &Path) -> Option<PathBuf> {
         matches.value_of(key).map(|path| dir.join(path))
     }
 }
-
 
 //--- Default
 
 impl Default for Config {
     fn default() -> Self {
         Config {
-            data_dir: PathBuf::from(""),
             listen: Vec::new(),
             log_level: LevelFilter::Warn,
             log_target: LogTarget::default(),
-            initialize: false,
+            zones: HashMap::new(),
+            xfr_in: HashMap::new(),
+            xfr_out: HashMap::new(),
+            tsig_keys: HashMap::new(),
+            xfr_store_path: None,
         }
     }
 }
-
 
 //--- Display
 
@@ -446,17 +474,31 @@ impl fmt::Display for Config {
     }
 }
 
-
 //------------ ListenAddr ----------------------------------------------------
 
 /// An address and the protocol to serve queries on.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum ListenAddr {
     /// Plain, unencrypted UDP.
     Udp(SocketAddr),
 
     /// Plain, unencrypted TCP.
     Tcp(SocketAddr),
+
+    /// Encrypted TCP.
+    #[cfg(feature = "tls")]
+    Tls(SocketAddr, ServerConfig),
+}
+
+impl std::fmt::Display for ListenAddr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ListenAddr::Udp(addr) => write!(f, "Udp({})", addr),
+            ListenAddr::Tcp(addr) => write!(f, "Tcp({})", addr),
+            #[cfg(feature = "tls")]
+            ListenAddr::Tls(addr, _) => write!(f, "Tls({})", addr),
+        }
+    }
 }
 
 impl FromStr for ListenAddr {
@@ -465,26 +507,19 @@ impl FromStr for ListenAddr {
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         let (protocol, addr) = match value.split_once(':') {
             Some(stuff) => stuff,
-            None => {
-                return Err("expected string '<protocol>:<addr>'".into())
-            }
+            None => return Err("expected string '<protocol>:<addr>'".into()),
         };
         let addr = match SocketAddr::from_str(addr) {
             Ok(addr) => addr,
-            Err(_) => {
-                return Err(format!("invalid listen address '{}'", addr))
-            }
+            Err(_) => return Err(format!("invalid listen address '{}'", addr)),
         };
         match protocol {
             "udp" => Ok(ListenAddr::Udp(addr)),
             "tcp" => Ok(ListenAddr::Tcp(addr)),
-            other => {
-                Err(format!("unknown protocol '{}'", other))
-            }
+            other => Err(format!("unknown protocol '{}'", other)),
         }
     }
 }
-
 
 //------------ LogTarget -----------------------------------------------------
 
@@ -509,9 +544,8 @@ pub enum LogTarget {
     /// A file.
     ///
     /// The argument is the file name.
-    File(PathBuf)
+    File(PathBuf),
 }
-
 
 //--- Default
 
@@ -529,31 +563,23 @@ impl Default for LogTarget {
     }
 }
 
-
 //--- PartialEq and Eq
 
 impl PartialEq for LogTarget {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             #[cfg(unix)]
-            (LogTarget::Default(s), LogTarget::Default(o)) => {
-                (*s as usize) == (*o as usize)
-            }
+            (LogTarget::Default(s), LogTarget::Default(o)) => (*s as usize) == (*o as usize),
             #[cfg(unix)]
-            (LogTarget::Syslog(s), LogTarget::Syslog(o)) => {
-                (*s as usize) == (*o as usize)
-            }
+            (LogTarget::Syslog(s), LogTarget::Syslog(o)) => (*s as usize) == (*o as usize),
             (LogTarget::Stderr, LogTarget::Stderr) => true,
-            (LogTarget::File(s), LogTarget::File(o)) => {
-                s == o
-            }
-            _ => false
+            (LogTarget::File(s), LogTarget::File(o)) => s == o,
+            _ => false,
         }
     }
 }
 
-impl Eq for LogTarget { }
-
+impl Eq for LogTarget {}
 
 //------------ ConfigFile ----------------------------------------------------
 
@@ -584,14 +610,11 @@ impl ConfigFile {
     fn read(path: &Path) -> Result<Option<Self>, Failed> {
         let mut file = match fs::File::open(path) {
             Ok(file) => file,
-            Err(_) => return Ok(None)
+            Err(_) => return Ok(None),
         };
         let mut config = String::new();
         if let Err(err) = file.read_to_string(&mut config) {
-            error!(
-                "Failed to read config file {}: {}",
-                path.display(), err
-            );
+            error!("Failed to read config file {}: {}", path.display(), err);
             return Err(Failed);
         }
         Self::parse(&config, path).map(Some)
@@ -609,10 +632,7 @@ impl ConfigFile {
                 return Err(Failed);
             }
             Err(err) => {
-                error!(
-                    "Failed to parse config file {}: {}",
-                    path.display(), err
-                );
+                error!("Failed to parse config file {}: {}", path.display(), err);
                 return Err(Failed);
             }
         };
@@ -620,21 +640,20 @@ impl ConfigFile {
             path.join(match env::current_dir() {
                 Ok(dir) => dir,
                 Err(err) => {
-                    error!(
-                        "Fatal: Can't determine current directory: {}.",
-                        err
-                    );
+                    error!("Fatal: Can't determine current directory: {}.", err);
                     return Err(Failed);
                 }
-            }).parent().unwrap().into() // a file always has a parent
-        }
-        else {
+            })
+            .parent()
+            .unwrap()
+            .into() // a file always has a parent
+        } else {
             path.parent().unwrap().into()
         };
         Ok(ConfigFile {
             content,
             path: path.into(),
-            dir
+            dir,
         })
     }
 
@@ -784,17 +803,17 @@ impl ConfigFile {
             Some(value) => {
                 if let toml::Value::String(res) = value {
                     Ok(Some(res))
-                }
-                else {
+                } else {
                     error!(
                         "Failed in config file {}: \
                          '{}' expected to be a string.",
-                        self.path.display(), key
+                        self.path.display(),
+                        key
                     );
                     Err(Failed)
                 }
             }
-            None => Ok(None)
+            None => Ok(None),
         }
     }
 
@@ -806,22 +825,25 @@ impl ConfigFile {
     /// Returns `Ok(None)` if the key doesn’t exist. Returns an error if the
     /// key exists but the value isn’t a string or conversion fails.
     fn take_from_str<T>(&mut self, key: &str) -> Result<Option<T>, Failed>
-    where T: FromStr, T::Err: fmt::Display {
+    where
+        T: FromStr,
+        T::Err: fmt::Display,
+    {
         match self.take_string(key)? {
-            Some(value) => {
-                match T::from_str(&value) {
-                    Ok(some) => Ok(Some(some)),
-                    Err(err) => {
-                        error!(
-                            "Failed in config file {}: \
+            Some(value) => match T::from_str(&value) {
+                Ok(some) => Ok(Some(some)),
+                Err(err) => {
+                    error!(
+                        "Failed in config file {}: \
                              illegal value in '{}': {}.",
-                            self.path.display(), key, err
-                        );
-                        Err(Failed)
-                    }
+                        self.path.display(),
+                        key,
+                        err
+                    );
+                    Err(Failed)
                 }
-            }
-            None => Ok(None)
+            },
+            None => Ok(None),
         }
     }
 
@@ -835,9 +857,11 @@ impl ConfigFile {
     /// Returns `Ok(None)` if the key does not exist. Returns an error if the
     /// key exists but the value isn’t a string.
     fn take_path(&mut self, key: &str) -> Result<Option<PathBuf>, Failed> {
-        self.take_string(key).map(|opt| opt.map(|path| self.dir.join(path)))
+        self.take_string(key)
+            .map(|opt| opt.map(|path| self.dir.join(path)))
     }
 
+    /*
     /// Takes a mandatory path value from the config file.
     ///
     /// This is the pretty much the same as [`take_path`] but also returns
@@ -850,14 +874,14 @@ impl ConfigFile {
             None => {
                 error!(
                     "Failed in config file {}: missing required '{}'.",
-                    self.path.display(), key
+                    self.path.display(),
+                    key
                 );
                 Err(Failed)
             }
         }
     }
 
-    /*
     /// Takes an array of strings from the config file.
     ///
     /// The value is taken from the entry with the given `key` and, if
@@ -909,11 +933,11 @@ impl ConfigFile {
     /// If the key is not present, returns `Ok(None)`. If the entry is present
     /// but not an array of strings or if converting any of the strings fails,
     /// returns an error.
-    fn take_from_str_array<T>(
-        &mut self,
-        key: &str
-    ) -> Result<Option<Vec<T>>, Failed>
-    where T: FromStr, T::Err: fmt::Display {
+    fn take_from_str_array<T>(&mut self, key: &str) -> Result<Option<Vec<T>>, Failed>
+    where
+        T: FromStr,
+        T::Err: fmt::Display,
+    {
         match self.content.remove(key) {
             Some(toml::Value::Array(vec)) => {
                 let mut res = Vec::new();
@@ -925,20 +949,21 @@ impl ConfigFile {
                                 error!(
                                     "Failed in config file {}: \
                                      Invalid value in '{}': {}",
-                                    self.path.display(), key, err
+                                    self.path.display(),
+                                    key,
+                                    err
                                 );
-                                return Err(Failed)
+                                return Err(Failed);
                             }
                         }
-                    }
-                    else {
+                    } else {
                         error!(
                             "Failed in config file {}: \
                             '{}' expected to be a array of strings.",
                             self.path.display(),
                             key
                         );
-                        return Err(Failed)
+                        return Err(Failed);
                     }
                 }
                 Ok(Some(res))
@@ -947,11 +972,12 @@ impl ConfigFile {
                 error!(
                     "Failed in config file {}: \
                      '{}' expected to be a array of strings.",
-                    self.path.display(), key
+                    self.path.display(),
+                    key
                 );
                 Err(Failed)
             }
-            None => Ok(None)
+            None => Ok(None),
         }
     }
 
@@ -1001,13 +1027,10 @@ impl ConfigFile {
             }
             None => Ok(None)
         }
-    }
+    }*/
 
     /// Takes a string-to-string hashmap from the config file.
-    fn take_string_map(
-        &mut self,
-        key: &str
-    ) -> Result<Option<HashMap<String, String>>, Failed> {
+    fn take_string_map(&mut self, key: &str) -> Result<Option<HashMap<String, String>>, Failed> {
         match self.content.remove(key) {
             Some(toml::Value::Array(vec)) => {
                 let mut res = HashMap::new();
@@ -1073,14 +1096,14 @@ impl ConfigFile {
                 error!(
                     "Failed in config file {}: \
                      '{}' expected to be a array of string pairs.",
-                    self.path.display(), key
+                    self.path.display(),
+                    key
                 );
                 Err(Failed)
             }
-            None => Ok(None)
+            None => Ok(None),
         }
     }
-    */
 
     /// Checks whether the config file is now empty.
     ///
@@ -1095,18 +1118,40 @@ impl ConfigFile {
             for key in self.content.keys() {
                 if !first {
                     print!(",");
-                }
-                else {
+                } else {
                     first = false
                 }
                 print!("{}", key);
             }
             error!(".");
             Err(Failed)
-        }
-        else {
+        } else {
             Ok(())
         }
     }
 }
 
+//------------ tls -----------------------------------------------------------
+
+#[cfg(feature = "tls")]
+mod tls {
+    use rustls_pemfile::{certs, rsa_private_keys};
+    use std::{
+        fs::File,
+        io::{self, BufReader},
+        path::Path,
+    };
+    use tokio_rustls::rustls::{Certificate, PrivateKey};
+
+    pub fn load_certs(path: &Path) -> io::Result<Vec<Certificate>> {
+        certs(&mut BufReader::new(File::open(path)?))
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid cert"))
+            .map(|mut certs| certs.drain(..).map(Certificate).collect())
+    }
+
+    pub fn load_keys(path: &Path) -> io::Result<Vec<PrivateKey>> {
+        rsa_private_keys(&mut BufReader::new(File::open(path)?))
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid key"))
+            .map(|mut keys| keys.drain(..).map(PrivateKey).collect())
+    }
+}

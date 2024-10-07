@@ -3,27 +3,33 @@ name = "nameshed"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
-bincode     = "1.3.3"
-bytes	    = "1.0"
-chrono      = "0.4.11"
-clap        = { version = "2.33.0", features = [ "wrap_help" ] }
-dirs        = "4.0"
-domain      = { git = "https://github.com/NLnetLabs/domain.git", branch = "flatten-trait", features = ["zonefile", "serde", "ring", "sign"] }
-fern        = "0.6.0"
-futures     = "0.3.17"
-log         = "0.4"
-log-reroute = "0.1.5"
-octseq      = { git = "https://github.com/NLnetLabs/octseq.git" }
-parking_lot = "0.11.2"
-tempfile    = "3.3.0"
-tokio       = { version = "1.12", features = [ "io-util", "net", "rt", "rt-multi-thread", "sync" ] }
-serde       = { version = "1.0", features = ["derive"] }
-toml        = "0.5"
+arc-swap       = "1.7.0"
+bytes	       = "1.0"
+chrono         = "0.4.11"
+clap           = { version = "2.33.0", features = [ "wrap_help" ] }
+dirs           = "4.0"
+domain         = { git = "https://github.com/NLnetLabs/domain.git", features = ["zonefile", "serde", "ring", "sign", "net", "tsig", "unstable-client-transport", "unstable-server-transport", "unstable-zonetree", "unstable-xfr", "tokio-stream"] }
+fern           = "0.6.0"
+futures        = "0.3.17"
+futures-util   = "0.3"
+log            = "0.4"
+log-reroute    = "0.1.5"
+octseq         = { version = "0.5.2-dev", git = "https://github.com/NLnetLabs/octseq.git", rev ="3f7797f4274af0a52e66105250ee1186ff2ab6ac", default-features = false }
+parking_lot    = "0.11.2"
+tokio          = { version = "1.21", features = [ "io-util", "net", "rt", "rt-multi-thread", "sync" ] }
+serde          = { version = "1.0", features = ["derive"] }
+toml           = "0.5"
+tokio-rustls   = { version = "0.23.4", optional = true }
+tokio-stream   = { version = "0.1.1" }
+rustls-pemfile = { version = "1.0", optional = true }
+tracing        = { version = "0.1.40" }
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 
 [target.'cfg(unix)'.dependencies]
 nix         = "0.22.0"
 syslog      = "5.0.0"
 
+[features]
+default = []
+tls = ["tokio-rustls", "rustls-pemfile"]

@@ -1,10 +1,10 @@
 //! The daemon binary.
 
-use std::env::current_dir;
-use std::process::exit;
-use clap::{App, crate_authors, crate_version};
+use clap::{crate_authors, crate_version, App};
 use log::error;
 use nameshed::{Config, ExitError};
+use std::env::current_dir;
+use std::process::exit;
 
 // Since `main` with a result currently insists on printing a message, but
 // in our case we only get an `ExitError` if all is said and done, we make our
@@ -14,10 +14,7 @@ fn _main() -> Result<(), ExitError> {
     let cur_dir = match current_dir() {
         Ok(dir) => dir,
         Err(err) => {
-            error!(
-                "Fatal: cannot get current directory ({}). Aborting.",
-                err
-            );
+            error!("Fatal: cannot get current directory ({}). Aborting.", err);
             return Err(ExitError::Generic);
         }
     };
@@ -25,11 +22,10 @@ fn _main() -> Result<(), ExitError> {
         App::new("nameshed")
             .version(crate_version!())
             .author(crate_authors!())
-            .about("a name server")
-    ).get_matches();
-    let config = Config::from_arg_matches(
-        &matches, &cur_dir
-    )?;
+            .about("a name server"),
+    )
+    .get_matches();
+    let config = Config::from_arg_matches(&matches, &cur_dir)?;
     nameshed::operation::run(config)
 }
 
@@ -39,5 +35,3 @@ fn main() {
         Err(ExitError::Generic) => exit(1),
     }
 }
-
-
