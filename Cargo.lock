@@ -148,9 +148,9 @@ checksum = "428d9aa8fbc0670b7b8d6030a7fadd0f86151cae55e4dbbece15f3780a3dfaf3"
 
 [[package]]
 name = "cc"
-version = "1.1.23"
+version = "1.1.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3bbb537bb4a30b90362caddba8f360c0a56bc13d3a5570028e7197204cb54a17"
+checksum = "812acba72f0a070b003d3697490d2b55b837230ae7c6c6497f05cc2ddbb8d938"
 dependencies = [
  "shlex",
 ]
@@ -262,7 +262,7 @@ dependencies = [
 [[package]]
 name = "domain"
 version = "0.10.1"
-source = "git+https://github.com/NLnetLabs/domain.git?branch=zone-tweaks#67d7200665b9fb8a775d586af3c481169cae32f6"
+source = "git+https://github.com/NLnetLabs/domain.git#7943f3da83e2722686501a796b31958574dda77d"
 dependencies = [
  "arc-swap",
  "bytes",
