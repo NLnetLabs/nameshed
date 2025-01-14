@@ -34,6 +34,7 @@ use domain::zonefile::inplace;
 use domain::zonetree::{Answer, Zone, ZoneBuilder};
 
 use crate::archive::ArchiveZone;
+use crate::self_signing_zone::SelfSigningZone;
 use crate::config::{Config, ListenAddr};
 use crate::error::ExitError;
 use crate::process::Process;
@@ -155,6 +156,8 @@ pub fn run(config: Config) -> Result<(), ExitError> {
                     let builder = ZoneBuilder::new(apex_name, Class::IN);
                     builder.build()
                 };
+
+                zone = Zone::new(SelfSigningZone::new(zone));
 
                 let mut zone_cfg = ZoneConfig::new();
 

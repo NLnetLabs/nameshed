@@ -8,4 +8,5 @@ pub mod config;
 pub mod error;
 pub mod operation;
 pub mod process;
+pub mod self_signing_zone;
 pub mod zonemaintenance;

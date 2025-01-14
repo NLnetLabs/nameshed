@@ -9,7 +9,15 @@ bytes	       = "1.0"
 chrono         = "0.4.11"
 clap           = { version = "2.33.0", features = [ "wrap_help" ] }
 dirs           = "4.0"
-domain         = { version = "0.10.2", features = ["zonefile", "serde", "ring", "sign", "net", "tsig", "unstable-client-transport", "unstable-server-transport", "unstable-zonetree", "unstable-xfr", "tokio-stream"] }
+domain         = { git = "https://github.com/NLnetLabs/domain", branch = "initial-nsec3-generation", version = "0.10.3", features = [
+    "openssl",
+    "tokio-stream",
+    "tsig",
+    "unstable-client-transport",
+    "unstable-server-transport",
+    "unstable-sign",
+    "unstable-zonetree",
+] }
 fern           = "0.6.0"
 futures        = "0.3.17"
 futures-util   = "0.3"
