@@ -31,13 +31,13 @@ use domain::net::server::ConnectionConfig;
 use domain::tsig::{Algorithm, Key, KeyName};
 use domain::utils::base64;
 use domain::zonefile::inplace;
-use domain::zonetree::{Answer, Zone, ZoneBuilder};
+use domain::zonetree::{Answer, Zone, ZoneBuilder, ZoneTree};
 
 use crate::archive::ArchiveZone;
-use crate::self_signing_zone::SelfSigningZone;
 use crate::config::{Config, ListenAddr};
 use crate::error::ExitError;
 use crate::process::Process;
+use crate::self_signing_zone::SelfSigningZone;
 use crate::zonemaintenance::maintainer::{
     DefaultConnFactory, TypedZone, ZoneLookup, ZoneMaintainer,
 };
@@ -119,7 +119,8 @@ pub fn run(config: Config) -> Result<(), ExitError> {
                 _,
                 DefaultConnFactory,
             >::new(key_store.clone());
-            let zones = Arc::new(ZoneMaintainer::new_with_config(maintainer_config));
+            let mut unsigned_zones = ZoneTree::new();
+            let signed_zones = Arc::new(ZoneMaintainer::new_with_config(maintainer_config));
 
             for (zone_name, zone_path) in process.config().zones.iter() {
                 let mut zone = if !zone_path.is_empty() {
@@ -157,6 +158,8 @@ pub fn run(config: Config) -> Result<(), ExitError> {
                     builder.build()
                 };
 
+                unsigned_zones.insert_zone(zone.clone()).unwrap();
+
                 zone = Zone::new(SelfSigningZone::new(zone));
 
                 let mut zone_cfg = ZoneConfig::new();
@@ -192,22 +195,22 @@ pub fn run(config: Config) -> Result<(), ExitError> {
                 }
 
                 let zone = TypedZone::new(zone, zone_cfg);
-                zones.insert_zone(zone).await.unwrap();
+                signed_zones.insert_zone(zone).await.unwrap();
             }
 
             let max_concurrency = std::thread::available_parallelism().unwrap().get() / 2;
 
-            let svc = service_fn(my_service, zones.clone());
+            let svc = service_fn(my_signed_zone_service, signed_zones.clone());
             let svc =
-                XfrMiddlewareSvc::<_, _, Option<Key>, _>::new(svc, zones.clone(), max_concurrency);
-            let svc = NotifyMiddlewareSvc::new(svc, zones.clone());
+                XfrMiddlewareSvc::<_, _, Option<Key>, _>::new(svc, signed_zones.clone(), max_concurrency);
+            let svc = NotifyMiddlewareSvc::new(svc, signed_zones.clone());
             let svc = CookiesMiddlewareSvc::with_random_secret(svc);
             let svc = EdnsMiddlewareSvc::new(svc);
             let svc = MandatoryMiddlewareSvc::new(svc);
-            let svc = TsigMiddlewareSvc::new(svc, key_store);
+            let svc = TsigMiddlewareSvc::new(svc, key_store.clone());
             let svc = Arc::new(svc);
 
-            tokio::spawn(async move { zones.run().await });
+            tokio::spawn(async move { signed_zones.run().await });
 
             for addr in process.config().listen.iter().cloned() {
                 eprintln!("Binding on {:?}", addr);
@@ -218,6 +221,32 @@ pub fn run(config: Config) -> Result<(), ExitError> {
                     }
                 });
             }
+
+            let svc = service_fn(my_prepublication_hook_service, unsigned_zones.clone());
+            let svc =
+                XfrMiddlewareSvc::<_, _, Option<Key>, _>::new(svc, unsigned_zones.clone(), max_concurrency);
+            let svc = CookiesMiddlewareSvc::with_random_secret(svc);
+            let svc = EdnsMiddlewareSvc::new(svc);
+            let svc = MandatoryMiddlewareSvc::new(svc);
+            let svc = TsigMiddlewareSvc::new(svc, key_store);
+            let svc = Arc::new(svc);
+
+            for addr in process.config().listen.iter().cloned() {
+                let addr = match addr {
+                    ListenAddr::Udp(mut a) => { a.set_port(a.port()+2); ListenAddr::Udp(a) },
+                    ListenAddr::Tcp(mut a) => { a.set_port(a.port()+2); ListenAddr::Tcp(a) },
+                    #[cfg(feature = "tls")]
+                    ListenAddr::Tls(mut a, sc) => { a.set_port(a.port()+2); ListenAddr::Tls(a, sc) },
+                };
+                eprintln!("Binding for pre-publication hooks on {:?}", addr);
+                let svc = svc.clone();
+                tokio::spawn(async move {
+                    if let Err(err) = server(addr, svc).await {
+                        println!("{}", err);
+                    }
+                });
+            }
+
             pending().await
         })
 }
@@ -344,9 +373,34 @@ where
     Ok(())
 }
 
-fn my_service<T: ZoneLookup>(request: Request<Vec<u8>>, zones: T) -> ServiceResult<Vec<u8>> {
+fn my_signed_zone_service<T: ZoneLookup>(
+    request: Request<Vec<u8>>,
+    zones: T,
+) -> ServiceResult<Vec<u8>> {
     let question = request.message().sole_question().unwrap();
     let zones = zones.zones();
+    let zone = zones
+        .find_zone(question.qname(), question.qclass())
+        .map(|zone| zone.read());
+    let answer = match zone {
+        Some(zone) => {
+            let qname = question.qname().to_bytes();
+            let qtype = question.qtype();
+            zone.query(qname, qtype).unwrap()
+        }
+        None => Answer::new(Rcode::NXDOMAIN),
+    };
+
+    let builder = mk_builder_for_target();
+    let additional = answer.to_message(request.message(), builder);
+    Ok(CallResult::new(additional))
+}
+
+fn my_prepublication_hook_service(
+    request: Request<Vec<u8>>,
+    zones: ZoneTree,
+) -> ServiceResult<Vec<u8>> {
+    let question = request.message().sole_question().unwrap();
     let zone = zones
         .find_zone(question.qname(), question.qclass())
         .map(|zone| zone.read());
