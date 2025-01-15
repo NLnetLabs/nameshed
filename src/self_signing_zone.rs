@@ -15,7 +15,7 @@ use domain::sign::keys::keypair::{self, GenerateParams};
 use domain::sign::keys::signingkey::SigningKey;
 use domain::sign::records::{RrsetIter, SortedRecords};
 use domain::sign::signing::config::SigningConfig;
-use domain::sign::signing::traits::SignableZoneInPlace;
+use domain::sign::signing::traits::SignableZone;
 use domain::zonetree::types::StoredRecordData;
 use domain::zonetree::{
     InMemoryZoneDiff, ReadableZone, SharedRrset, StoredName, WritableZone, WritableZoneNode, Zone,
@@ -28,7 +28,7 @@ use tracing::debug;
 
 pub struct SelfSigningZone {
     store: Arc<dyn ZoneStore>,
-    signed_zone: Arc<Mutex<SortedRecords<StoredName, StoredRecordData>>>,
+    signer_generated_rrs: Arc<Mutex<SortedRecords<StoredName, StoredRecordData>>>,
 }
 
 impl Debug for SelfSigningZone {
@@ -41,7 +41,7 @@ impl SelfSigningZone {
     pub fn new(in_zone: Zone) -> Self {
         Self {
             store: in_zone.into_inner(),
-            signed_zone: Default::default(),
+            signer_generated_rrs: Default::default(),
         }
     }
 }
@@ -59,7 +59,7 @@ impl ZoneStore for SelfSigningZone {
         let readable_zone = ReadableSignedZone {
             readable_zone: self.store.clone().read(),
             _store: self.store.clone(),
-            signed_zone: self.signed_zone.clone(),
+            signer_generated_rrs: self.signer_generated_rrs.clone(),
         };
         Box::new(readable_zone) as Box<dyn ReadableZone>
     }
@@ -73,7 +73,7 @@ impl ZoneStore for SelfSigningZone {
             let writable_zone = WritableSignedZone {
                 writable_zone,
                 store: self.store.clone(),
-                signed_zone: self.signed_zone.clone(),
+                signer_generated_rrs: self.signer_generated_rrs.clone(),
             };
             Box::new(writable_zone) as Box<dyn WritableZone>
         })
@@ -87,7 +87,7 @@ impl ZoneStore for SelfSigningZone {
 struct WritableSignedZone {
     writable_zone: Box<dyn WritableZone>,
     store: Arc<dyn ZoneStore>,
-    signed_zone: Arc<Mutex<SortedRecords<StoredName, StoredRecordData>>>,
+    signer_generated_rrs: Arc<Mutex<SortedRecords<StoredName, StoredRecordData>>>,
 }
 
 impl WritableZone for WritableSignedZone {
@@ -107,13 +107,13 @@ impl WritableZone for WritableSignedZone {
     {
         let fut = self.writable_zone.commit(bump_soa_serial);
         let store = self.store.clone();
-        let signed_zone = self.signed_zone.clone();
+        let signer_generated_rrs = self.signer_generated_rrs.clone();
 
         Box::pin(async move {
             debug!("Signing zone");
             let res = fut.await;
 
-            // Sign the zone and store the resulting RRs in signing_rrs.
+            // Sign the zone and store the resulting RRs.
 
             // Temporary: Accumulate the zone into a vec as we can only sign
             // over a slice at the moment, not over an iterator yet (nor can
@@ -121,7 +121,8 @@ impl WritableZone for WritableSignedZone {
 
             let read = store.read();
 
-            let passed_records = signed_zone.clone();
+            let unsigned_records = Arc::new(Mutex::new(SortedRecords::default()));
+            let passed_records = unsigned_records.clone();
 
             read.walk(Box::new(move |owner, rrset, _at_zone_cut| {
                 for data in rrset.data() {
@@ -166,11 +167,18 @@ impl WritableZone for WritableSignedZone {
             // Create a signing configuration.
             let mut signing_config = SigningConfig::default();
 
-            // Then sign the zone in place.
-            signed_zone
+            // Then sign the zone adding the generated records to the
+            // signer_generated_rrs collection, as we don't want to keep two
+            // copies of the unsigned records, we already have those in the
+            // zone.
+            unsigned_records
                 .lock()
                 .unwrap()
-                .sign_zone(&mut signing_config, &keys)
+                .sign_zone(
+                    &mut signing_config,
+                    &keys,
+                    &mut *signer_generated_rrs.lock().unwrap(),
+                )
                 .unwrap();
 
             res
@@ -181,7 +189,7 @@ impl WritableZone for WritableSignedZone {
 struct ReadableSignedZone {
     readable_zone: Box<dyn ReadableZone>,
     _store: Arc<dyn ZoneStore>,
-    signed_zone: Arc<Mutex<SortedRecords<StoredName, StoredRecordData>>>,
+    signer_generated_rrs: Arc<Mutex<SortedRecords<StoredName, StoredRecordData>>>,
 }
 
 impl ReadableZone for ReadableSignedZone {
@@ -194,8 +202,11 @@ impl ReadableZone for ReadableSignedZone {
     }
 
     fn walk(&self, op: domain::zonetree::WalkOp) {
-        // Ignore the records stored in the ZoneTree, just use the zone
-        // records that resulted from signing.
+        // Walk the records that resulted from signing plus the unsigned
+        // records. As we do this to support being invoked to respond to an AXFR
+        // request it doesn't matter which order we walk the records as AXFR is
+        // per RFC unordered, except for SOA records (but the XFR out writer will
+        // take care of ordering the SOA correctly).
         //
         // Note: An interesting "trick" in future could be to use the zone
         // versioning support to have alternating signed and unsigned
@@ -208,8 +219,10 @@ impl ReadableZone for ReadableSignedZone {
         // the unsigned vs signed versions (for the goal of serving the
         // unsigned zone to internal tooling for pre-publication
         // verification).
-        let sorted_records = self.signed_zone.lock().unwrap();
-        let rrsets: RrsetIter<StoredName, StoredRecordData> = sorted_records.rrsets();
+
+        // First walk the signer generated records.
+        let signed_records = self.signer_generated_rrs.lock().unwrap();
+        let rrsets: RrsetIter<StoredName, StoredRecordData> = signed_records.rrsets();
         for rrset in rrsets {
             let mut out_rrset = domain::zonetree::Rrset::new(rrset.rtype(), rrset.ttl());
             for rr in rrset.iter() {
@@ -221,6 +234,9 @@ impl ReadableZone for ReadableSignedZone {
                 false,
             );
         }
+
+        // Now walk the original unsigned records.
+        self.readable_zone.walk(op);
     }
 
     fn is_async(&self) -> bool {
