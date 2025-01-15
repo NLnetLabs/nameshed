@@ -28,7 +28,7 @@ use tracing::debug;
 
 pub struct SelfSigningZone {
     store: Arc<dyn ZoneStore>,
-    signing_rrs: Arc<Mutex<SortedRecords<StoredName, StoredRecordData>>>,
+    signed_zone: Arc<Mutex<SortedRecords<StoredName, StoredRecordData>>>,
 }
 
 impl Debug for SelfSigningZone {
@@ -41,7 +41,7 @@ impl SelfSigningZone {
     pub fn new(in_zone: Zone) -> Self {
         Self {
             store: in_zone.into_inner(),
-            signing_rrs: Default::default(),
+            signed_zone: Default::default(),
         }
     }
 }
@@ -59,7 +59,7 @@ impl ZoneStore for SelfSigningZone {
         let readable_zone = ReadableSignedZone {
             readable_zone: self.store.clone().read(),
             _store: self.store.clone(),
-            signing_rrs: self.signing_rrs.clone(),
+            signed_zone: self.signed_zone.clone(),
         };
         Box::new(readable_zone) as Box<dyn ReadableZone>
     }
@@ -73,7 +73,7 @@ impl ZoneStore for SelfSigningZone {
             let writable_zone = WritableSignedZone {
                 writable_zone,
                 store: self.store.clone(),
-                signing_rrs: self.signing_rrs.clone(),
+                signed_zone: self.signed_zone.clone(),
             };
             Box::new(writable_zone) as Box<dyn WritableZone>
         })
@@ -87,7 +87,7 @@ impl ZoneStore for SelfSigningZone {
 struct WritableSignedZone {
     writable_zone: Box<dyn WritableZone>,
     store: Arc<dyn ZoneStore>,
-    signing_rrs: Arc<Mutex<SortedRecords<StoredName, StoredRecordData>>>,
+    signed_zone: Arc<Mutex<SortedRecords<StoredName, StoredRecordData>>>,
 }
 
 impl WritableZone for WritableSignedZone {
@@ -107,7 +107,7 @@ impl WritableZone for WritableSignedZone {
     {
         let fut = self.writable_zone.commit(bump_soa_serial);
         let store = self.store.clone();
-        let signing_rrs = self.signing_rrs.clone();
+        let signed_zone = self.signed_zone.clone();
 
         Box::pin(async move {
             debug!("Signing zone");
@@ -121,7 +121,7 @@ impl WritableZone for WritableSignedZone {
 
             let read = store.read();
 
-            let passed_records = signing_rrs.clone();
+            let passed_records = signed_zone.clone();
 
             read.walk(Box::new(move |owner, rrset, _at_zone_cut| {
                 for data in rrset.data() {
@@ -167,7 +167,7 @@ impl WritableZone for WritableSignedZone {
             let mut signing_config = SigningConfig::default();
 
             // Then sign the zone in place.
-            signing_rrs
+            signed_zone
                 .lock()
                 .unwrap()
                 .sign_zone(&mut signing_config, &keys)
@@ -181,7 +181,7 @@ impl WritableZone for WritableSignedZone {
 struct ReadableSignedZone {
     readable_zone: Box<dyn ReadableZone>,
     _store: Arc<dyn ZoneStore>,
-    signing_rrs: Arc<Mutex<SortedRecords<StoredName, StoredRecordData>>>,
+    signed_zone: Arc<Mutex<SortedRecords<StoredName, StoredRecordData>>>,
 }
 
 impl ReadableZone for ReadableSignedZone {
@@ -194,7 +194,21 @@ impl ReadableZone for ReadableSignedZone {
     }
 
     fn walk(&self, op: domain::zonetree::WalkOp) {
-        let sorted_records = self.signing_rrs.lock().unwrap();
+        // Ignore the records stored in the ZoneTree, just use the zone
+        // records that resulted from signing.
+        //
+        // Note: An interesting "trick" in future could be to use the zone
+        // versioning support to have alternating signed and unsigned
+        // versions, so that an incoming AXFR creates version 1, signing
+        // creates version 2 which we then serve, and a new incoming IXFR
+        // updates unsigned v1 to make unsigned v3 and creates as part of that
+        // a diff for IXFR, and signing makes signed v4 with a diff made
+        // against v2. The benefit is no duplication of unsigned records in
+        // the signed zone, vs using two separate copies of the Zone to store
+        // the unsigned vs signed versions (for the goal of serving the
+        // unsigned zone to internal tooling for pre-publication
+        // verification).
+        let sorted_records = self.signed_zone.lock().unwrap();
         let rrsets: RrsetIter<StoredName, StoredRecordData> = sorted_records.rrsets();
         for rrset in rrsets {
             let mut out_rrset = domain::zonetree::Rrset::new(rrset.rtype(), rrset.ttl());
@@ -207,7 +221,6 @@ impl ReadableZone for ReadableSignedZone {
                 false,
             );
         }
-        self.readable_zone.walk(op);
     }
 
     fn is_async(&self) -> bool {
