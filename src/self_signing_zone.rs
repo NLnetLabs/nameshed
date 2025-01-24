@@ -6,16 +6,16 @@ use core::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
+use domain::sign::crypto::common::{generate, GenerateParams, KeyPair};
 use core::str::FromStr;
 use domain::base::iana::Class;
 use domain::base::{Name, Record};
 use domain::rdata::dnssec::Timestamp;
 use domain::sign::keys::keymeta::DnssecSigningKey;
-use domain::sign::keys::keypair::{self, GenerateParams};
 use domain::sign::keys::signingkey::SigningKey;
 use domain::sign::records::{RrsetIter, SortedRecords};
-use domain::sign::signing::config::SigningConfig;
-use domain::sign::signing::traits::SignableZone;
+use domain::sign::config::SigningConfig;
+use domain::sign::traits::SignableZone;
 use domain::zonetree::types::StoredRecordData;
 use domain::zonetree::{
     InMemoryZoneDiff, ReadableZone, SharedRrset, StoredName, WritableZone, WritableZoneNode, Zone,
@@ -146,10 +146,10 @@ impl WritableZone for WritableSignedZone {
 
             // Generate a new Ed25519 key.
             let params = GenerateParams::Ed25519;
-            let (sec_bytes, pub_bytes) = keypair::generate(params).unwrap();
+            let (sec_bytes, pub_bytes) = generate(params).unwrap();
 
             // Parse the key into Ring or OpenSSL.
-            let key_pair = keypair::KeyPair::from_bytes(&sec_bytes, &pub_bytes).unwrap();
+            let key_pair = KeyPair::from_bytes(&sec_bytes, &pub_bytes).unwrap();
 
             // Associate the key with important metadata.
             let owner: Name<Vec<u8>> = "www.example.org.".parse().unwrap();
