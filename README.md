@@ -7,6 +7,7 @@ A primary name server written in Rust.
 A quick example of NSD acting as primary, with nameshed acting as a secondary
 in order to receive the zone via XFR, sign it and serve the signed zone.
 
+```
 $ cat /etc/nsd/zones/example.com
 $ORIGIN example.com.
 $TTL 86400 ; default time-to-live for this zone
@@ -49,9 +50,11 @@ $ grep 8055 /etc/nsd/nsd.conf
 $ sudo -u nsd nsd -c /etc/nsd/nsd.conf
 
 $ cargo run -- -c nameshed.conf --listen 127.0.0.1:8053
+```
 
 In another terminal:
 
+```
 $ dig +short @127.0.0.1 -p 8055 SOA example.com
 ns.example.com. noc.dns.example.org. 2020080302 7200 3600 1209600 3600
 
@@ -66,3 +69,4 @@ Verifying the zone using the following algorithms:
 Zone fully signed:
 Algorithm: ED25519: KSKs: 1 active, 0 stand-by, 0 revoked
                     ZSKs: 0 active, 0 present, 0 revoked
+```
