@@ -131,6 +131,7 @@ where
         }
     }
 
+    #[allow(dead_code)]
     pub fn new_with_conn_factory(key_store: KS, conn_factory: CF) -> Self {
         Self {
             key_store,
@@ -205,6 +206,12 @@ where
             event_tx,
             running: AtomicBool::new(false),
         }
+    }
+
+    pub fn with_zone_tree(mut self, zone_tree: Arc<ArcSwap<ZoneTree>>) -> Self {
+        self.member_zones = zone_tree;
+        *self.loaded_arc.write().unwrap() = self.member_zones.load_full();
+        self
     }
 }
 
@@ -526,6 +533,7 @@ where
     /// the following:
     ///   - [`CatalogError::NotRunning`]
     ///   - [`CatalogError::UnknownZone`]
+    #[allow(dead_code)]
     pub async fn zone_status(
         &self,
         apex_name: &StoredName,
@@ -550,6 +558,7 @@ where
         rx.await.map_err(|_| ZoneMaintainerError::UnknownZone)
     }
 
+    #[allow(dead_code)]
     pub async fn force_zone_refresh(&self, apex_name: &StoredName, class: Class) {
         self.event_tx
             .send(Event::ZoneRefreshRequested {
@@ -1735,11 +1744,7 @@ where
         Ok(nameservers)
     }
 
-    async fn is_known_primary<'a>(
-        acl: &'a NotifySrcDstConfig,
-        source: &IpAddr,
-        zone: &Zone,
-    ) -> bool {
+    async fn is_known_primary(acl: &NotifySrcDstConfig, source: &IpAddr, zone: &Zone) -> bool {
         let source_addr = SocketAddr::new(*source, IANA_DNS_PORT_NUMBER);
         if acl.has_dst(&source_addr) {
             trace!("Source IP {source} is on the ACL for the zone.");
@@ -2085,7 +2090,7 @@ where
 
 //--- XfrDataProvider
 
-impl<KS, CF> XfrDataProvider for ZoneMaintainer<KS, CF>
+impl<KS, CF> XfrDataProvider<()> for ZoneMaintainer<KS, CF>
 where
     KS: Deref + 'static + Sync + Send,
     KS::Target: KeyStore,
@@ -2441,14 +2446,17 @@ impl WritableZone for WritableMaintainedZone {
 
 #[derive(Debug)]
 pub enum ZoneMaintainerError {
+    #[allow(dead_code)]
     NotRunning,
     InternalError(&'static str),
+    #[allow(dead_code)]
     UnknownZone,
     RequestError(request::Error),
     ResponseError(OptRcode),
     IoError(io::Error),
     ConnectionError(String),
     NoConnectionAvailable,
+    #[allow(dead_code)]
     IxfrResponseTooLargeForUdp,
     IncompleteResponse,
     ProcessingError(domain::net::xfr::protocol::Error),

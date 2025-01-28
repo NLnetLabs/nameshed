@@ -36,6 +36,7 @@ pub(super) const MIN_DURATION_BETWEEN_ZONE_REFRESHES: tokio::time::Duration =
 //------------ Type Aliases --------------------------------------------------
 
 /// A store of TSIG keys index by key name and algorithm.
+#[allow(dead_code)]
 pub type ZoneMaintainerKeyStore = HashMap<(KeyName, Algorithm), Key>;
 
 //------------ ZoneId --------------------------------------------------------
@@ -434,6 +435,7 @@ impl ZoneRefreshState {
         self.retry
     }
 
+    #[allow(dead_code)]
     pub fn expire(&self) -> Ttl {
         self.expire
     }
@@ -531,6 +533,7 @@ impl ZoneRefreshInstant {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum ZoneRefreshCause {
+    #[allow(dead_code)]
     ManualTrigger,
 
     NotifyFromPrimary(IpAddr),
@@ -973,6 +976,7 @@ pub(super) enum Event {
         at: Option<Ttl>,
     },
 
+    #[allow(dead_code)]
     ZoneStatusRequested {
         zone_id: ZoneId,
         tx: oneshot::Sender<ZoneReport>,

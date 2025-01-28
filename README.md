@@ -1,24 +1,42 @@
 # nameshed
+
 A primary name server written in Rust.
 
-## tl;dr
+This project is under heavy development, watch this space!
 
-$ cat /etc/nsd/example.com.zone 
-$ORIGIN example.com.
+# About this branch
 
-@ IN 2000 SOA ns.example.com. some\.bloke.example.com. 2 86400 3500 3212 22
+This branch explores using an underlying framework based on Rotonda (which in
+turn was originally based on RTRTR). This provides a dynamic graph based
+connected component system with direct (async fn based) "event" passing from
+one component to its downstream (in the graph) components, and with indirect
+(message queue) based sending of commands out of graph order from any
+component to any other.
 
-@ 3000 IN A 127.0.0.1
-@ 3600 IN A 127.0.0.2
+The `nameshed.conf` is correspondingly modified to define the following
+components:
 
-$ nameshed --init -d /tmp/data --listen 127.0.0.1:8053
+  - ZL: "Zone Loader": Responsible for receiving incoming zones via XFR.
 
-In another terminal:
+  - RS: "Review Server": An instance of `ZoneServer` responsible for serving
+    an unsigned loaded zone for review.
 
-$ dig +short @127.0.0.1 -p 8053 A example.com
-127.0.0.1
-127.0.0.2
+  - CC: "Central Command": Responsible for receiving events from all other
+    components and then dispatching commands to them in order to trigger the
+    next action that should occur, e.g. start serving a new copy of an
+    unsigned review because it has been loaded.
 
-$ dig +short @127.0.0.1 -p 8053 AXFR example.com
-ns.example.com. some\.bloke.example.com. 2 86400 3500 3212 22
-ns.example.com. some\.bloke.example.com. 2 86400 3500 3212 22
+ZL and RS send their events downtream to CC.
+
+CC currently assumes it knows the names ("ZL" and "RS") of its upstream
+components in order to send commands to them by name, and possibly another
+"post-signing" review server.
+
+Quickly tested with a local `NSD` acting as primary with `nameshed` acting as
+secondary.
+
+Next steps are to add "ZS" (Zone Signer) and "PS" (Publication Server)
+components which will sign the zone and then serve the signed zone, and to add
+hooks that are invoked so that external tools can review the content available
+served by "RS" (Review Server) and approve it to trigger publication of the
+signed zone.

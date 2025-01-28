@@ -7,9 +7,18 @@ edition = "2021"
 arc-swap       = "1.7.0"
 bytes	       = "1.0"
 chrono         = "0.4.11"
-clap           = { version = "2.33.0", features = [ "wrap_help" ] }
+clap           = { version = "4.4", features = [ "cargo", "wrap_help" ] }
 dirs           = "4.0"
-domain         = { version = "0.10.2", features = ["zonefile", "serde", "ring", "sign", "net", "tsig", "unstable-client-transport", "unstable-server-transport", "unstable-zonetree", "unstable-xfr", "tokio-stream"] }
+domain         = { git = "https://github.com/NLnetLabs/domain", branch = "server-trait-usability-fixes", version = "0.10.3", features = [
+# domain = { path = "../domain2", features = [
+    "openssl",
+    "tokio-stream",
+    "tsig",
+    "unstable-client-transport",
+    "unstable-server-transport",
+    "unstable-sign",
+    "unstable-zonetree",
+] }
 fern           = "0.6.0"
 futures        = "0.3.17"
 futures-util   = "0.3"
@@ -17,18 +26,40 @@ log            = "0.4"
 log-reroute    = "0.1.5"
 octseq         = { version = "0.5.2", default-features = false }
 parking_lot    = "0.11.2"
-tokio          = { version = "1.21", features = [ "io-util", "net", "rt", "rt-multi-thread", "sync" ] }
-serde          = { version = "1.0", features = ["derive"] }
-toml           = "0.5"
+tokio          = { version = "1.40", features = ["fs", "io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "sync", "test-util", "time", "tracing"] }
+serde          = { version = "1.0", features = ["derive", "rc"] }
+toml           = "0.8"
 tokio-rustls   = { version = "0.23.4", optional = true }
 tokio-stream   = { version = "0.1.1" }
 rustls-pemfile = { version = "1.0", optional = true }
 tracing        = { version = "0.1.40" }
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 
+# From Rotonda
+allocator-api2     = "0.2"
+assert-json-diff   = "2.0"
+async-trait        = "0.1"
+atomic_enum        = "0.2.0"
+crossbeam-utils    = "0.8"
+env_logger         = "0.10"
+flate2             = "*"
+hashbrown          = "0.14"
+hyper              = { version = "0.14", features = ["server", "stream"] }
+layout-rs          = { version = "0.1" }
+non-empty-vec      = { version = "0.2", features = ["serde"]}
+percent-encoding   = "2.3"
+prometheus-parse   = "0.2"
+reqwest            = { version = "0.11", default-features = false }
+serde_json         = "1.0"
+serde_with         = "3"
+smallvec           = { version = "1.11", features = ["const_generics", "const_new", "union"] }
+tokio-metrics      = { version = "0.3", default-features = false }
+url                = { version = "2.4", features = ["serde"] }
+uuid               = { version = "1.4", features = ["v4", "fast-rng"] }
+
 [target.'cfg(unix)'.dependencies]
 nix         = "0.22.0"
-syslog      = "5.0.0"
+syslog      = "6.1"
 
 [features]
 default = []
