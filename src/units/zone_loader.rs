@@ -1,56 +1,48 @@
 use core::fmt;
-use std::{
-    any::Any,
-    collections::HashMap,
-    fmt::Display,
-    fs::File,
-    net::{IpAddr, SocketAddr},
-    ops::ControlFlow,
-    pin::Pin,
-    str::FromStr,
-    sync::{
-        atomic::{AtomicUsize, Ordering::SeqCst},
-        Arc, Weak,
-    },
-    time::Duration,
-};
+use std::any::Any;
+use std::collections::HashMap;
+use std::fmt::Display;
+use std::fs::File;
+use std::net::{IpAddr, SocketAddr};
+use std::ops::ControlFlow;
+use std::pin::Pin;
+use std::str::FromStr;
+use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+use std::sync::{Arc, Weak};
+use std::time::Duration;
 
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
-use domain::{
-    base::{
-        iana::{Class, Rcode},
-        wire::Composer,
-        Name,
-    },
-    net::server::{
-        buf::VecBufSource,
-        dgram::{self, DgramServer},
-        message::Request,
-        middleware::{
-            cookies::CookiesMiddlewareSvc, edns::EdnsMiddlewareSvc,
-            mandatory::MandatoryMiddlewareSvc, notify::NotifyMiddlewareSvc,
-            tsig::TsigMiddlewareSvc, xfr::XfrMiddlewareSvc,
-        },
-        service::{CallResult, Service, ServiceError, ServiceResult},
-        stream::{self, StreamServer},
-        util::{mk_error_response, service_fn},
-        ConnectionConfig,
-    },
-    tsig::{Algorithm, Key, KeyName},
-    utils::base64,
-    zonefile::inplace,
-    zonetree::{
-        InMemoryZoneDiff, ReadableZone, StoredName, WritableZone, WritableZoneNode, Zone,
-        ZoneBuilder, ZoneStore, ZoneTree,
-    },
+use domain::base::iana::{Class, Rcode};
+use domain::base::wire::Composer;
+use domain::base::Name;
+use domain::net::server::buf::VecBufSource;
+use domain::net::server::dgram::{self, DgramServer};
+use domain::net::server::message::Request;
+use domain::net::server::middleware::cookies::CookiesMiddlewareSvc;
+use domain::net::server::middleware::edns::EdnsMiddlewareSvc;
+use domain::net::server::middleware::mandatory::MandatoryMiddlewareSvc;
+use domain::net::server::middleware::notify::NotifyMiddlewareSvc;
+use domain::net::server::middleware::tsig::TsigMiddlewareSvc;
+use domain::net::server::middleware::xfr::XfrMiddlewareSvc;
+use domain::net::server::service::{CallResult, Service, ServiceError, ServiceResult};
+use domain::net::server::stream::{self, StreamServer};
+use domain::net::server::util::{mk_error_response, service_fn};
+use domain::net::server::ConnectionConfig;
+use domain::tsig::{Algorithm, Key, KeyName};
+use domain::utils::base64;
+use domain::zonefile::inplace;
+use domain::zonetree::{
+    InMemoryZoneDiff, ReadableZone, StoredName, WritableZone, WritableZoneNode, Zone, ZoneBuilder,
+    ZoneStore, ZoneTree,
 };
 use futures::{
     future::{select, Either},
     pin_mut, Future,
 };
+use indoc::formatdoc;
 use log::warn;
 use log::{debug, error, info, trace};
 use non_empty_vec::NonEmpty;
@@ -67,9 +59,13 @@ use tokio::{
 #[cfg(feature = "tls")]
 use tokio_rustls::rustls::ServerConfig;
 
-use crate::common::tsig::{parse_key_strings, TsigKeyStore};
 use crate::common::xfr::parse_xfr_acl;
-use crate::zonemaintenance::maintainer::Config;
+use crate::http::PercentDecodedPath;
+use crate::zonemaintenance::maintainer::{Config, ZoneLookup};
+use crate::{
+    common::tsig::{parse_key_strings, TsigKeyStore},
+    http::ProcessRequest,
+};
 use crate::{
     common::{
         frim::FrimMap,
@@ -112,11 +108,11 @@ pub struct ZoneLoaderUnit {
     pub listen: Vec<ListenAddr>,
 
     /// The zone names and (if primary) corresponding zone file paths to load.
-    pub zones: HashMap<String, String>,
+    pub zones: Arc<HashMap<String, String>>,
 
     /// XFR in per zone: Allow NOTIFY from, and when with a port also request XFR from.
     #[serde(default)]
-    pub xfr_in: HashMap<String, String>,
+    pub xfr_in: Arc<HashMap<String, String>>,
 
     /// TSIG keys.
     #[serde(default)]
@@ -138,29 +134,6 @@ impl ZoneLoaderUnit {
 
         // Setup our status reporting
         let status_reporter = Arc::new(ZoneLoaderStatusReporter::new(&unit_name, metrics.clone()));
-
-        // // Setup REST API endpoint
-        // let (_api_processor, router_info) = {
-        //     let router_info = Arc::new(FrimMap::default());
-
-        //     let processor = Arc::new(RouterListApi::new(
-        //         component.http_resources().clone(),
-        //         self.http_api_path.clone(),
-        //         router_info.clone(),
-        //         bmp_in_metrics.clone(),
-        //         bmp_metrics.clone(),
-        //         router_id_template.clone(),
-        //         router_states.clone(),
-        //         component.ingresses().clone(),
-        //     ));
-
-        //     component.register_http_resource(
-        //         processor.clone(),
-        //         &self.http_api_path,
-        //     );
-
-        //     (processor, router_info)
-        // };
 
         let (zone_updated_tx, zone_updated_rx) = tokio::sync::mpsc::channel(10);
 
@@ -186,7 +159,7 @@ impl ZoneLoaderUnit {
 
         let maintainer_config =
             Config::<_, DefaultConnFactory>::new(component.tsig_key_store().clone());
-        let xfr_in = Arc::new(
+        let zone_maintainer = Arc::new(
             ZoneMaintainer::new_with_config(maintainer_config)
                 .with_zone_tree(component.incoming_zones().clone()),
         );
@@ -281,7 +254,7 @@ impl ZoneLoaderUnit {
             zone = Zone::new(notify_on_write_zone);
 
             let zone = TypedZone::new(zone, zone_cfg);
-            xfr_in.insert_zone(zone).await.unwrap();
+            zone_maintainer.insert_zone(zone).await.unwrap();
         }
 
         // let max_concurrency = std::thread::available_parallelism().unwrap().get() / 2;
@@ -290,7 +263,7 @@ impl ZoneLoaderUnit {
         // ZoneMaintainer on receipt, thereby triggering it to fetch the
         // latest version of the updated zone.
         let svc = service_fn(my_noop_service, ());
-        let svc = NotifyMiddlewareSvc::new(svc, xfr_in.clone());
+        let svc = NotifyMiddlewareSvc::new(svc, zone_maintainer.clone());
         let svc = CookiesMiddlewareSvc::with_random_secret(svc);
         let svc = EdnsMiddlewareSvc::new(svc);
         let svc = MandatoryMiddlewareSvc::new(svc);
@@ -307,13 +280,23 @@ impl ZoneLoaderUnit {
             });
         }
 
+        // Setup REST API endpoint
+        let http_processor = Arc::new(ZoneListApi::new(
+            self.http_api_path.clone(),
+            self.zones.clone(),
+            self.xfr_in.clone(),
+            zone_maintainer.clone(),
+        ));
+        component.register_http_resource(http_processor.clone(), &self.http_api_path);
+
         // Wait for other components to be, and signal to other components
         // that we are, ready to start. All units and targets start together,
         // otherwise data passed from one component to another may be lost if
         // the receiving component is not yet ready to accept it.
         gate.process_until(waitpoint.ready()).await?;
 
-        tokio::spawn(async move { xfr_in.run().await });
+        let zone_maintainer_clone = zone_maintainer.clone();
+        tokio::spawn(async move { zone_maintainer_clone.run().await });
 
         // Signal again once we are out of the process_until() so that anyone
         // waiting to send important gate status updates won't send them while
@@ -329,6 +312,8 @@ impl ZoneLoaderUnit {
             gate,
             metrics,
             status_reporter,
+            http_processor,
+            zone_maintainer,
         )
         .run(zone_updated_rx)
         .await?;
@@ -477,6 +462,8 @@ struct ZoneLoader {
     gate: Gate,
     metrics: Arc<ZoneLoaderMetrics>,
     status_reporter: Arc<ZoneLoaderStatusReporter>,
+    http_processor: Arc<ZoneListApi>,
+    xfr_in: Arc<ZoneMaintainer<TsigKeyStore, DefaultConnFactory>>,
 }
 
 impl ZoneLoader {
@@ -487,6 +474,8 @@ impl ZoneLoader {
         gate: Gate,
         metrics: Arc<ZoneLoaderMetrics>,
         status_reporter: Arc<ZoneLoaderStatusReporter>,
+        http_processor: Arc<ZoneListApi>,
+        xfr_in: Arc<ZoneMaintainer<TsigKeyStore, DefaultConnFactory>>,
     ) -> Self {
         Self {
             component,
@@ -494,6 +483,8 @@ impl ZoneLoader {
             gate,
             metrics,
             status_reporter,
+            http_processor,
+            xfr_in,
         }
     }
 
@@ -913,255 +904,91 @@ impl Named for ZoneLoaderStatusReporter {
     }
 }
 
-// --- Tests ----------------------------------------------------------------------------------------------------------
+//------------ ZoneListApi ---------------------------------------------------
 
-// #[cfg(test)]
-// mod tests {
-//     use std::{
-//         net::SocketAddr,
-//         sync::{
-//             atomic::{AtomicUsize, Ordering},
-//             Arc,
-//         },
-//         time::Duration,
-//     };
+struct ZoneListApi {
+    http_api_path: Arc<String>,
+    zones: Arc<HashMap<String, String>>,
+    xfr_in: Arc<HashMap<String, String>>,
+    zone_maintainer: Arc<ZoneMaintainer<TsigKeyStore, DefaultConnFactory>>,
+}
 
-//     use tokio::{sync::Mutex, time::timeout};
+impl ZoneListApi {
+    fn new(
+        http_api_path: Arc<String>,
+        zones: Arc<HashMap<String, String>>,
+        xfr_in: Arc<HashMap<String, String>>,
+        zone_maintainer: Arc<ZoneMaintainer<TsigKeyStore, DefaultConnFactory>>,
+    ) -> Self {
+        Self {
+            http_api_path,
+            zones,
+            xfr_in,
+            zone_maintainer,
+        }
+    }
+}
 
-//     use crate::{
-//         common::{frim::FrimMap, net::TcpStreamWrapper, status_reporter::AnyStatusReporter},
-//         comms::{Gate, GateAgent, Terminated},
-//         tests::util::{
-//             internal::{enable_logging, get_testable_metrics_snapshot},
-//             net::{MockTcpListener, MockTcpListenerFactory, MockTcpStreamWrapper},
-//         },
-//         units::Unit,
-//     };
+#[async_trait]
+impl ProcessRequest for ZoneListApi {
+    async fn process_request(
+        &self,
+        request: &hyper::Request<hyper::Body>,
+    ) -> Option<hyper::Response<hyper::Body>> {
+        let req_path = request.uri().decoded_path();
+        if request.method() == hyper::Method::GET && req_path == *self.http_api_path {
+            Some(self.build_response().await)
+        } else {
+            None
+        }
+    }
+}
 
-//     use super::*;
+impl ZoneListApi {
+    pub async fn build_response(&self) -> hyper::Response<hyper::Body> {
+        let mut response_body = self.build_response_header();
 
-//     #[test]
-//     fn listen_is_required() {
-//         assert!(mk_config_from_toml("").is_err());
-//     }
+        self.build_response_body(&mut response_body).await;
 
-//     #[test]
-//     fn listen_must_be_a_valid_socket_address() {
-//         assert!(mk_config_from_toml("listen = ''").is_err());
-//         assert!(mk_config_from_toml("listen = '12345'").is_err());
-//         assert!(mk_config_from_toml("listen = '1.2.3.4'").is_err());
-//     }
+        self.build_response_footer(&mut response_body);
 
-//     #[test]
-//     fn listen_is_the_only_required_field() {
-//         assert!(mk_config_from_toml("listen = '1.2.3.4:12345'").is_ok());
-//     }
+        hyper::Response::builder()
+            .header("Content-Type", "text/html")
+            .body(hyper::Body::from(response_body))
+            .unwrap()
+    }
 
-//     // --- Test helpers ------------------------------------------------------
+    fn build_response_header(&self) -> String {
+        formatdoc! {
+            r#"
+            <!DOCTYPE html>
+            <html lang="en">
+                <head>
+                  <meta charset="UTF-8">
+                </head>
+                <body>
+                <pre>Showing {num_zones} monitored zones:
+            "#,
+            num_zones = self.zones.len()
+        }
+    }
 
-//     fn mk_config_from_toml(toml: &str) -> Result<ZoneLoaderUnit, toml::de::Error> {
-//         toml::from_str::<ZoneLoaderUnit>(toml)
-//     }
+    async fn build_response_body(&self, response_body: &mut String) {
+        for zone_name in self.zones.keys() {
+            if let Ok(zone_name) = Name::from_str(zone_name) {
+                if let Ok(report) = self.zone_maintainer.zone_status(&zone_name, Class::IN).await {
+                    response_body.push_str(&format!("\n{report}"));
+                }
+            }
+            if let Some(xfr_in) = self.xfr_in.get(zone_name) {
+                response_body.push_str(&format!("        source: {xfr_in}"));
+            }
+        }
+    }
 
-//     #[tokio::test(start_paused = true)]
-//     async fn test_reconfigured_bind_address() {
-//         // Given an instance of the BMP TCP input unit that is configured to
-//         // listen for incoming connections on "localhost:8080":
-//         let (runner, agent, _) = setup_test("1.2.3.4:12345");
-//         let status_reporter = runner.status_reporter.clone();
-//         let wait_forever = |_addr| Ok(MockTcpListener::new(std::future::pending));
-//         let mock_listener_factory = Arc::new(MockTcpListenerFactory::new(wait_forever));
-//         let task = runner.run();
-//         let join_handle = tokio::task::spawn(task);
-
-//         // Allow time for bind attempts to occur
-//         tokio::time::sleep(Duration::from_secs(1)).await;
-
-//         // When the unit is reconfigured to listen for incoming connections on
-//         // "127.0.0.1:11019":
-//         let (new_gate, new_agent) = Gate::new(1);
-//         // let listen = Arc::new("127.0.0.1:11019".parse().unwrap());
-//         let new_config = ZoneLoaderUnit {
-//             http_api_path: Default::default(),
-//             listen: todo!(),
-//             zones: todo!(),
-//             xfr_in: todo!(),
-//             tsig_keys: todo!(),
-//         };
-//         let new_config = Unit::ZoneLoader(new_config);
-//         agent.reconfigure(new_config, new_gate).await.unwrap();
-
-//         // Allow time for bind attempts to occur
-//         tokio::time::sleep(Duration::from_secs(1)).await;
-
-//         // Then send a termination command to the gate:
-//         assert!(!join_handle.is_finished());
-//         new_agent.terminate().await;
-//         let _ = timeout(Duration::from_millis(100), join_handle)
-//             .await
-//             .unwrap();
-
-//         // And verify that the unit bound first to the first given URI and
-//         // then to the second given URI and not to any other URI.
-//         let binds = mock_listener_factory.binds.lock().unwrap();
-//         assert_eq!(binds.len(), 2);
-//         assert_eq!(binds[0], "1.2.3.4:12345");
-//         assert_eq!(binds[1], "127.0.0.1:11019");
-
-//         let metrics = get_testable_metrics_snapshot(&status_reporter.metrics().unwrap());
-//         assert_eq!(
-//             metrics.with_name::<usize>("bmp_tcp_in_listener_bound_count"),
-//             2
-//         );
-//         assert_eq!(
-//             metrics.with_name::<usize>("bmp_tcp_in_connection_accepted_count"),
-//             0
-//         );
-//         assert_eq!(
-//             metrics.with_name::<usize>("bmp_tcp_in_connection_lost_count"),
-//             0
-//         );
-//     }
-
-//     #[tokio::test(start_paused = true)]
-//     async fn test_unchanged_bind_address() {
-//         // Given an instance of the BMP TCP input unit that is configured to
-//         // listen for incoming connections on "localhost:8080":
-//         let (runner, agent, _) = setup_test("127.0.0.1:11019");
-//         let status_reporter = runner.status_reporter.clone();
-//         let wait_forever = |_addr| Ok(MockTcpListener::new(std::future::pending));
-//         let mock_listener_factory = Arc::new(MockTcpListenerFactory::new(wait_forever));
-//         let task = runner.run();
-//         let join_handle = tokio::task::spawn(task);
-
-//         // Allow time for bind attempts to occur
-//         tokio::time::sleep(Duration::from_secs(1)).await;
-
-//         // When the unit is reconfigured to listen for incoming connections on
-//         // an unchanged listen address:
-//         let (new_gate, new_agent) = Gate::new(1);
-//         // let listen = Arc::new("127.0.0.1:11019".parse().unwrap());
-//         let new_config = ZoneLoaderUnit {
-//             http_api_path: Default::default(),
-//             listen: todo!(),
-//             zones: todo!(),
-//             xfr_in: todo!(),
-//             tsig_keys: todo!(),
-//         };
-//         let new_config = Unit::ZoneLoader(new_config);
-//         agent.reconfigure(new_config, new_gate).await.unwrap();
-
-//         // Allow time for bind attempts to occur
-//         tokio::time::sleep(Duration::from_secs(1)).await;
-
-//         // Then send a termination command to the gate:
-//         assert!(!join_handle.is_finished());
-//         new_agent.terminate().await;
-//         let _ = timeout(Duration::from_millis(100), join_handle)
-//             .await
-//             .unwrap();
-
-//         // And verify that the unit bound only once and only to the given URI:
-//         let binds = mock_listener_factory.binds.lock().unwrap();
-//         assert_eq!(binds.len(), 1);
-//         assert_eq!(binds[0], "127.0.0.1:11019");
-
-//         let metrics = get_testable_metrics_snapshot(&status_reporter.metrics().unwrap());
-//         assert_eq!(
-//             metrics.with_name::<usize>("bmp_tcp_in_listener_bound_count"),
-//             1
-//         );
-//         assert_eq!(
-//             metrics.with_name::<usize>("bmp_tcp_in_connection_accepted_count"),
-//             0
-//         );
-//         assert_eq!(
-//             metrics.with_name::<usize>("bmp_tcp_in_connection_lost_count"),
-//             0
-//         );
-//     }
-
-//     #[tokio::test(start_paused = true)]
-//     async fn test_overcoming_bind_failure() {
-//         // Given an instance of the BMP TCP input unit that is configured to
-//         // listen for incoming connections on "localhost:8080":
-//         let fail_on_bad_addr = |addr: String| {
-//             // Not technically a bad address, just one we can match on for test purposes
-//             if addr != "1.2.3.4:12345" {
-//                 Ok(MockTcpListener::new(std::future::pending))
-//             } else {
-//                 Err(std::io::ErrorKind::PermissionDenied.into())
-//             }
-//         };
-//         let (runner, agent, _) = setup_test("1.2.3.4:12345");
-//         let status_reporter = runner.status_reporter.clone();
-//         let mock_listener_factory = Arc::new(MockTcpListenerFactory::new(fail_on_bad_addr));
-//         let task = runner.run();
-//         let join_handle = tokio::task::spawn(task);
-
-//         // Allow time for bind attempts to occur
-//         tokio::time::sleep(Duration::from_secs(10)).await;
-
-//         // When the unit is reconfigured to listen for incoming connections on
-//         // an unchanged listen address:
-//         let (new_gate, new_agent) = Gate::new(1);
-//         // let listen = Arc::new("127.0.0.1:11019".parse().unwrap());
-//         let new_config = ZoneLoaderUnit {
-//             http_api_path: Default::default(),
-//             listen: todo!(),
-//             zones: todo!(),
-//             xfr_in: todo!(),
-//             tsig_keys: todo!(),
-//         };
-//         let new_config = Unit::ZoneLoader(new_config);
-//         agent.reconfigure(new_config, new_gate).await.unwrap();
-
-//         // Allow time for bind attempts to occur
-//         tokio::time::sleep(Duration::from_secs(1)).await;
-
-//         // Then send a termination command to the gate:
-//         assert!(!join_handle.is_finished());
-//         new_agent.terminate().await;
-//         let _ = timeout(Duration::from_millis(100), join_handle)
-//             .await
-//             .unwrap();
-
-//         // And verify that the unit bound only once and only to the given URI:
-//         let binds = mock_listener_factory.binds.lock().unwrap();
-//         assert_eq!(binds.len(), 1);
-//         assert_eq!(binds[0], "127.0.0.1:11019");
-
-//         let metrics = get_testable_metrics_snapshot(&status_reporter.metrics().unwrap());
-//         assert_eq!(
-//             metrics.with_name::<usize>("bmp_tcp_in_listener_bound_count"),
-//             1
-//         );
-//         assert_eq!(
-//             metrics.with_name::<usize>("bmp_tcp_in_connection_accepted_count"),
-//             0
-//         );
-//         assert_eq!(
-//             metrics.with_name::<usize>("bmp_tcp_in_connection_lost_count"),
-//             0
-//         );
-//     }
-
-//     //-------- Test helpers --------------------------------------------------
-
-//     fn setup_test(_listen: &str) -> (ZoneLoader, GateAgent, Arc<ZoneLoaderStatusReporter>) {
-//         enable_logging("trace");
-
-//         let (gate, gate_agent) = Gate::new(0);
-//         let metrics = Arc::new(ZoneLoaderMetrics::default());
-//         let status_reporter = Arc::new(ZoneLoaderStatusReporter::default());
-//         let runner = ZoneLoader {
-//             component: Default::default(),
-//             http_api_path: Default::default(),
-//             gate,
-//             metrics,
-//             status_reporter: status_reporter.clone(),
-//         };
-
-//         (runner, gate_agent, status_reporter)
-//     }
-// }
+    fn build_response_footer(&self, response_body: &mut String) {
+        response_body.push_str("    </pre>\n");
+        response_body.push_str("  </body>\n");
+        response_body.push_str("</html>\n");
+    }
+}
