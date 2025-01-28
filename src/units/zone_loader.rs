@@ -976,7 +976,11 @@ impl ZoneListApi {
     async fn build_response_body(&self, response_body: &mut String) {
         for zone_name in self.zones.keys() {
             if let Ok(zone_name) = Name::from_str(zone_name) {
-                if let Ok(report) = self.zone_maintainer.zone_status(&zone_name, Class::IN).await {
+                if let Ok(report) = self
+                    .zone_maintainer
+                    .zone_status(&zone_name, Class::IN)
+                    .await
+                {
                     response_body.push_str(&format!("\n{report}"));
                 }
             }

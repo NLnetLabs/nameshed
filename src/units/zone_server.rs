@@ -5,8 +5,9 @@ use std::{
     fmt::Display,
     fs::File,
     net::{IpAddr, SocketAddr},
-    ops::ControlFlow,
+    ops::{ControlFlow, Deref},
     pin::Pin,
+    process::Command,
     str::FromStr,
     sync::{
         atomic::{AtomicUsize, Ordering::SeqCst},
@@ -54,6 +55,7 @@ use futures::{
     future::{select, Either},
     pin_mut, Future,
 };
+use indoc::formatdoc;
 use log::warn;
 use log::{debug, error, info, trace};
 use non_empty_vec::NonEmpty;
@@ -69,10 +71,17 @@ use tokio::{
 };
 #[cfg(feature = "tls")]
 use tokio_rustls::rustls::ServerConfig;
+use uuid::Uuid;
 
-use crate::common::tsig::{parse_key_strings, TsigKeyStore};
-use crate::common::xfr::parse_xfr_acl;
 use crate::zonemaintenance::types::TsigKey;
+use crate::{
+    common::tsig::{parse_key_strings, TsigKeyStore},
+    comms::ApplicationCommand,
+};
+use crate::{
+    common::xfr::parse_xfr_acl,
+    http::{PercentDecodedPath, ProcessRequest},
+};
 use crate::{
     common::{
         frim::FrimMap,
@@ -136,6 +145,8 @@ pub struct ZoneServerUnit {
     /// XFR out per zone: Allow XFR to, and when with a port also send NOTIFY to.
     pub xfr_out: HashMap<String, String>,
 
+    pub hooks: Vec<String>,
+
     pub mode: Mode,
 }
 
@@ -154,29 +165,6 @@ impl ZoneServerUnit {
 
         // Setup our status reporting
         let status_reporter = Arc::new(ZoneLoaderStatusReporter::new(&unit_name, metrics.clone()));
-
-        // // Setup REST API endpoint
-        // let (_api_processor, router_info) = {
-        //     let router_info = Arc::new(FrimMap::default());
-
-        //     let processor = Arc::new(RouterListApi::new(
-        //         component.http_resources().clone(),
-        //         self.http_api_path.clone(),
-        //         router_info.clone(),
-        //         bmp_in_metrics.clone(),
-        //         bmp_metrics.clone(),
-        //         router_id_template.clone(),
-        //         router_states.clone(),
-        //         component.ingresses().clone(),
-        //     ));
-
-        //     component.register_http_resource(
-        //         processor.clone(),
-        //         &self.http_api_path,
-        //     );
-
-        //     (processor, router_info)
-        // };
 
         let zones = match self.mode {
             Mode::Prepublish => component.incoming_zones().clone(),
@@ -232,6 +220,7 @@ impl ZoneServerUnit {
             metrics,
             status_reporter,
             self.mode,
+            self.hooks,
         )
         .run()
         .await?;
@@ -294,6 +283,8 @@ struct ZoneServer {
     status_reporter: Arc<ZoneLoaderStatusReporter>,
     #[allow(dead_code)]
     mode: Mode,
+    hooks: Vec<String>,
+    pending_approvals: Arc<RwLock<HashMap<Name<Bytes>, Vec<Uuid>>>>,
 }
 
 impl ZoneServer {
@@ -305,6 +296,7 @@ impl ZoneServer {
         metrics: Arc<ZoneLoaderMetrics>,
         status_reporter: Arc<ZoneLoaderStatusReporter>,
         mode: Mode,
+        hooks: Vec<String>,
     ) -> Self {
         Self {
             component,
@@ -313,6 +305,8 @@ impl ZoneServer {
             metrics,
             status_reporter,
             mode,
+            hooks,
+            pending_approvals: Default::default(),
         }
     }
 
@@ -320,6 +314,16 @@ impl ZoneServer {
         // Loop until terminated, accepting TCP connections from routers and
         // spawning tasks to handle them.
         let status_reporter = self.status_reporter.clone();
+
+        // Setup REST API endpoint
+        let http_processor = Arc::new(ZoneReviewApi::new(
+            self.http_api_path.clone(),
+            self.pending_approvals.clone(),
+        ));
+        self.component
+            .write()
+            .await
+            .register_http_resource(http_processor.clone(), &self.http_api_path);
 
         let arc_self = Arc::new(self);
 
@@ -376,6 +380,7 @@ impl ZoneServer {
                                     listen,
                                     xfr_out,
                                     mode,
+                                    hooks,
                                 }),
                         } => {
                             // Runtime reconfiguration of this unit has
@@ -412,6 +417,42 @@ impl ZoneServer {
                                 "[{}] Received command: {cmd:?}",
                                 self.component.read().await.name()
                             );
+                            match &cmd {
+                                ApplicationCommand::PublishZone { zone_name } => {
+                                    for hook in &self.hooks {
+                                        let approval_token = Uuid::new_v4();
+                                        info!(
+                                            "[{}]: Generated approval token '{approval_token}' for zone '{}'",
+                                            self.component.read().await.name(),
+                                            zone_name
+                                        );
+
+                                        self.pending_approvals
+                                            .write()
+                                            .await
+                                            .entry(zone_name.clone())
+                                            .and_modify(|e| e.push(approval_token))
+                                            .or_insert(vec![approval_token]);
+
+                                        match Command::new(hook)
+                                            .arg(format!("{zone_name}"))
+                                            .arg(format!("{approval_token}"))
+                                            .spawn()
+                                        {
+                                            Ok(_) => info!(
+                                                "[{}]: Executed hook '{hook}'",
+                                                self.component.read().await.name()
+                                            ),
+                                            Err(err) => {
+                                                error!(
+                                                    "[{}]: Failed to execute hook '{hook}': {err}",
+                                                    self.component.read().await.name()
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
 
                         _ => { /* Nothing to do */ }
@@ -848,4 +889,129 @@ fn zone_server_service(
     let builder = mk_builder_for_target();
     let additional = answer.to_message(request.message(), builder);
     Ok(CallResult::new(additional))
+}
+
+//------------ ZoneReviewApi -------------------------------------------------
+
+struct ZoneReviewApi {
+    http_api_path: Arc<String>,
+    pending_approvals: Arc<RwLock<HashMap<Name<Bytes>, Vec<Uuid>>>>,
+}
+
+impl ZoneReviewApi {
+    fn new(
+        http_api_path: Arc<String>,
+        pending_approvals: Arc<RwLock<HashMap<Name<Bytes>, Vec<Uuid>>>>,
+    ) -> Self {
+        Self {
+            http_api_path,
+            pending_approvals,
+        }
+    }
+}
+
+#[async_trait]
+impl ProcessRequest for ZoneReviewApi {
+    async fn process_request(
+        &self,
+        request: &hyper::Request<hyper::Body>,
+    ) -> Option<hyper::Response<hyper::Body>> {
+        let req_path = request.uri().decoded_path();
+        if request.method() == hyper::Method::GET && req_path == *self.http_api_path {
+            return Some(self.build_status_response().await);
+        } else if request.method() == hyper::Method::GET // should really be POST with POST body parameters.
+            && req_path.starts_with(self.http_api_path.deref())
+        {
+            let (_base_path, remainder) = req_path.split_at(self.http_api_path.len());
+
+            let mut parts = remainder.split('/');
+            let zone_name = parts.next();
+            let operation = parts.next();
+            let given_approval_token = parts.next();
+
+            if operation == Some("approve")
+                && zone_name.is_some()
+                && given_approval_token.is_some()
+                && parts.next().is_none()
+            {
+                let zone_name = zone_name.unwrap();
+                let given_approval_token = given_approval_token.unwrap();
+
+                if let Ok(zone_name) = Name::<Bytes>::from_str(zone_name) {
+                    let mut status = hyper::StatusCode::BAD_REQUEST;
+
+                    if let Some(pending_approvals) =
+                        self.pending_approvals.write().await.get_mut(&zone_name)
+                    {
+                        if let Ok(given_uuid) = Uuid::from_str(given_approval_token) {
+                            if let Some(idx) = pending_approvals
+                                .iter()
+                                .position(|&uuid| uuid == given_uuid)
+                            {
+                                status = hyper::StatusCode::OK;
+                                info!("Pending zone '{zone_name}' approved");
+                                pending_approvals.remove(idx);
+
+                                // TODO: Send event to Central Command
+                            }
+                        }
+                    }
+                    return Some(
+                        hyper::Response::builder()
+                            .status(status)
+                            .body(hyper::Body::empty())
+                            .unwrap(),
+                    );
+                }
+            }
+        }
+        None
+    }
+}
+
+impl ZoneReviewApi {
+    pub async fn build_status_response(&self) -> hyper::Response<hyper::Body> {
+        let mut response_body = self.build_response_header().await;
+
+        self.build_status_response_body(&mut response_body).await;
+
+        self.build_response_footer(&mut response_body);
+
+        hyper::Response::builder()
+            .header("Content-Type", "text/html")
+            .body(hyper::Body::from(response_body))
+            .unwrap()
+    }
+
+    async fn build_response_header(&self) -> String {
+        formatdoc! {
+            r#"
+            <!DOCTYPE html>
+            <html lang="en">
+                <head>
+                  <meta charset="UTF-8">
+                </head>
+                <body>
+                <pre>Showing {num_pending_approvals} pending zone approvals:
+            "#,
+            num_pending_approvals = self.pending_approvals.read().await.len()
+        }
+    }
+
+    async fn build_status_response_body(&self, response_body: &mut String) {
+        for (zone_name, pending_approvals) in self.pending_approvals.read().await.iter() {
+            response_body.push('\n');
+            response_body.push_str(&format!("zone:   {zone_name}\n"));
+            response_body.push_str(&format!(
+                "        # pending approvals: {}",
+                pending_approvals.len()
+            ));
+        }
+    }
+
+    fn build_response_footer(&self, response_body: &mut String) {
+        response_body.push_str("    </pre>\n");
+        response_body.push_str("  </body>\n");
+        response_body.push_str("</html>\n");
+    }
 }
