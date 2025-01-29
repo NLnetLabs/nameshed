@@ -623,7 +623,6 @@ impl XfrDataProvider<Option<<TsigKeyStore as KeyStore>::Key>> for XfrDataProvidi
             .sole_question()
             .map_err(XfrDataProviderError::ParseError)
             .and_then(|q| {
-                info!("Finding zone {}", q.qname());
                 if let Some(zone) = self.zones.load().find_zone(q.qname(), q.qclass()) {
                     Ok(XfrData::new(zone.clone(), vec![], false))
                 } else {
