@@ -251,69 +251,7 @@ impl std::fmt::Debug for CentralCommand {
 
 #[serde_as]
 #[derive(Debug, Default, Deserialize)]
-pub struct Config {
-    // /// MQTT server host[:port] to publish to
-    // pub destination: Destination,
-
-    // #[serde(default = "Config::default_qos")]
-    // pub qos: i32,
-
-    // pub client_id: ClientId,
-
-    // #[serde(default = "Config::default_topic_template")]
-    // pub topic_template: String,
-
-    // /// How long to wait in seconds before connecting again if the connection
-    // /// is closed.
-    // #[serde_as(as = "serde_with::DurationSeconds<u64>")]
-    // #[serde(default = "Config::default_connect_retry_secs")]
-    // pub connect_retry_secs: Duration,
-
-    // /// How long to wait before timing out an attempt to publish a message.
-    // #[serde_as(as = "serde_with::DurationSeconds<u64>")]
-    // #[serde(default = "Config::default_publish_max_secs")]
-    // pub publish_max_secs: Duration,
-
-    // /// How many messages to buffer if publishing encounters delays
-    // #[serde(default = "Config::default_queue_size")]
-    // pub queue_size: u16,
-
-    // #[serde(default)]
-    // pub username: Option<String>,
-
-    // #[serde(default)]
-    // pub password: Option<String>,
-}
-
-impl Config {
-    // /// The default MQTT quality of service setting to use
-    // ///   0 - At most once delivery
-    // ///   1 - At least once delivery
-    // ///   2 - Exactly once delivery
-    // pub fn default_qos() -> i32 {
-    //     2
-    // }
-
-    // /// The default re-connect timeout in seconds.
-    // pub fn default_connect_retry_secs() -> Duration {
-    //     Duration::from_secs(60)
-    // }
-
-    // /// The default publish timeout in seconds.
-    // pub fn default_publish_max_secs() -> Duration {
-    //     Duration::from_secs(5)
-    // }
-
-    // /// The default MQTT topic prefix.
-    // pub fn default_topic_template() -> String {
-    //     "rotonda/{id}".to_string()
-    // }
-
-    // /// The default re-connect timeout in seconds.
-    // pub fn default_queue_size() -> u16 {
-    //     1000
-    // }
-}
+pub struct Config {}
 
 //------------ CentralCommandStatusReporter ----------------------------------
 
@@ -360,29 +298,10 @@ impl Named for CentralCommandStatusReporter {
 
 #[derive(Debug, Default)]
 pub struct CentralCommandMetrics {
-    // pub connection_established_state: AtomicBool,
-    // pub connection_lost_count: AtomicUsize,
-    // pub connection_error_count: AtomicUsize,
-    // pub publish_error_count: AtomicUsize,
-    // pub in_flight_count: AtomicU16,
-    // // pub not_acknowledged_count: AtomicUsize,
-    // topics: Arc<FrimMap<Arc<String>, Arc<TopicMetrics>>>,
 }
 
 impl GraphStatus for CentralCommandMetrics {
     fn status_text(&self) -> String {
-        // match self.connection_established_state.load(SeqCst) {
-        //     true => {
-        //         format!(
-        //             "in-flight: {}\npublished: {}\nerrors: {}",
-        //             self.in_flight_count.load(SeqCst),
-        //             self.topics.guard().iter().fold(0, |acc, v| acc
-        //                 + v.1.publish_counts.load(SeqCst)),
-        //             self.publish_error_count.load(SeqCst),
-        //         )
-        //     }
-        //     false => "N/A".to_string(),
-        // }
         "TODO".to_string()
     }
 
@@ -398,42 +317,6 @@ impl CentralCommandMetrics {
     //     MetricType::Gauge,
     //     MetricUnit::State,
     // );
-    // const CONNECTION_LOST_COUNT_METRIC: Metric = Metric::new(
-    //     "mqtt_target_connection_lost_count",
-    //     "the number of times the connection to the MQTT broker was lost",
-    //     MetricType::Counter,
-    //     MetricUnit::Total,
-    // );
-    // const CONNECTION_ERROR_COUNT_METRIC: Metric = Metric::new(
-    //     "mqtt_target_connection_error_count",
-    //     "the number of times an error occurred with the connection to the MQTT broker",
-    //     MetricType::Counter,
-    //     MetricUnit::Total,
-    // );
-    // const PUBLISH_COUNT_PER_TOPIC_METRIC: Metric = Metric::new(
-    //     "mqtt_target_publish_count",
-    //     "the number of messages requested for publication to the MQTT broker per topic",
-    //     MetricType::Counter,
-    //     MetricUnit::Total,
-    // );
-    // const PUBLISH_ERROR_COUNT_PER_TOPIC_METRIC: Metric = Metric::new(
-    //     "mqtt_target_publish_error_count",
-    //     "the number of messages that could not be queued for publication",
-    //     MetricType::Counter,
-    //     MetricUnit::Total,
-    // );
-    // const IN_FLIGHT_COUNT_PER_TOPIC_METRIC: Metric = Metric::new(
-    //     "mqtt_target_in_flight_count",
-    //     "the number of messages requested for publication but not yet sent to the MQTT broker per topic",
-    //     MetricType::Gauge,
-    //     MetricUnit::Total,
-    // );
-    // // The rumqttc library has this count internally but doesn't expose it to
-    // // us. const PUBLISH_NOT_ACKNOWLEDGED_COUNT_METRIC: Metric = Metric::new(
-    // //     "mqtt_target_published_not_acknowledged_count", "the number of QoS
-    // //     1 or QoS 2 messages for which confirmation by the MQTT broker is
-    // //     pending (QoS 1) or incomplete (QoS 2)", MetricType::Counter,
-    // //     MetricUnit::Total, );
 }
 
 impl CentralCommandMetrics {
@@ -449,41 +332,5 @@ impl metrics::Source for CentralCommandMetrics {
         //     Some(unit_name),
         //     self.connection_established_state.load(SeqCst) as u8,
         // );
-        // target.append_simple(
-        //     &Self::CONNECTION_LOST_COUNT_METRIC,
-        //     Some(unit_name),
-        //     self.connection_lost_count.load(SeqCst),
-        // );
-        // target.append_simple(
-        //     &Self::CONNECTION_ERROR_COUNT_METRIC,
-        //     Some(unit_name),
-        //     self.connection_error_count.load(SeqCst),
-        // );
-        // target.append_simple(
-        //     &Self::IN_FLIGHT_COUNT_PER_TOPIC_METRIC,
-        //     Some(unit_name),
-        //     self.in_flight_count.load(SeqCst),
-        // );
-        // target.append_simple(
-        //     &Self::PUBLISH_ERROR_COUNT_PER_TOPIC_METRIC,
-        //     Some(unit_name),
-        //     self.publish_error_count.load(SeqCst),
-        // );
-        // // target.append_simple(
-        // //     &Self::PUBLISH_NOT_ACKNOWLEDGED_COUNT_METRIC,
-        // //     Some(unit_name),
-        // //     self.not_acknowledged_count.load(SeqCst),
-        // // );
-        // for (topic, metrics) in self.topics.guard().iter() {
-        //     let topic = topic.as_str();
-        //     append_labelled_metric(
-        //         unit_name,
-        //         target,
-        //         "topic",
-        //         topic,
-        //         Self::PUBLISH_COUNT_PER_TOPIC_METRIC,
-        //         metrics.publish_counts.load(SeqCst),
-        //     );
-        // }
     }
 }
