@@ -6,4 +6,5 @@ use domain::zonetree::StoredName;
 pub enum Update {
     // Define events here.
     ZoneUpdatedEvent(StoredName),
+    ZoneApprovedEvent(StoredName),
 }

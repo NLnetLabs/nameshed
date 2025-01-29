@@ -81,6 +81,7 @@ use tokio::sync::mpsc::Sender;
 
 use bytes::Bytes;
 use domain::base::Name;
+use domain::zonetree::StoredName;
 use std::sync::atomic::Ordering::SeqCst;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
@@ -1606,7 +1607,8 @@ pub struct Terminated;
 
 #[derive(Clone, Debug)]
 pub enum ApplicationCommand {
-    PublishZone { zone_name: Name<Bytes> },
+    PublishZone { zone_name: StoredName },
+    SignZone { zone_name: StoredName },
 }
 
 //------------ GateCommand ---------------------------------------------------
@@ -1697,6 +1699,7 @@ impl Clone for GateCommand {
             Self::ReportLinks { report } => Self::ReportLinks {
                 report: report.clone(),
             },
+            Self::ApplicationCommand { data } => Self::ApplicationCommand { data: data.clone() },
             _ => panic!("Internal error: Unclonable GateCommand"),
         }
     }

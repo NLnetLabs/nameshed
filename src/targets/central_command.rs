@@ -210,6 +210,16 @@ impl DirectUpdate for CentralCommand {
                     )
                     .await;
             }
+
+            Update::ZoneApprovedEvent(zone_name) => {
+                info!(
+                    "[{}]: Instructing zone signer to sign the approved zone",
+                    self.component.name()
+                );
+                self.component
+                    .send_command("ZS".to_string(), ApplicationCommand::SignZone { zone_name })
+                    .await;
+            }
         }
     }
 }

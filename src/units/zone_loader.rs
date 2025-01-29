@@ -617,6 +617,8 @@ impl DirectUpdate for ZoneLoader {
             Update::ZoneUpdatedEvent(name) => {
                 eprintln!("ZL: Zone '{name}' has been updated!");
             }
+
+            _ => { /* Not for us */ }
         }
     }
 }

@@ -318,6 +318,7 @@ impl ZoneServer {
         // Setup REST API endpoint
         let http_processor = Arc::new(ZoneReviewApi::new(
             self.http_api_path.clone(),
+            self.gate.clone(),
             self.pending_approvals.clone(),
         ));
         self.component
@@ -452,6 +453,8 @@ impl ZoneServer {
                                         }
                                     }
                                 }
+
+                                _ => { /* Not for us */ }
                             }
                         }
 
@@ -895,16 +898,19 @@ fn zone_server_service(
 
 struct ZoneReviewApi {
     http_api_path: Arc<String>,
+    gate: Gate,
     pending_approvals: Arc<RwLock<HashMap<Name<Bytes>, Vec<Uuid>>>>,
 }
 
 impl ZoneReviewApi {
     fn new(
         http_api_path: Arc<String>,
+        gate: Gate,
         pending_approvals: Arc<RwLock<HashMap<Name<Bytes>, Vec<Uuid>>>>,
     ) -> Self {
         Self {
             http_api_path,
+            gate,
             pending_approvals,
         }
     }
@@ -952,7 +958,9 @@ impl ProcessRequest for ZoneReviewApi {
                                 info!("Pending zone '{zone_name}' approved");
                                 pending_approvals.remove(idx);
 
-                                // TODO: Send event to Central Command
+                                self.gate
+                                    .update_data(Update::ZoneApprovedEvent(zone_name))
+                                    .await;
                             }
                         }
                     }
