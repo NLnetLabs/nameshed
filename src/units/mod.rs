@@ -21,6 +21,7 @@
 
 mod zone_loader;
 mod zone_server;
+mod zone_signer;
 
 //------------ Unit ----------------------------------------------------------
 
@@ -37,6 +38,9 @@ pub enum Unit {
 
     #[serde(rename = "zone-server")]
     ZoneServer(zone_server::ZoneServerUnit),
+
+    #[serde(rename = "zone-signer")]
+    ZoneSigner(zone_signer::ZoneSignerUnit),
 }
 
 impl Unit {
@@ -44,6 +48,7 @@ impl Unit {
         let _ = match self {
             Unit::ZoneLoader(unit) => unit.run(component, gate, waitpoint).await,
             Unit::ZoneServer(unit) => unit.run(component, gate, waitpoint).await,
+            Unit::ZoneSigner(unit) => unit.run(component, gate, waitpoint).await,
         };
     }
 
@@ -51,6 +56,7 @@ impl Unit {
         match self {
             Unit::ZoneLoader(_) => "zone-loader",
             Unit::ZoneServer(_) => "zone-server",
+            Unit::ZoneSigner(_) => "zone-signer",
         }
     }
 }

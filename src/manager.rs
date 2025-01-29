@@ -58,11 +58,11 @@ pub struct Component {
     /// A reference to the Tracer
     tracer: Arc<Tracer>,
 
-    /// A reference to the incoming zones.
-    incoming_zones: Arc<ArcSwap<ZoneTree>>,
+    /// A reference to the unsigned zones.
+    unsigned_zones: Arc<ArcSwap<ZoneTree>>,
 
-    /// A reference to the published zones.
-    published_zones: Arc<ArcSwap<ZoneTree>>,
+    /// A reference to the signed zones.
+    signed_zones: Arc<ArcSwap<ZoneTree>>,
 
     /// A reference to the TsigKeyStore.
     tsig_key_store: TsigKeyStore,
@@ -83,8 +83,8 @@ impl Default for Component {
             http_resources: Default::default(),
             // roto_compiled: Default::default(),
             tracer: Default::default(),
-            incoming_zones: Default::default(),
-            published_zones: Default::default(),
+            unsigned_zones: Default::default(),
+            signed_zones: Default::default(),
             tsig_key_store: Default::default(),
             app_cmd_tx: tokio::sync::mpsc::channel(0).0,
         }
@@ -102,8 +102,8 @@ impl Component {
         http_resources: http::Resources,
         // roto_compiled: Option<Arc<CompiledRoto>>,
         tracer: Arc<Tracer>,
-        incoming_zones: Arc<ArcSwap<ZoneTree>>,
-        published_zones: Arc<ArcSwap<ZoneTree>>,
+        unsigned_zones: Arc<ArcSwap<ZoneTree>>,
+        signed_zones: Arc<ArcSwap<ZoneTree>>,
         tsig_key_store: TsigKeyStore,
         app_cmd_tx: Sender<(String, ApplicationCommand)>,
     ) -> Self {
@@ -115,8 +115,8 @@ impl Component {
             http_resources,
             // roto_compiled,
             tracer,
-            incoming_zones,
-            published_zones,
+            unsigned_zones,
+            signed_zones,
             tsig_key_store,
             app_cmd_tx,
         }
@@ -149,12 +149,12 @@ impl Component {
         &self.tracer
     }
 
-    pub fn incoming_zones(&self) -> &Arc<ArcSwap<ZoneTree>> {
-        &self.incoming_zones
+    pub fn unsigned_zones(&self) -> &Arc<ArcSwap<ZoneTree>> {
+        &self.unsigned_zones
     }
 
-    pub fn published_zones(&self) -> &Arc<ArcSwap<ZoneTree>> {
-        &self.published_zones
+    pub fn signed_zones(&self) -> &Arc<ArcSwap<ZoneTree>> {
+        &self.signed_zones
     }
 
     pub fn tsig_key_store(&self) -> &TsigKeyStore {
@@ -616,9 +616,9 @@ pub struct Manager {
 
     tsig_key_store: TsigKeyStore,
 
-    incoming_zones: Arc<ArcSwap<ZoneTree>>,
+    unsigned_zones: Arc<ArcSwap<ZoneTree>>,
 
-    published_zones: Arc<ArcSwap<ZoneTree>>,
+    signed_zones: Arc<ArcSwap<ZoneTree>>,
 
     app_cmd_tx: Sender<(String, ApplicationCommand)>,
 
@@ -643,8 +643,8 @@ impl Manager {
             Self::mk_svg_http_processor(graph_svg_data.clone(), tracer.clone());
 
         let tsig_key_store = Default::default();
-        let incoming_zones = Default::default();
-        let published_zones = Default::default();
+        let unsigned_zones = Default::default();
+        let signed_zones = Default::default();
 
         let (tracer_processor, tracer_rel_base_url) =
             Self::mk_tracer_http_processor(tracer.clone());
@@ -663,8 +663,8 @@ impl Manager {
             file_io: TheFileIo::default(),
             tracer,
             tracer_processor,
-            incoming_zones,
-            published_zones,
+            unsigned_zones,
+            signed_zones,
             tsig_key_store,
             app_cmd_tx,
             app_cmd_rx: Arc::new(tokio::sync::Mutex::new(app_cmd_rx)),
@@ -1125,8 +1125,8 @@ impl Manager {
                 self.http_resources.clone(),
                 // self.roto_compiled.clone(),
                 self.tracer.clone(),
-                self.incoming_zones.clone(),
-                self.published_zones.clone(),
+                self.unsigned_zones.clone(),
+                self.signed_zones.clone(),
                 self.tsig_key_store.clone(),
                 self.app_cmd_tx.clone(),
             );
@@ -1191,8 +1191,8 @@ impl Manager {
                 self.http_resources.clone(),
                 // self.roto_compiled.clone(),
                 self.tracer.clone(),
-                self.incoming_zones.clone(),
-                self.published_zones.clone(),
+                self.unsigned_zones.clone(),
+                self.signed_zones.clone(),
                 self.tsig_key_store.clone(),
                 self.app_cmd_tx.clone(),
             );

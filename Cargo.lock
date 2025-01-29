@@ -422,7 +422,7 @@ dependencies = [
 [[package]]
 name = "domain"
 version = "0.10.3"
-source = "git+https://github.com/NLnetLabs/domain?branch=server-trait-usability-fixes#45ade90297a47c01ab802eea6c58cfa130c50bc6"
+source = "git+https://github.com/NLnetLabs/domain?branch=zone-updater-should-work-with-any-record-type#c5a0d5bfe6941866145e2159957575e3bc556827"
 dependencies = [
  "arc-swap",
  "bytes",

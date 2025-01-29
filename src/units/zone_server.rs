@@ -122,7 +122,7 @@ use futures::stream::{once, Once};
 use octseq::Octets;
 use std::marker::Sync;
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Copy, Clone, Debug, Deserialize, PartialEq, Eq)]
 pub enum Mode {
     #[serde(alias = "prepublish")]
     #[serde(alias = "prepub")]
@@ -167,8 +167,8 @@ impl ZoneServerUnit {
         let status_reporter = Arc::new(ZoneLoaderStatusReporter::new(&unit_name, metrics.clone()));
 
         let zones = match self.mode {
-            Mode::Prepublish => component.incoming_zones().clone(),
-            Mode::Publish => component.published_zones().clone(),
+            Mode::Prepublish => component.unsigned_zones().clone(),
+            Mode::Publish => component.signed_zones().clone(),
         };
 
         let max_concurrency = std::thread::available_parallelism().unwrap().get() / 2;
@@ -221,6 +221,7 @@ impl ZoneServerUnit {
             status_reporter,
             self.mode,
             self.hooks,
+            zones,
         )
         .run()
         .await?;
@@ -285,6 +286,7 @@ struct ZoneServer {
     mode: Mode,
     hooks: Vec<String>,
     pending_approvals: Arc<RwLock<HashMap<(Name<Bytes>, Serial), Vec<Uuid>>>>,
+    zones: XfrDataProvidingZonesWrapper,
 }
 
 impl ZoneServer {
@@ -297,6 +299,7 @@ impl ZoneServer {
         status_reporter: Arc<ZoneLoaderStatusReporter>,
         mode: Mode,
         hooks: Vec<String>,
+        zones: XfrDataProvidingZonesWrapper,
     ) -> Self {
         Self {
             component,
@@ -307,12 +310,11 @@ impl ZoneServer {
             mode,
             hooks,
             pending_approvals: Default::default(),
+            zones,
         }
     }
 
     async fn run(self) -> Result<(), crate::comms::Terminated> {
-        // Loop until terminated, accepting TCP connections from routers and
-        // spawning tasks to handle them.
         let status_reporter = self.status_reporter.clone();
 
         // Setup REST API endpoint
@@ -320,6 +322,8 @@ impl ZoneServer {
             self.http_api_path.clone(),
             self.gate.clone(),
             self.pending_approvals.clone(),
+            self.zones.clone(),
+            self.mode,
         ));
         self.component
             .write()
@@ -337,18 +341,6 @@ impl ZoneServer {
                 .await
             {
                 ControlFlow::Continue(()) => {
-                    // // status_reporter
-                    // //     .listener_connection_accepted(client_addr);
-
-                    // eprintln!(
-                    //     "ZoneMaintainer says '{}' has been updated",
-                    //     updated_zone_name
-                    // );
-
-                    // arc_self
-                    //     .gate
-                    //     .update_data(Update::ZoneUpdatedEvent(updated_zone_name))
-                    //     .await;
                     todo!()
                 }
                 ControlFlow::Break(Terminated) => return Err(Terminated),
@@ -482,7 +474,7 @@ impl std::fmt::Debug for ZoneServer {
 impl DirectUpdate for ZoneServer {
     async fn direct_update(&self, event: Update) {
         info!(
-            "[{}]: Event received: {event:?}",
+            "[{}]: Received event: {event:?}",
             self.component.read().await.name()
         );
     }
@@ -631,6 +623,7 @@ impl XfrDataProvider<Option<<TsigKeyStore as KeyStore>::Key>> for XfrDataProvidi
             .sole_question()
             .map_err(XfrDataProviderError::ParseError)
             .and_then(|q| {
+                info!("Finding zone {}", q.qname());
                 if let Some(zone) = self.zones.load().find_zone(q.qname(), q.qclass()) {
                     Ok(XfrData::new(zone.clone(), vec![], false))
                 } else {
@@ -663,22 +656,6 @@ impl ZoneServerService {
     }
 }
 
-// impl Service<Vec<u8>, TsigKeyStore> for ZoneServerService
-// where
-//     Self: Clone + Send + Sync + 'static,
-// {
-//     type Target = Vec<u8>;
-
-//     type Stream = Once<Ready<ServiceResult<Self::Target>>>;
-
-//     type Future = Ready<Self::Stream>;
-
-//     fn call(&self, request: Request<Vec<u8>, TsigKeyStore>) -> Self::Future {
-//         let item = zone_server_service(request, self.zones.clone());
-//         ready(once(ready(item)))
-//     }
-// }
-
 fn zone_server_service(
     request: Request<Vec<u8>, Option<<TsigKeyStore as KeyStore>::Key>>,
     zones: XfrDataProvidingZonesWrapper,
@@ -709,6 +686,8 @@ struct ZoneReviewApi {
     http_api_path: Arc<String>,
     gate: Gate,
     pending_approvals: Arc<RwLock<HashMap<(Name<Bytes>, Serial), Vec<Uuid>>>>,
+    zones: XfrDataProvidingZonesWrapper,
+    mode: Mode,
 }
 
 impl ZoneReviewApi {
@@ -716,11 +695,15 @@ impl ZoneReviewApi {
         http_api_path: Arc<String>,
         gate: Gate,
         pending_approvals: Arc<RwLock<HashMap<(Name<Bytes>, Serial), Vec<Uuid>>>>,
+        zones: XfrDataProvidingZonesWrapper,
+        mode: Mode,
     ) -> Self {
         Self {
             http_api_path,
             gate,
             pending_approvals,
+            zones,
+            mode,
         }
     }
 }
@@ -738,7 +721,7 @@ impl ProcessRequest for ZoneReviewApi {
         let req_path = request.uri().decoded_path();
         if request.method() == hyper::Method::GET && req_path == *self.http_api_path {
             return Some(self.build_status_response().await);
-        } else if request.method() == hyper::Method::GET // should really be POST with POST body parameters.
+        } else if self.mode == Mode::Prepublish && request.method() == hyper::Method::GET // should really be POST with POST body parameters.
             && req_path.starts_with(self.http_api_path.deref())
         {
             let (_base_path, remainder) = req_path.split_at(self.http_api_path.len());
@@ -870,23 +853,38 @@ impl ZoneReviewApi {
                   <meta charset="UTF-8">
                 </head>
                 <body>
-                <pre>Showing {num_pending_approvals} pending zone approvals:
+                <pre>
             "#,
-            num_pending_approvals = self.pending_approvals.read().await.len()
         }
     }
 
     async fn build_status_response_body(&self, response_body: &mut String) {
-        for ((zone_name, zone_serial), pending_approvals) in
-            self.pending_approvals.read().await.iter()
-        {
-            response_body.push('\n');
-            response_body.push_str(&format!("zone:   {zone_name}\n"));
-            response_body.push_str(&format!("        serial: {zone_serial}\n"));
+        if self.mode == Mode::Prepublish {
+            let num_pending_approvals = self.pending_approvals.read().await.len();
             response_body.push_str(&format!(
-                "        # pending approvals: {}",
-                pending_approvals.len()
+                "Showing {num_pending_approvals} pending zone approvals:\n"
             ));
+
+            for ((zone_name, zone_serial), pending_approvals) in
+                self.pending_approvals.read().await.iter()
+            {
+                response_body.push('\n');
+                response_body.push_str(&format!("zone:   {zone_name}\n"));
+                response_body.push_str(&format!("        serial: {zone_serial}\n"));
+                response_body.push_str(&format!(
+                    "        # pending approvals: {}",
+                    pending_approvals.len()
+                ));
+            }
+
+            response_body.push_str("\n\n");
+        }
+
+        let num_zones = self.zones.zones.load().iter_zones().count();
+        response_body.push_str(&format!("Serving {num_zones} zones:\n\n"));
+
+        for zone in self.zones.zones.load().iter_zones() {
+            response_body.push_str(&format!("zone:   {}", zone.apex_name()));
         }
     }
 

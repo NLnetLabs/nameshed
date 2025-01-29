@@ -162,7 +162,7 @@ impl ZoneLoaderUnit {
             Config::<_, DefaultConnFactory>::new(component.tsig_key_store().clone());
         let zone_maintainer = Arc::new(
             ZoneMaintainer::new_with_config(maintainer_config)
-                .with_zone_tree(component.incoming_zones().clone()),
+                .with_zone_tree(component.unsigned_zones().clone()),
         );
 
         for (zone_name, zone_path) in self.zones.iter() {
@@ -515,8 +515,6 @@ impl ZoneLoader {
         self,
         mut zone_updated_rx: Receiver<(StoredName, Serial)>,
     ) -> Result<(), crate::comms::Terminated> {
-        // Loop until terminated, accepting TCP connections from routers and
-        // spawning tasks to handle them.
         let status_reporter = self.status_reporter.clone();
 
         let arc_self = Arc::new(self);
@@ -638,16 +636,10 @@ impl std::fmt::Debug for ZoneLoader {
 #[async_trait]
 impl DirectUpdate for ZoneLoader {
     async fn direct_update(&self, event: Update) {
-        match event {
-            Update::ZoneUpdatedEvent {
-                zone_name,
-                zone_serial,
-            } => {
-                eprintln!("ZL: Zone '{zone_name}' has been updated to serial {zone_serial}!");
-            }
-
-            _ => { /* Not for us */ }
-        }
+        info!(
+            "[{}]: Received event: {event:?}",
+            self.component.read().await.name()
+        );
     }
 }
 
