@@ -1473,7 +1473,7 @@ impl Manager {
                     </style>
                     </head>
                     <body>
-                      <svg xmlns="http://www.w3.org/2000/svg" style="width: 100%; height: 300px;">
+                      <svg xmlns="http://www.w3.org/2000/svg" style="width: 100%; height: 100%;">
                          {svg}
                       </svg>
                       {traces}
