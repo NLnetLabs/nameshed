@@ -17,7 +17,7 @@ use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use domain::base::iana::{Class, Rcode};
 use domain::base::wire::Composer;
-use domain::base::Name;
+use domain::base::{Name, Rtype, Serial};
 use domain::net::server::buf::VecBufSource;
 use domain::net::server::dgram::{self, DgramServer};
 use domain::net::server::message::Request;
@@ -95,6 +95,7 @@ use crate::{
         },
     },
 };
+use domain::rdata::ZoneRecordData;
 use domain::tsig::KeyStore;
 
 #[serde_as]
@@ -374,11 +375,11 @@ fn my_noop_service(_request: Request<Vec<u8>, ()>, _meta: ()) -> ServiceResult<V
 #[derive(Debug)]
 pub struct NotifyOnWriteZone {
     store: Arc<dyn ZoneStore>,
-    sender: Sender<StoredName>,
+    sender: Sender<(StoredName, Serial)>,
 }
 
 impl NotifyOnWriteZone {
-    pub fn new(zone: Zone, sender: Sender<StoredName>) -> Self {
+    pub fn new(zone: Zone, sender: Sender<(StoredName, Serial)>) -> Self {
         Self {
             store: zone.into_inner(),
             sender,
@@ -422,7 +423,7 @@ impl ZoneStore for NotifyOnWriteZone {
 struct NotifyOnCommitZone {
     writable_zone: Box<dyn WritableZone>,
     store: Arc<dyn ZoneStore>,
-    sender: Sender<StoredName>,
+    sender: Sender<(StoredName, Serial)>,
 }
 
 impl WritableZone for NotifyOnCommitZone {
@@ -441,13 +442,35 @@ impl WritableZone for NotifyOnCommitZone {
     ) -> Pin<Box<dyn Future<Output = Result<Option<InMemoryZoneDiff>, std::io::Error>> + Send + Sync>>
     {
         let fut = self.writable_zone.commit(bump_soa_serial);
-        let apex_name = self.store.apex_name().clone();
+        let store = self.store.clone();
         let sender = self.sender.clone();
 
         Box::pin(async move {
             let res = fut.await;
-            debug!("Notifying that zone '{}' has been committed", apex_name);
-            sender.send(apex_name).await.unwrap();
+            let zone_name = store.apex_name().clone();
+            match store
+                .read()
+                .query_async(zone_name.clone(), Rtype::SOA)
+                .await
+            {
+                Ok(answer) if answer.rcode() == Rcode::NOERROR => {
+                    let soa_data = answer.content().first().map(|(ttl, data)| data);
+                    if let Some(ZoneRecordData::Soa(soa)) = soa_data {
+                        let zone_serial = soa.serial();
+                        debug!("Notifying that zone '{zone_name}' has been committed at serial {zone_serial}");
+                        sender.send((zone_name.clone(), zone_serial)).await.unwrap();
+                    } else {
+                        error!("Failed to query SOA of zone {zone_name} after commit: invalid SOA found");
+                    }
+                }
+                Ok(answer) => error!(
+                    "Failed to query SOA of zone {zone_name} after commit: rcode {}",
+                    answer.rcode()
+                ),
+                Err(err) => {
+                    error!("Failed to query SOA of zone {zone_name} after commit: out of zone.")
+                }
+            }
             res
         })
     }
@@ -490,7 +513,7 @@ impl ZoneLoader {
 
     async fn run(
         self,
-        mut zone_updated_rx: Receiver<StoredName>,
+        mut zone_updated_rx: Receiver<(StoredName, Serial)>,
     ) -> Result<(), crate::comms::Terminated> {
         // Loop until terminated, accepting TCP connections from routers and
         // spawning tasks to handle them.
@@ -502,19 +525,21 @@ impl ZoneLoader {
             //     status_reporter.listener_listening(&listen_addr.to_string());
 
             match arc_self.clone().process_until(zone_updated_rx.recv()).await {
-                ControlFlow::Continue(Some(updated_zone_name)) => {
+                ControlFlow::Continue(Some((zone_name, zone_serial))) => {
                     // status_reporter
                     //     .listener_connection_accepted(client_addr);
 
                     info!(
-                        "[{}]: Received a new copy of zone '{}'",
+                        "[{}]: Received a new copy of zone '{zone_name}' at serial {zone_serial}",
                         arc_self.component.read().await.name(),
-                        updated_zone_name
                     );
 
                     arc_self
                         .gate
-                        .update_data(Update::ZoneUpdatedEvent(updated_zone_name))
+                        .update_data(Update::ZoneUpdatedEvent {
+                            zone_name,
+                            zone_serial,
+                        })
                         .await;
                 }
                 ControlFlow::Continue(None) | ControlFlow::Break(Terminated) => {
@@ -614,8 +639,11 @@ impl std::fmt::Debug for ZoneLoader {
 impl DirectUpdate for ZoneLoader {
     async fn direct_update(&self, event: Update) {
         match event {
-            Update::ZoneUpdatedEvent(name) => {
-                eprintln!("ZL: Zone '{name}' has been updated!");
+            Update::ZoneUpdatedEvent {
+                zone_name,
+                zone_serial,
+            } => {
+                eprintln!("ZL: Zone '{zone_name}' has been updated to serial {zone_serial}!");
             }
 
             _ => { /* Not for us */ }

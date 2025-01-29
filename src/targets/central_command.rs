@@ -198,7 +198,10 @@ impl DirectUpdate for CentralCommand {
     async fn direct_update(&self, event: Update) {
         info!("[{}]: Event received: {event:?}", self.component.name());
         match event {
-            Update::ZoneUpdatedEvent(zone_name) => {
+            Update::ZoneUpdatedEvent {
+                zone_name,
+                zone_serial,
+            } => {
                 info!(
                     "[{}]: Instructing review server to publish the updated zone",
                     self.component.name()
@@ -206,18 +209,30 @@ impl DirectUpdate for CentralCommand {
                 self.component
                     .send_command(
                         "RS".to_string(),
-                        ApplicationCommand::PublishZone { zone_name },
+                        ApplicationCommand::PublishZone {
+                            zone_name,
+                            zone_serial,
+                        },
                     )
                     .await;
             }
 
-            Update::ZoneApprovedEvent(zone_name) => {
+            Update::ZoneApprovedEvent {
+                zone_name,
+                zone_serial,
+            } => {
                 info!(
                     "[{}]: Instructing zone signer to sign the approved zone",
                     self.component.name()
                 );
                 self.component
-                    .send_command("ZS".to_string(), ApplicationCommand::SignZone { zone_name })
+                    .send_command(
+                        "ZS".to_string(),
+                        ApplicationCommand::SignZone {
+                            zone_name,
+                            zone_serial,
+                        },
+                    )
                     .await;
             }
         }

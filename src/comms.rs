@@ -79,8 +79,7 @@ use log::{error, log_enabled, trace, Level};
 use serde::Deserialize;
 use tokio::sync::mpsc::Sender;
 
-use bytes::Bytes;
-use domain::base::Name;
+use domain::base::Serial;
 use domain::zonetree::StoredName;
 use std::sync::atomic::Ordering::SeqCst;
 use std::sync::{Arc, Mutex, Weak};
@@ -1607,8 +1606,8 @@ pub struct Terminated;
 
 #[derive(Clone, Debug)]
 pub enum ApplicationCommand {
-    PublishZone { zone_name: StoredName },
-    SignZone { zone_name: StoredName },
+    PublishZone { zone_name: StoredName, zone_serial: Serial },
+    SignZone { zone_name: StoredName, zone_serial: Serial },
 }
 
 //------------ GateCommand ---------------------------------------------------
