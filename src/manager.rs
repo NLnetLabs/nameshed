@@ -210,9 +210,9 @@ impl Component {
         )
     }
 
-    pub async fn send_command(&self, target_unit_name: String, data: ApplicationCommand) {
+    pub async fn send_command(&self, target_unit_name: &str, data: ApplicationCommand) {
         self.app_cmd_tx
-            .send((target_unit_name, data))
+            .send((target_unit_name.to_string(), data))
             .await
             .unwrap()
     }
