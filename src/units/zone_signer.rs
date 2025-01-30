@@ -205,36 +205,15 @@ impl ZoneSigner {
             //     status_reporter.listener_listening(&listen_addr.to_string());
 
             match arc_self.clone().process_until(pending()).await {
-                ControlFlow::Continue(Some((zone_name, zone_serial))) => {
-                    // status_reporter
-                    //     .listener_connection_accepted(client_addr);
-
-                    info!(
-                        "[{}]: Received a new copy of zone '{zone_name}' at serial {zone_serial}",
-                        arc_self.component.read().await.name(),
-                    );
-
-                    arc_self
-                        .gate
-                        .update_data(Update::ZoneUpdatedEvent {
-                            zone_name,
-                            zone_serial,
-                        })
-                        .await;
-                }
-                ControlFlow::Continue(None) | ControlFlow::Break(Terminated) => {
-                    return Err(Terminated)
-                }
+                ControlFlow::Continue(()) => unreachable!(),
+                ControlFlow::Break(Terminated) => return Err(Terminated),
             }
         }
     }
 
-    async fn process_until<T, U>(
-        self: Arc<Self>,
-        until_fut: T,
-    ) -> ControlFlow<Terminated, Option<U>>
+    async fn process_until<T>(self: Arc<Self>, until_fut: T) -> ControlFlow<Terminated, ()>
     where
-        T: Future<Output = Option<U>>,
+        T: Future<Output = ()>,
     {
         let mut until_fut = Box::pin(until_fut);
 
@@ -409,6 +388,13 @@ impl ZoneSigner {
                                     };
 
                                     let zone = zone.unwrap();
+                                    let zone_name = zone.apex_name().clone();
+                                    let zone_serial =
+                                        if let ZoneRecordData::Soa(soa_data) = soa_rr.data() {
+                                            soa_data.serial()
+                                        } else {
+                                            unreachable!()
+                                        };
 
                                     // Update the content of the zone.
                                     let mut updater = ZoneUpdater::new(zone).await.unwrap();
@@ -417,6 +403,13 @@ impl ZoneSigner {
                                         updater.apply(ZoneUpdate::AddRecord(rr)).await.unwrap();
                                     }
                                     updater.apply(ZoneUpdate::Finished(soa_rr)).await.unwrap();
+
+                                    self.gate
+                                        .update_data(Update::ZoneSignedEvent {
+                                            zone_name,
+                                            zone_serial,
+                                        })
+                                        .await;
                                 }
 
                                 _ => { /* Not for us */ }

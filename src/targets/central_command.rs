@@ -3,6 +3,7 @@ use std::{ops::ControlFlow, sync::Arc};
 
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
+use indoc::formatdoc;
 use log::info;
 use non_empty_vec::NonEmpty;
 use serde::Deserialize;
@@ -13,6 +14,7 @@ use crate::common::status_reporter::{AnyStatusReporter, Chainable, Named, Target
 use crate::comms::{
     AnyDirectUpdate, ApplicationCommand, DirectLink, DirectUpdate, GraphStatus, Terminated,
 };
+use crate::http::{PercentDecodedPath, ProcessRequest};
 use crate::manager::{Component, TargetCommand, WaitPoint};
 use crate::metrics;
 use crate::payload::Update;
@@ -54,6 +56,7 @@ pub(super) struct CentralCommand {
     component: Component,
     config: Arc<ArcSwap<Config>>,
     status_reporter: Arc<CentralCommandStatusReporter>,
+    http_processor: Arc<CentralCommandApi>,
 }
 
 impl CentralCommand {
@@ -63,6 +66,9 @@ impl CentralCommand {
         let metrics = Arc::new(CentralCommandMetrics::new());
         component.register_metrics(metrics.clone());
 
+        let http_processor = Arc::new(CentralCommandApi::new());
+        component.register_http_resource(http_processor.clone(), "/");
+
         let status_reporter =
             Arc::new(CentralCommandStatusReporter::new(component.name(), metrics));
 
@@ -70,6 +76,7 @@ impl CentralCommand {
             component,
             config,
             status_reporter,
+            http_processor,
         }
     }
 
@@ -197,45 +204,58 @@ impl CentralCommand {
 impl DirectUpdate for CentralCommand {
     async fn direct_update(&self, event: Update) {
         info!("[{}]: Event received: {event:?}", self.component.name());
-        match event {
-            Update::ZoneUpdatedEvent {
+        let (msg, target, cmd) = match event {
+            Update::UnsignedZoneUpdatedEvent {
                 zone_name,
                 zone_serial,
-            } => {
-                info!(
-                    "[{}]: Instructing review server to publish the updated zone",
-                    self.component.name()
-                );
-                self.component
-                    .send_command(
-                        "RS".to_string(),
-                        ApplicationCommand::PublishZone {
-                            zone_name,
-                            zone_serial,
-                        },
-                    )
-                    .await;
-            }
+            } => (
+                "Instructing review server to publish the unsigned zone",
+                "RS",
+                ApplicationCommand::SeekApprovalForUnsignedZone {
+                    zone_name,
+                    zone_serial,
+                },
+            ),
 
-            Update::ZoneApprovedEvent {
+            Update::UnsignedZoneApprovedEvent {
                 zone_name,
                 zone_serial,
-            } => {
-                info!(
-                    "[{}]: Instructing zone signer to sign the approved zone",
-                    self.component.name()
-                );
-                self.component
-                    .send_command(
-                        "ZS".to_string(),
-                        ApplicationCommand::SignZone {
-                            zone_name,
-                            zone_serial,
-                        },
-                    )
-                    .await;
-            }
-        }
+            } => (
+                "Instructing zone signer to sign the approved zone",
+                "ZS",
+                ApplicationCommand::SignZone {
+                    zone_name,
+                    zone_serial,
+                },
+            ),
+
+            Update::ZoneSignedEvent {
+                zone_name,
+                zone_serial,
+            } => (
+                "Instructing review server to publish the signed zone",
+                "RS2",
+                ApplicationCommand::SeekApprovalForSignedZone {
+                    zone_name,
+                    zone_serial,
+                },
+            ),
+
+            Update::SignedZoneApprovedEvent {
+                zone_name,
+                zone_serial,
+            } => (
+                "Instructing publication server to publish the signed zone",
+                "PS",
+                ApplicationCommand::PublishSignedZone {
+                    zone_name,
+                    zone_serial,
+                },
+            ),
+        };
+
+        info!("[{}]: {msg}", self.component.name());
+        self.component.send_command(target.to_string(), cmd).await;
     }
 }
 
@@ -297,8 +317,7 @@ impl Named for CentralCommandStatusReporter {
 //------------ CentralCommandMetrics -----------------------------------------
 
 #[derive(Debug, Default)]
-pub struct CentralCommandMetrics {
-}
+pub struct CentralCommandMetrics {}
 
 impl GraphStatus for CentralCommandMetrics {
     fn status_text(&self) -> String {
@@ -332,5 +351,84 @@ impl metrics::Source for CentralCommandMetrics {
         //     Some(unit_name),
         //     self.connection_established_state.load(SeqCst) as u8,
         // );
+    }
+}
+
+//------------ CentralCommandApi ---------------------------------------------
+
+struct CentralCommandApi;
+
+impl CentralCommandApi {
+    fn new() -> Self {
+        Self
+    }
+}
+
+// API: GET /<http api path>/<zone name>/<zone serial>/{approve,reject}/<approval token>
+//
+// TODO: Should we expire old pending approvals, e.g. a hook script failed and
+// they never got approved or rejected?
+#[async_trait]
+impl ProcessRequest for CentralCommandApi {
+    async fn process_request(
+        &self,
+        request: &hyper::Request<hyper::Body>,
+    ) -> Option<hyper::Response<hyper::Body>> {
+        let req_path = request.uri().decoded_path();
+        if request.method() == hyper::Method::GET && req_path == "/" {
+            Some(self.build_status_response().await)
+        } else {
+            None
+        }
+    }
+}
+
+impl CentralCommandApi {
+    pub async fn build_status_response(&self) -> hyper::Response<hyper::Body> {
+        let mut response_body = self.build_response_header().await;
+
+        self.build_status_response_body(&mut response_body).await;
+
+        self.build_response_footer(&mut response_body);
+
+        hyper::Response::builder()
+            .header("Content-Type", "text/html")
+            .body(hyper::Body::from(response_body))
+            .unwrap()
+    }
+
+    async fn build_response_header(&self) -> String {
+        formatdoc! {
+            r#"
+            <!DOCTYPE html>
+            <html lang="en">
+                <head>
+                  <meta charset="UTF-8">
+                </head>
+                <body>
+                <h1>Nameshed</h1>
+            "#,
+        }
+    }
+
+    async fn build_status_response_body(&self, response_body: &mut String) {
+        let body = formatdoc! {
+            r#"
+            <ul>
+                <li>Zone Loader [ZL]: <a href="/zl/">view</a></li>
+                <li>Unsigned Zone Preview Server [RS]: <a href="/rs/">view</a></li>
+                <li>Zone Signer [ZS]: <a href="/zs/">view</a></li>
+                <li>Signed Zone Preview Server [RS2]: <a href="/rs2/">view</a></li>
+                <li>Public Server [PS]: <a href="/ps/">view</a></li>
+            </ul>
+            "#,
+        };
+
+        response_body.push_str(&body);
+    }
+
+    fn build_response_footer(&self, response_body: &mut String) {
+        response_body.push_str("  </body>\n");
+        response_body.push_str("</html>\n");
     }
 }

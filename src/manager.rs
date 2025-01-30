@@ -64,6 +64,9 @@ pub struct Component {
     /// A reference to the signed zones.
     signed_zones: Arc<ArcSwap<ZoneTree>>,
 
+    /// A reference to the publshed zones.
+    published_zones: Arc<ArcSwap<ZoneTree>>,
+
     /// A reference to the TsigKeyStore.
     tsig_key_store: TsigKeyStore,
 
@@ -85,6 +88,7 @@ impl Default for Component {
             tracer: Default::default(),
             unsigned_zones: Default::default(),
             signed_zones: Default::default(),
+            published_zones: Default::default(),
             tsig_key_store: Default::default(),
             app_cmd_tx: tokio::sync::mpsc::channel(0).0,
         }
@@ -104,6 +108,7 @@ impl Component {
         tracer: Arc<Tracer>,
         unsigned_zones: Arc<ArcSwap<ZoneTree>>,
         signed_zones: Arc<ArcSwap<ZoneTree>>,
+        published_zones: Arc<ArcSwap<ZoneTree>>,
         tsig_key_store: TsigKeyStore,
         app_cmd_tx: Sender<(String, ApplicationCommand)>,
     ) -> Self {
@@ -117,6 +122,7 @@ impl Component {
             tracer,
             unsigned_zones,
             signed_zones,
+            published_zones,
             tsig_key_store,
             app_cmd_tx,
         }
@@ -155,6 +161,10 @@ impl Component {
 
     pub fn signed_zones(&self) -> &Arc<ArcSwap<ZoneTree>> {
         &self.signed_zones
+    }
+
+    pub fn published_zones(&self) -> &Arc<ArcSwap<ZoneTree>> {
+        &self.published_zones
     }
 
     pub fn tsig_key_store(&self) -> &TsigKeyStore {
@@ -620,6 +630,8 @@ pub struct Manager {
 
     signed_zones: Arc<ArcSwap<ZoneTree>>,
 
+    published_zones: Arc<ArcSwap<ZoneTree>>,
+
     app_cmd_tx: Sender<(String, ApplicationCommand)>,
 
     app_cmd_rx: Arc<tokio::sync::Mutex<Receiver<(String, ApplicationCommand)>>>,
@@ -645,6 +657,7 @@ impl Manager {
         let tsig_key_store = Default::default();
         let unsigned_zones = Default::default();
         let signed_zones = Default::default();
+        let published_zones = Default::default();
 
         let (tracer_processor, tracer_rel_base_url) =
             Self::mk_tracer_http_processor(tracer.clone());
@@ -665,6 +678,7 @@ impl Manager {
             tracer_processor,
             unsigned_zones,
             signed_zones,
+            published_zones,
             tsig_key_store,
             app_cmd_tx,
             app_cmd_rx: Arc::new(tokio::sync::Mutex::new(app_cmd_rx)),
@@ -1127,6 +1141,7 @@ impl Manager {
                 self.tracer.clone(),
                 self.unsigned_zones.clone(),
                 self.signed_zones.clone(),
+                self.published_zones.clone(),
                 self.tsig_key_store.clone(),
                 self.app_cmd_tx.clone(),
             );
@@ -1193,6 +1208,7 @@ impl Manager {
                 self.tracer.clone(),
                 self.unsigned_zones.clone(),
                 self.signed_zones.clone(),
+                self.published_zones.clone(),
                 self.tsig_key_store.clone(),
                 self.app_cmd_tx.clone(),
             );

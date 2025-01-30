@@ -18,25 +18,27 @@ components:
 
   - ZL: "Zone Loader": Responsible for receiving incoming zones via XFR.
 
-  - RS: "Review Server": An instance of `ZoneServer` responsible for serving
-    an unsigned loaded zone for review.
+  - RS: "Pre-Signing Review Server": An instance of `ZoneServer` responsible
+    for serving an unsigned loaded zone for review.
+
+  - ZS: "Zone Signer": An instance of `ZoneSigner` responsible for signing
+    an approved unsigned loaded zone.
+
+  - RS2: "Post-Signing Review Server": An instance of `ZoneServer` responsible
+    for serving an unsigned loaded zone for review.
+
+  - PS: "Publication Server": An instance of `ZoneServer` responsible for
+    serving approved signed zones.
 
   - CC: "Central Command": Responsible for receiving events from all other
     components and then dispatching commands to them in order to trigger the
     next action that should occur, e.g. start serving a new copy of an
     unsigned review because it has been loaded.
 
-ZL and RS send their events downtream to CC.
+ZL, RS, ZS, RS2 and PS send their events downtream to CC.
 
-CC currently assumes it knows the names ("ZL" and "RS") of its upstream
-components in order to send commands to them by name, and possibly another
-"post-signing" review server.
+CC currently assumes it knows the names of its upstream components in order to
+send commands to them by name.
 
 Quickly tested with a local `NSD` acting as primary with `nameshed` acting as
 secondary.
-
-Next steps are to add "ZS" (Zone Signer) and "PS" (Publication Server)
-components which will sign the zone and then serve the signed zone, and to add
-hooks that are invoked so that external tools can review the content available
-served by "RS" (Review Server) and approve it to trigger publication of the
-signed zone.

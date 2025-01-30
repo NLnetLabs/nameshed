@@ -1606,8 +1606,10 @@ pub struct Terminated;
 
 #[derive(Clone, Debug)]
 pub enum ApplicationCommand {
-    PublishZone { zone_name: StoredName, zone_serial: Serial },
+    SeekApprovalForUnsignedZone { zone_name: StoredName, zone_serial: Serial },
     SignZone { zone_name: StoredName, zone_serial: Serial },
+    SeekApprovalForSignedZone { zone_name: StoredName, zone_serial: Serial },
+    PublishSignedZone { zone_name: StoredName, zone_serial: Serial },
 }
 
 //------------ GateCommand ---------------------------------------------------

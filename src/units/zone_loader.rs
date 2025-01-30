@@ -534,7 +534,7 @@ impl ZoneLoader {
 
                     arc_self
                         .gate
-                        .update_data(Update::ZoneUpdatedEvent {
+                        .update_data(Update::UnsignedZoneUpdatedEvent {
                             zone_name,
                             zone_serial,
                         })
