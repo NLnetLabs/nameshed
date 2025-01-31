@@ -10,6 +10,7 @@ chrono         = "0.4.11"
 clap           = { version = "4.4", features = [ "cargo", "wrap_help" ] }
 dirs           = "4.0"
 domain         = { git = "https://github.com/NLnetLabs/domain", branch = "zone-updater-should-work-with-any-record-type", version = "0.10.3", features = [
+#domain = { path = "../domain2", features = [
     "openssl",
     "tokio-stream",
     "tsig",
@@ -56,6 +57,7 @@ tokio-metrics      = { version = "0.3", default-features = false }
 url                = { version = "2.4", features = ["serde"] }
 uuid               = { version = "1.4", features = ["v4", "fast-rng"] }
 indoc              = "2.0.5"
+rayon = "1.10.0"
 
 [target.'cfg(unix)'.dependencies]
 nix         = "0.22.0"

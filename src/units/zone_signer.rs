@@ -3,12 +3,14 @@ use core::future::pending;
 use core::ops::Add;
 
 use std::any::Any;
+use std::cmp::Ordering;
+use std::collections::hash_map::Entry::{Occupied, Vacant};
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::fmt::Display;
 use std::fs::File;
 use std::net::{IpAddr, SocketAddr};
-use std::ops::ControlFlow;
+use std::ops::{ControlFlow, Sub};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::str::FromStr;
@@ -24,7 +26,9 @@ use domain::base::iana::{Class, Rcode};
 use domain::base::name::FlattenInto;
 use domain::base::record::ComposeRecord;
 use domain::base::wire::Composer;
-use domain::base::{Name, ParsedName, ParsedRecord, Record, Rtype, Serial, ToName};
+use domain::base::{
+    CanonicalOrd, Name, ParsedName, ParsedRecord, Record, Rtype, Serial, ToName, Ttl,
+};
 use domain::net::server::buf::VecBufSource;
 use domain::net::server::dgram::{self, DgramServer};
 use domain::net::server::message::Request;
@@ -39,14 +43,22 @@ use domain::net::server::stream::{self, StreamServer};
 use domain::net::server::util::{mk_error_response, service_fn};
 use domain::net::server::ConnectionConfig;
 use domain::rdata::dnssec::Timestamp;
-use domain::rdata::{Soa, ZoneRecordData};
+use domain::rdata::{Nsec3param, Soa, ZoneRecordData};
 use domain::sign::crypto::common::{generate, GenerateParams};
 // Use openssl::KeyPair because ring::KeyPair is not Send.
 use domain::sign::crypto::openssl::KeyPair;
+use domain::sign::denial::config::DenialConfig;
+use domain::sign::denial::nsec::GenerateNsecConfig;
+use domain::sign::denial::nsec3::{
+    GenerateNsec3Config, Nsec3OptOut, Nsec3ParamTtlMode, OnDemandNsec3HashProvider,
+};
 use domain::sign::error::FromBytesError;
+use domain::sign::keys::keymeta::IntendedKeyPurpose;
 use domain::sign::keys::{DnssecSigningKey, SigningKey};
 use domain::sign::records::SortedRecords;
-use domain::sign::signatures::strategy::FixedRrsigValidityPeriodStrategy;
+use domain::sign::signatures::strategy::{
+    DefaultSigningKeyUsageStrategy, FixedRrsigValidityPeriodStrategy,
+};
 use domain::sign::traits::SignableZoneInPlace;
 use domain::sign::{SecretKeyBytes, SigningConfig};
 use domain::tsig::KeyStore;
@@ -66,7 +78,8 @@ use log::warn;
 use log::{debug, error, info, trace};
 use non_empty_vec::NonEmpty;
 use octseq::{OctetsInto, Parser};
-use serde::Deserialize;
+use rayon::slice::ParallelSliceMut;
+use serde::{Deserialize, Deserializer};
 use serde_with::{serde_as, DeserializeFromStr, DisplayFromStr};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -106,8 +119,6 @@ use crate::zonemaintenance::types::{
     CompatibilityMode, NotifyConfig, TransportStrategy, XfrConfig, XfrStrategy, ZoneConfig,
     ZoneMaintainerKeyStore,
 };
-use domain::sign::keys::keymeta::IntendedKeyPurpose;
-use std::collections::hash_map::Entry::{Occupied, Vacant};
 
 #[serde_as]
 #[derive(Clone, Debug, Deserialize)]
@@ -117,6 +128,15 @@ pub struct ZoneSignerUnit {
     http_api_path: Arc<String>,
 
     keys_path: PathBuf,
+
+    #[serde(default = "ZoneSignerUnit::default_rrsig_inception_offset_secs")]
+    rrsig_inception_offset_secs: u32,
+
+    #[serde(default = "ZoneSignerUnit::default_rrsig_expiration_offset_secs")]
+    rrsig_expiration_offset_secs: u32,
+
+    #[serde(default)]
+    denial_config: TomlDenialConfig,
 
     #[serde(default)]
     treat_single_keys_as_csks: bool,
@@ -243,6 +263,9 @@ impl ZoneSignerUnit {
             metrics,
             status_reporter,
             keys,
+            self.rrsig_inception_offset_secs,
+            self.rrsig_expiration_offset_secs,
+            self.denial_config,
         )
         .run()
         .await?;
@@ -252,6 +275,14 @@ impl ZoneSignerUnit {
 
     fn default_http_api_path() -> Arc<String> {
         Arc::new("/zone-signer/".to_string())
+    }
+
+    fn default_rrsig_inception_offset_secs() -> u32 {
+        60 * 90 // 90 minutes ala Knot
+    }
+
+    fn default_rrsig_expiration_offset_secs() -> u32 {
+        60 * 60 * 24 * 14 // 14 days ala Knot
     }
 
     fn load_private_key(key_path: &Path) -> Result<SecretKeyBytes, Terminated> {
@@ -330,6 +361,9 @@ struct ZoneSigner {
     metrics: Arc<ZoneSignerMetrics>,
     status_reporter: Arc<ZoneSignerStatusReporter>,
     signing_keys: HashMap<StoredName, Vec<DnssecSigningKey<Bytes, KeyPair>>>,
+    inception_offset_secs: u32,
+    expiration_offset: u32,
+    denial_config: TomlDenialConfig,
 }
 
 impl ZoneSigner {
@@ -341,6 +375,9 @@ impl ZoneSigner {
         metrics: Arc<ZoneSignerMetrics>,
         status_reporter: Arc<ZoneSignerStatusReporter>,
         signing_keys: HashMap<StoredName, Vec<DnssecSigningKey<Bytes, KeyPair>>>,
+        inception_offset_secs: u32,
+        expiration_offset: u32,
+        denial_config: TomlDenialConfig,
     ) -> Self {
         Self {
             component,
@@ -349,6 +386,9 @@ impl ZoneSigner {
             metrics,
             status_reporter,
             signing_keys,
+            inception_offset_secs,
+            expiration_offset,
+            denial_config,
         }
     }
 
@@ -371,6 +411,9 @@ impl ZoneSigner {
                                     http_api_path,
                                     keys_path,
                                     treat_single_keys_as_csks: treat_single_key_as_csk,
+                                    rrsig_inception_offset_secs: inception_offset_secs,
+                                    rrsig_expiration_offset_secs: expiration_offset_secs,
+                                    denial_config,
                                 }),
                         } => {
                             // Runtime reconfiguration of this unit has been
@@ -417,18 +460,11 @@ impl ZoneSigner {
                                         }
 
                                         Some(keys) => {
-                                            // Generate signing key timestamps for demonstration purposes.
-                                            // TODO: Get the signing validity period from somewhere else.
-                                            // TODO: Well, actually this will likely change a lot as there is a
-                                            // lot more to keeping a zone signed over time than just signing it
-                                            // once.
-                                            const ONE_YEAR_IN_SECS: u32 = 60 * 60 * 24 * 365;
-                                            let inception = Timestamp::now();
-                                            let expiration = Timestamp::from(
-                                                inception.into_int().add(ONE_YEAR_IN_SECS),
-                                            );
-                                            let validity = FixedRrsigValidityPeriodStrategy::new(
-                                                inception, expiration,
+                                            let now = Timestamp::now().into_int();
+                                            let inception = now.sub(self.inception_offset_secs);
+                                            let expiration = now.add(self.expiration_offset);
+                                            let validity = FixedRrsigValidityPeriodStrategy::from(
+                                                (inception, expiration),
                                             );
 
                                             let unsigned_zone = {
@@ -465,7 +501,7 @@ impl ZoneSigner {
                                                 );
 
                                                 let records = Arc::new(std::sync::Mutex::new(
-                                                    SortedRecords::default(),
+                                                    SortedRecords::new(),
                                                 ));
                                                 let passed_records = records.clone();
 
@@ -489,8 +525,9 @@ impl ZoneSigner {
                                                 ));
 
                                                 // Create a signing configuration.
-                                                let mut signing_config =
-                                                    SigningConfig::default(validity);
+                                                let mut signing_config = self.signing_config();
+                                                signing_config
+                                                    .set_rrsig_validity_period_strategy(validity);
 
                                                 // Then sign the zone adding the generated records to the
                                                 // signer_generated_rrs collection, as we don't want to keep two
@@ -579,6 +616,62 @@ impl ZoneSigner {
             }
         }
     }
+
+    fn signing_config(
+        &self,
+    ) -> SigningConfig<
+        StoredName,
+        Bytes,
+        domain::sign::crypto::openssl::KeyPair,
+        DefaultSigningKeyUsageStrategy,
+        FixedRrsigValidityPeriodStrategy,
+        MultiThreadedSorter,
+        OnDemandNsec3HashProvider<Bytes>,
+    > {
+        let denial = match &self.denial_config {
+            TomlDenialConfig::Nsec => DenialConfig::Nsec(Default::default()),
+            TomlDenialConfig::Nsec3(nsec3) => {
+                let first = parse_nsec3_config(&nsec3[0]);
+                let rest = nsec3[1..].iter().map(parse_nsec3_config).collect();
+                DenialConfig::Nsec3(first, rest)
+            }
+            TomlDenialConfig::TransitioningToNsec3(
+                toml_nsec3_config,
+                toml_nsec_to_nsec3_transition_state,
+            ) => todo!(),
+            TomlDenialConfig::TransitioningFromNsec3(
+                toml_nsec3_config,
+                toml_nsec3_to_nsec_transition_state,
+            ) => todo!(),
+        };
+
+        let add_used_dnskeys = true;
+        // Validity period will be overridden when actually signing.
+        let rrsig_validity_period_strategy = FixedRrsigValidityPeriodStrategy::from((0, 0));
+        SigningConfig::new(denial, add_used_dnskeys, rrsig_validity_period_strategy)
+    }
+}
+
+fn parse_nsec3_config(
+    config: &TomlNsec3Config,
+) -> GenerateNsec3Config<StoredName, Bytes, OnDemandNsec3HashProvider<Bytes>, MultiThreadedSorter> {
+    let params = Nsec3param::default();
+    let opt_out = match config.opt_out {
+        TomlNsec3OptOut::NoOptOut => Nsec3OptOut::NoOptOut,
+        TomlNsec3OptOut::OptOut => Nsec3OptOut::OptOut,
+        TomlNsec3OptOut::OptOutFlagsOnly => Nsec3OptOut::OptOutFlagsOnly,
+    };
+    let hash_provider = OnDemandNsec3HashProvider::new(
+        params.hash_algorithm(),
+        params.iterations(),
+        params.salt().clone(),
+    );
+    let ttl_mode = match config.nsec3_param_ttl_mode {
+        TomlNsec3ParamTtlMode::Fixed(ttl) => Nsec3ParamTtlMode::Fixed(ttl),
+        TomlNsec3ParamTtlMode::Soa => Nsec3ParamTtlMode::Soa,
+        TomlNsec3ParamTtlMode::SoaMinimum => Nsec3ParamTtlMode::SoaMinimum,
+    };
+    GenerateNsec3Config::new(params, opt_out, hash_provider).with_ttl_mode(ttl_mode)
 }
 
 impl std::fmt::Debug for ZoneSigner {
@@ -778,5 +871,87 @@ impl ZoneListApi {
         response_body.push_str("    </pre>\n");
         response_body.push_str("  </body>\n");
         response_body.push_str("</html>\n");
+    }
+}
+
+//------------ DenialConfig --------------------------------------------------
+
+// See: domain::sign::denial::config::DenialConfig
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum TomlDenialConfig {
+    #[default]
+    Nsec,
+
+    Nsec3(NonEmpty<TomlNsec3Config>),
+
+    TransitioningToNsec3(TomlNsec3Config, TomlNsecToNsec3TransitionState),
+
+    TransitioningFromNsec3(TomlNsec3Config, TomlNsec3ToNsecTransitionState),
+}
+
+// See: domain::sign::denial::config::GenerateNsec3Config
+// Note: We don't allow configuration of NSEC3 salt, iterations or algorithm
+// as they are fixed to best practice values.
+#[derive(Clone, Debug, Default, Deserialize)]
+struct TomlNsec3Config {
+    pub opt_out: TomlNsec3OptOut,
+    pub nsec3_param_ttl_mode: TomlNsec3ParamTtlMode,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum TomlNsec3OptOut {
+    #[default]
+    NoOptOut,
+    OptOut,
+    OptOutFlagsOnly,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum TomlNsec3ParamTtlMode {
+    Fixed(Ttl),
+    #[default]
+    Soa,
+    SoaMinimum,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum TomlNsecToNsec3TransitionState {
+    #[default]
+    TransitioningDnsKeys,
+    AddingNsec3Records,
+    RemovingNsecRecords,
+    Transitioned,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum TomlNsec3ToNsecTransitionState {
+    #[default]
+    AddingNsecRecords,
+    RemovingNsec3ParamdRecord,
+    RemovingNsec3Records,
+    TransitioningDnsKeys,
+    Transitioned,
+}
+
+//------------ MultiThreadedSorter -------------------------------------------
+
+/// A parallelized sort implementation for use with [`SortedRecords`].
+///
+/// TODO: Should we add a `-j` (jobs) command line argument to override the
+/// default Rayon behaviour of using as many threads as their are CPU cores?
+struct MultiThreadedSorter;
+
+impl domain::sign::records::Sorter for MultiThreadedSorter {
+    fn sort_by<N, D, F>(records: &mut Vec<Record<N, D>>, compare: F)
+    where
+        F: Fn(&Record<N, D>, &Record<N, D>) -> Ordering + Sync,
+        Record<N, D>: CanonicalOrd + Send,
+    {
+        records.par_sort_by(compare);
     }
 }
