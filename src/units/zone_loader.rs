@@ -1,4 +1,6 @@
 use core::fmt;
+use core::future::ready;
+
 use std::any::Any;
 use std::collections::HashMap;
 use std::fmt::Display;
@@ -433,7 +435,12 @@ impl WritableZone for NotifyOnCommitZone {
     ) -> Pin<
         Box<dyn Future<Output = Result<Box<dyn WritableZoneNode>, std::io::Error>> + Send + Sync>,
     > {
-        self.writable_zone.open(create_diff)
+        let fut = self.writable_zone.open(create_diff);
+        Box::pin(async move {
+            let writable_zone_node = fut.await?;
+            let writable_zone_node = FilteringWritableZoneNode { writable_zone_node };
+            Ok(Box::new(writable_zone_node) as Box<dyn WritableZoneNode>)
+        })
     }
 
     fn commit(
@@ -473,6 +480,84 @@ impl WritableZone for NotifyOnCommitZone {
             }
             res
         })
+    }
+}
+
+struct FilteringWritableZoneNode {
+    writable_zone_node: Box<dyn WritableZoneNode>,
+}
+
+impl WritableZoneNode for FilteringWritableZoneNode {
+    fn update_child(
+        &self,
+        label: &domain::base::name::Label,
+    ) -> Pin<
+        Box<dyn Future<Output = Result<Box<dyn WritableZoneNode>, std::io::Error>> + Send + Sync>,
+    > {
+        self.writable_zone_node.update_child(label)
+    }
+
+    fn get_rrset(
+        &self,
+        rtype: Rtype,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<Option<domain::zonetree::SharedRrset>, std::io::Error>>
+                + Send
+                + Sync,
+        >,
+    > {
+        self.writable_zone_node.get_rrset(rtype)
+    }
+
+    fn update_rrset(
+        &self,
+        rrset: domain::zonetree::SharedRrset,
+    ) -> Pin<Box<dyn Future<Output = Result<(), std::io::Error>> + Send + Sync>> {
+        // Filter out attempts to add or change DNSSEC records to/in this zone.
+        match rrset.rtype() {
+            Rtype::DNSKEY
+            | Rtype::DS
+            | Rtype::RRSIG
+            | Rtype::NSEC
+            | Rtype::NSEC3
+            | Rtype::NSEC3PARAM => Box::pin(ready(Ok(()))),
+
+            _ => self.writable_zone_node.update_rrset(rrset),
+        }
+    }
+
+    fn remove_rrset(
+        &self,
+        rtype: Rtype,
+    ) -> Pin<Box<dyn Future<Output = Result<(), std::io::Error>> + Send + Sync>> {
+        self.writable_zone_node.remove_rrset(rtype)
+    }
+
+    fn make_regular(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<(), std::io::Error>> + Send + Sync>> {
+        self.writable_zone_node.make_regular()
+    }
+
+    fn make_zone_cut(
+        &self,
+        cut: domain::zonetree::types::ZoneCut,
+    ) -> Pin<Box<dyn Future<Output = Result<(), std::io::Error>> + Send + Sync>> {
+        self.writable_zone_node.make_zone_cut(cut)
+    }
+
+    fn make_cname(
+        &self,
+        cname: domain::zonetree::SharedRr,
+    ) -> Pin<Box<dyn Future<Output = Result<(), std::io::Error>> + Send + Sync>> {
+        self.writable_zone_node.make_cname(cname)
+    }
+
+    fn remove_all(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<(), std::io::Error>> + Send + Sync>> {
+        self.writable_zone_node.remove_all()
     }
 }
 

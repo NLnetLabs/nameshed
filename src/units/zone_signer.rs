@@ -500,29 +500,39 @@ impl ZoneSigner {
                                                     soa_data,
                                                 );
 
-                                                let records = Arc::new(std::sync::Mutex::new(
-                                                    SortedRecords::new(),
-                                                ));
+                                                // Collect the zones unsigned records in zone walking order into an
+                                                // unsorted Vec then sort it after by converting it to SortedRecords.
+                                                // This is faster than using a SortedRecords to start with as it will
+                                                // sort on every insert which is slow, and we can't call
+                                                // SortedRecords::extend() (which is faster because it basically does
+                                                // pushes then sort) because we don't have access to all of the
+                                                // records at once to extend the collection with in one go.
+                                                let records =
+                                                    Arc::new(std::sync::Mutex::new(Vec::new()));
                                                 let passed_records = records.clone();
 
                                                 read.walk(Box::new(
                                                     move |owner, rrset, _at_zone_cut| {
-                                                        for data in rrset.data() {
-                                                            // WARNING: insert() is slow for large zones,
-                                                            // use extend() instead.
-                                                            passed_records
-                                                                .lock()
-                                                                .unwrap()
-                                                                .insert(Record::new(
+                                                        let mut unlocked_records =
+                                                            passed_records.lock().unwrap();
+                                                        unlocked_records.extend(
+                                                            rrset.data().iter().map(|rdata| {
+                                                                Record::new(
                                                                     owner.clone(),
                                                                     Class::IN,
                                                                     rrset.ttl(),
-                                                                    data.to_owned(),
-                                                                ))
-                                                                .unwrap();
-                                                        }
+                                                                    rdata.to_owned(),
+                                                                )
+                                                            }),
+                                                        );
                                                     },
                                                 ));
+
+                                                let records = Arc::into_inner(records)
+                                                    .unwrap()
+                                                    .into_inner()
+                                                    .unwrap();
+                                                let mut records = SortedRecords::from(records);
 
                                                 // Create a signing configuration.
                                                 let mut signing_config = self.signing_config();
@@ -533,10 +543,6 @@ impl ZoneSigner {
                                                 // signer_generated_rrs collection, as we don't want to keep two
                                                 // copies of the unsigned records, we already have those in the
                                                 // zone.
-                                                let mut records = Arc::into_inner(records)
-                                                    .unwrap()
-                                                    .into_inner()
-                                                    .unwrap();
                                                 if let Err(err) =
                                                     records.sign_zone(&mut signing_config, keys)
                                                 {

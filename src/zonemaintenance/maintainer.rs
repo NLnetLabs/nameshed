@@ -1319,6 +1319,7 @@ where
                 "Refreshing zone '{}' by {rtype} from {primary_addr}",
                 zone.apex_name()
             );
+            // TODO: Run do_xfr() in its own thread to prevent it blocking us.
             let res = Self::do_xfr(
                 udp_client.take(),
                 transport,
