@@ -16,7 +16,8 @@ component to any other.
 The `nameshed.conf` is correspondingly modified to define the following
 components:
 
-  - ZL: "Zone Loader": Responsible for receiving incoming zones via XFR.
+  - ZL: "Zone Loader": An instance of `ZoneLoader` responsible for receiving
+    incoming zones via XFR.
 
   - RS: "Pre-Signing Review Server": An instance of `ZoneServer` responsible
     for serving an unsigned loaded zone for review.
