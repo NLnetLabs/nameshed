@@ -1604,6 +1604,7 @@ impl fmt::Display for UnitStatus {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Terminated;
 
+#[allow(clippy::enum_variant_names)]
 #[derive(Clone, Debug)]
 pub enum ApplicationCommand {
     SeekApprovalForUnsignedZone {

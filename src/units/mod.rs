@@ -30,6 +30,7 @@ use crate::manager::{Component, WaitPoint};
 use serde::Deserialize;
 
 /// The fundamental entity for data processing.
+#[allow(clippy::enum_variant_names)]
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "type")]
 pub enum Unit {

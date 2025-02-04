@@ -3,6 +3,7 @@
 use domain::base::Serial;
 use domain::zonetree::StoredName;
 
+#[allow(clippy::enum_variant_names)]
 #[derive(Clone, Debug)]
 pub enum Update {
     UnsignedZoneUpdatedEvent {

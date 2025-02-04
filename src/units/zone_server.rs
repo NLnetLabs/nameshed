@@ -108,6 +108,7 @@ pub enum Mode {
     Publish,
 }
 
+#[allow(clippy::enum_variant_names)]
 #[derive(Copy, Clone, Debug, Deserialize, PartialEq, Eq)]
 pub enum Source {
     #[serde(alias = "unsigned")]
@@ -284,6 +285,7 @@ struct ZoneServer {
     source: Source,
     hooks: Vec<String>,
     listen: Vec<ListenAddr>,
+    #[allow(clippy::type_complexity)]
     pending_approvals: Arc<RwLock<HashMap<(Name<Bytes>, Serial), Vec<Uuid>>>>,
     zones: XfrDataProvidingZonesWrapper,
 }
@@ -742,6 +744,7 @@ fn zone_server_service(
 struct ZoneReviewApi {
     http_api_path: Arc<String>,
     gate: Gate,
+    #[allow(clippy::type_complexity)]
     pending_approvals: Arc<RwLock<HashMap<(Name<Bytes>, Serial), Vec<Uuid>>>>,
     zones: XfrDataProvidingZonesWrapper,
     mode: Mode,
@@ -750,6 +753,7 @@ struct ZoneReviewApi {
 }
 
 impl ZoneReviewApi {
+    #[allow(clippy::type_complexity)]
     fn new(
         http_api_path: Arc<String>,
         gate: Gate,
