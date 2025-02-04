@@ -432,10 +432,7 @@ impl ZoneServer {
                                         } => "signed",
                                         _ => unreachable!(),
                                     };
-                                    info!(
-                                        "[{component_name}]: Seeking approval for {zone_type} zone '{zone_name}' at serial {zone_serial}.",
-                                        
-                                    );
+                                    info!("[{component_name}]: Seeking approval for {zone_type} zone '{zone_name}' at serial {zone_serial}.");
                                     for hook in &self.hooks {
                                         let approval_token = Uuid::new_v4();
                                         info!("[{component_name}]: Generated approval token '{approval_token}' for {zone_type} zone '{zone_name}' at serial {zone_serial}.");
@@ -488,7 +485,8 @@ impl ZoneServer {
                                         // then replace the original set with
                                         // the new set.
                                         info!("[{component_name}]: Adding '{zone_name}' to the set of published zones.");
-                                        let mut new_published_zones = Arc::unwrap_or_clone(published_zones.clone());
+                                        let mut new_published_zones =
+                                            Arc::unwrap_or_clone(published_zones.clone());
                                         new_published_zones.insert_zone(zone.clone()).unwrap();
                                         component
                                             .published_zones()
@@ -500,7 +498,8 @@ impl ZoneServer {
                                         // replace the original set with the
                                         // new set.
                                         info!("[{component_name}]: Removing '{zone_name}' from the set of signed zones.");
-                                        let mut new_signed_zones = Arc::unwrap_or_clone(signed_zones.clone());
+                                        let mut new_signed_zones =
+                                            Arc::unwrap_or_clone(signed_zones.clone());
                                         new_signed_zones.remove_zone(zone_name, Class::IN).unwrap();
                                         component.signed_zones().store(Arc::new(new_signed_zones));
                                     }
@@ -956,18 +955,24 @@ impl ZoneReviewApi {
         response_body.push_str(&format!("Serving {num_zones} zones on:\n"));
 
         for addr in &self.listen {
-            response_body.push_str(&format!(
-                "  - {addr}\n"));
+            response_body.push_str(&format!("  - {addr}\n"));
         }
         response_body.push('\n');
 
         for zone in self.zones.zones.load().iter_zones() {
             response_body.push_str(&format!("zone:   {}\n", zone.apex_name()));
             if self.mode == Mode::Prepublish {
-                for ((zone_name, zone_serial), pending_approvals) in
-                    self.pending_approvals.read().await.iter().filter(|((zone_name, _), _)| zone_name == zone.apex_name())
+                for ((zone_name, zone_serial), pending_approvals) in self
+                    .pending_approvals
+                    .read()
+                    .await
+                    .iter()
+                    .filter(|((zone_name, _), _)| zone_name == zone.apex_name())
                 {
-                    response_body.push_str(&format!("        pending approvals for serial {zone_serial}: {}\n", pending_approvals.len()));
+                    response_body.push_str(&format!(
+                        "        pending approvals for serial {zone_serial}: {}\n",
+                        pending_approvals.len()
+                    ));
                 }
             }
         }

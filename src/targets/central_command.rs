@@ -93,7 +93,9 @@ impl CentralCommand {
 
         // Register as a direct update receiver with the linked gates.
         for link in sources.iter_mut() {
-            link.connect(arc_self.clone(), false).await.map_err(|_| Terminated)?;
+            link.connect(arc_self.clone(), false)
+                .await
+                .map_err(|_| Terminated)?;
         }
 
         // Wait for other components to be, and signal to other components

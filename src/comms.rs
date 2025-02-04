@@ -1606,10 +1606,22 @@ pub struct Terminated;
 
 #[derive(Clone, Debug)]
 pub enum ApplicationCommand {
-    SeekApprovalForUnsignedZone { zone_name: StoredName, zone_serial: Serial },
-    SignZone { zone_name: StoredName, zone_serial: Serial },
-    SeekApprovalForSignedZone { zone_name: StoredName, zone_serial: Serial },
-    PublishSignedZone { zone_name: StoredName, zone_serial: Serial },
+    SeekApprovalForUnsignedZone {
+        zone_name: StoredName,
+        zone_serial: Serial,
+    },
+    SignZone {
+        zone_name: StoredName,
+        zone_serial: Serial,
+    },
+    SeekApprovalForSignedZone {
+        zone_name: StoredName,
+        zone_serial: Serial,
+    },
+    PublishSignedZone {
+        zone_name: StoredName,
+        zone_serial: Serial,
+    },
 }
 
 //------------ GateCommand ---------------------------------------------------
@@ -2043,7 +2055,7 @@ mod tests {
         gate.wait(1).await.unwrap();
 
         eprintln!("CHECKING GATE HAS NO CLONE SENDER");
-        assert!(matches!(&gate.state, GateState::Normal(NormalGateState { 
+        assert!(matches!(&gate.state, GateState::Normal(NormalGateState {
                 clone_senders, .. }) if clone_senders.is_empty()));
     }
 }
