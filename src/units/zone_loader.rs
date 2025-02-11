@@ -2,7 +2,8 @@ use core::fmt;
 use core::future::ready;
 
 use std::any::Any;
-use std::collections::HashMap;
+use std::collections::btree_map::Entry;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Display;
 use std::fs::File;
 use std::net::{IpAddr, SocketAddr};
@@ -15,11 +16,12 @@ use std::time::Duration;
 
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
-use bytes::Bytes;
+use bytes::{BufMut, Bytes, BytesMut};
 use chrono::{DateTime, Utc};
 use domain::base::iana::{Class, Rcode};
+use domain::base::name::Label;
 use domain::base::wire::Composer;
-use domain::base::{Name, Rtype, Serial};
+use domain::base::{Name, NameBuilder, Rtype, Serial};
 use domain::net::server::buf::VecBufSource;
 use domain::net::server::dgram::{self, DgramServer};
 use domain::net::server::message::Request;
@@ -33,72 +35,63 @@ use domain::net::server::service::{CallResult, Service, ServiceError, ServiceRes
 use domain::net::server::stream::{self, StreamServer};
 use domain::net::server::util::{mk_error_response, service_fn};
 use domain::net::server::ConnectionConfig;
+use domain::rdata::ZoneRecordData;
+use domain::tsig::KeyStore;
 use domain::tsig::{Algorithm, Key, KeyName};
 use domain::utils::base64;
 use domain::zonefile::inplace;
+use domain::zonetree::error::OutOfZone;
 use domain::zonetree::{
-    InMemoryZoneDiff, ReadableZone, StoredName, WritableZone, WritableZoneNode, Zone, ZoneBuilder,
-    ZoneStore, ZoneTree,
+    Answer, InMemoryZoneDiff, ReadableZone, SharedRrset, StoredName, WalkOp, WritableZone,
+    WritableZoneNode, Zone, ZoneBuilder, ZoneStore, ZoneTree,
 };
-use futures::{
-    future::{select, Either},
-    pin_mut, Future,
-};
+use futures::future::{select, Either};
+use futures::{pin_mut, Future};
 use indoc::formatdoc;
 use log::warn;
 use log::{debug, error, info, trace};
 use non_empty_vec::NonEmpty;
 use serde::Deserialize;
 use serde_with::{serde_as, DeserializeFromStr, DisplayFromStr};
-use tokio::{
-    net::UdpSocket,
-    sync::{
-        mpsc::{Receiver, Sender},
-        Mutex, RwLock,
-    },
-    time::sleep,
-};
+use tokio::net::UdpSocket;
+use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::sync::{Mutex, RwLock};
+use tokio::time::sleep;
+
 #[cfg(feature = "tls")]
 use tokio_rustls::rustls::ServerConfig;
 
+use crate::common::frim::FrimMap;
+use crate::common::net::{
+    ListenAddr, StandardTcpListenerFactory, StandardTcpStream, TcpListener, TcpListenerFactory,
+    TcpStreamWrapper,
+};
+use crate::common::status_reporter::{
+    sr_log, AnyStatusReporter, Chainable, Named, UnitStatusReporter,
+};
+use crate::common::tsig::{parse_key_strings, TsigKeyStore};
+use crate::common::unit::UnitActivity;
 use crate::common::xfr::parse_xfr_acl;
+use crate::comms::{
+    AnyDirectUpdate, DirectLink, DirectUpdate, Gate, GateMetrics, GateStatus, GraphStatus,
+    Terminated,
+};
 use crate::http::PercentDecodedPath;
-use crate::zonemaintenance::maintainer::{Config, ZoneLookup};
-use crate::{
-    common::tsig::{parse_key_strings, TsigKeyStore},
-    http::ProcessRequest,
+use crate::http::ProcessRequest;
+use crate::log::ExitError;
+use crate::manager::{Component, WaitPoint};
+use crate::metrics::{self, util::append_per_router_metric, Metric, MetricType, MetricUnit};
+use crate::payload::Update;
+use crate::tokio::TokioTaskMetrics;
+use crate::tracing::Tracer;
+use crate::units::Unit;
+use crate::zonemaintenance::maintainer::{
+    Config, DefaultConnFactory, TypedZone, ZoneLookup, ZoneMaintainer,
 };
-use crate::{
-    common::{
-        frim::FrimMap,
-        net::{
-            ListenAddr, StandardTcpListenerFactory, StandardTcpStream, TcpListener,
-            TcpListenerFactory, TcpStreamWrapper,
-        },
-        status_reporter::{sr_log, AnyStatusReporter, Chainable, Named, UnitStatusReporter},
-        unit::UnitActivity,
-    },
-    comms::{
-        AnyDirectUpdate, DirectLink, DirectUpdate, Gate, GateMetrics, GateStatus, GraphStatus,
-        Terminated,
-    },
-    log::ExitError,
-    manager::{Component, WaitPoint},
-    metrics::{self, util::append_per_router_metric, Metric, MetricType, MetricUnit},
-    payload::Update,
-    tokio::TokioTaskMetrics,
-    tracing::Tracer,
-    units::Unit,
-    zonemaintenance::{
-        maintainer::{DefaultConnFactory, TypedZone, ZoneMaintainer},
-        types::{
-            CompatibilityMode, NotifyConfig, TransportStrategy, XfrConfig, XfrStrategy, ZoneConfig,
-            ZoneMaintainerKeyStore,
-        },
-    },
+use crate::zonemaintenance::types::{
+    CompatibilityMode, NotifyConfig, TransportStrategy, XfrConfig, XfrStrategy, ZoneConfig,
+    ZoneMaintainerKeyStore,
 };
-use domain::rdata::ZoneRecordData;
-use domain::tsig::KeyStore;
 
 #[serde_as]
 #[derive(Clone, Debug, Deserialize)]
