@@ -269,25 +269,25 @@ impl LogConfig {
 
     /// Creates and returns a fern logger.
     fn fern_logger(&self, timestamp_and_level: bool) -> fern::Dispatch {
-        // TODO: These env var controls are not changeable by the operator at
-        // runtime which may make them less useful. They also require you to
-        // already be logging at trace level which means that you also see
-        // lots of other trace logging but if you enable one of these env vars
-        // you clearly actually want to see the logging that you are enabling,
-        // not a bunch of other logging as well. So I think this needs some
-        // more thought.
-        let mqtt_log_level = match std::env::var("ROTONDA_MQTT_LOG") {
-            Ok(_) => self.log_level.0.min(LevelFilter::Trace),
-            Err(_) => self.log_level.0.min(LevelFilter::Warn),
-        };
-        let rotonda_store_log_level = match std::env::var("ROTONDA_STORE_LOG") {
-            Ok(_) => self.log_level.0.min(LevelFilter::Trace),
-            Err(_) => self.log_level.0.min(LevelFilter::Warn),
-        };
-        let roto_log_level = match std::env::var("ROTONDA_ROTO_LOG") {
-            Ok(_) => self.log_level.0.min(LevelFilter::Trace),
-            Err(_) => self.log_level.0.min(LevelFilter::Warn),
-        };
+        // // TODO: These env var controls are not changeable by the operator at
+        // // runtime which may make them less useful. They also require you to
+        // // already be logging at trace level which means that you also see
+        // // lots of other trace logging but if you enable one of these env vars
+        // // you clearly actually want to see the logging that you are enabling,
+        // // not a bunch of other logging as well. So I think this needs some
+        // // more thought.
+        // let mqtt_log_level = match std::env::var("ROTONDA_MQTT_LOG") {
+        //     Ok(_) => self.log_level.0.min(LevelFilter::Trace),
+        //     Err(_) => self.log_level.0.min(LevelFilter::Warn),
+        // };
+        // let rotonda_store_log_level = match std::env::var("ROTONDA_STORE_LOG") {
+        //     Ok(_) => self.log_level.0.min(LevelFilter::Trace),
+        //     Err(_) => self.log_level.0.min(LevelFilter::Warn),
+        // };
+        // let roto_log_level = match std::env::var("ROTONDA_ROTO_LOG") {
+        //     Ok(_) => self.log_level.0.min(LevelFilter::Trace),
+        //     Err(_) => self.log_level.0.min(LevelFilter::Warn),
+        // };
 
         let debug_enabled = self.log_level.0 >= LevelFilter::Debug;
 
@@ -358,17 +358,17 @@ impl LogConfig {
         res = res
             .level(self.log_level.0)
             .level_for("rustls", LevelFilter::Error)
-            .level_for("rumqttd", LevelFilter::Warn)
-            .level_for("tracing::span", LevelFilter::Off)
-            .level_for("cranelift_codegen", LevelFilter::Warn)
-            .level_for("cranelift_jit", LevelFilter::Warn);
+            // .level_for("rumqttd", LevelFilter::Warn)
+            .level_for("tracing::span", LevelFilter::Off);
+            // .level_for("cranelift_codegen", LevelFilter::Warn)
+            // .level_for("cranelift_jit", LevelFilter::Warn);
 
-        // Boost the log level of modules for which the operator has requested
-        // more diagnostics for.
-        res = res
-            .level_for("rotonda_store", rotonda_store_log_level)
-            .level_for("rumqttc", mqtt_log_level)
-            .level_for("roto", roto_log_level);
+        // // Boost the log level of modules for which the operator has requested
+        // // more diagnostics for.
+        // res = res
+        //     .level_for("rotonda_store", rotonda_store_log_level)
+        //     .level_for("rumqttc", mqtt_log_level)
+        //     .level_for("roto", roto_log_level);
 
         if debug_enabled {
             // Don't enable too much logging for some modules even if the main
@@ -383,7 +383,7 @@ impl LogConfig {
             // Conversely, when the main log level is at least debug, disable
             // limitations on logging normally in place for some modules.
             res = res
-                .level_for("rumqttd", self.log_level.0)
+                // .level_for("rumqttd", self.log_level.0)
                 .level_for("tracing::span", self.log_level.0);
         }
 
