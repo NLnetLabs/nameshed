@@ -139,7 +139,7 @@ impl Config {
         config_file: ConfigFile,
         manager: &mut Manager,
     ) -> Result<(Source, Self), Terminate> {
-        self.log.switch_logging(false)?;
+        self.log.switch_logging(true)?;
 
         if log::log_enabled!(log::Level::Trace) {
             trace!("After processing the config file looks like this:");
