@@ -9,7 +9,8 @@ bytes	       = "1.0"
 chrono         = "0.4.11"
 clap           = { version = "4.4", features = [ "cargo", "wrap_help" ] }
 dirs           = "4.0"
-domain         = { git = "https://github.com/NLnetLabs/domain", branch = "zone-updater-should-work-with-any-record-type", version = "0.10.3", features = [
+#domain         = { git = "https://github.com/NLnetLabs/domain", branch = "zone-updater-should-work-with-any-record-type", version = "0.10.3", features = [
+domain = { path = "../domain2", features = [
     "openssl",
     "tokio-stream",
     "tsig",

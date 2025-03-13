@@ -432,7 +432,6 @@ dependencies = [
 [[package]]
 name = "domain"
 version = "0.10.3"
-source = "git+https://github.com/NLnetLabs/domain?branch=zone-updater-should-work-with-any-record-type#1c619016ec0b16a886875de6256ff65e9c9b3ef2"
 dependencies = [
  "arc-swap",
  "bytes",

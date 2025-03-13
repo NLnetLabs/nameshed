@@ -3,6 +3,7 @@ pub(crate) mod frim;
 pub(crate) mod json;
 pub(crate) mod memory;
 pub(crate) mod net;
+pub(crate) mod light_weight_zone;
 pub(crate) mod status_reporter;
 pub(crate) mod tsig;
 pub(crate) mod unit;

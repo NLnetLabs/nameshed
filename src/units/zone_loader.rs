@@ -3,16 +3,17 @@ use core::future::ready;
 
 use std::any::Any;
 use std::collections::btree_map::Entry;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Display;
 use std::fs::File;
 use std::net::{IpAddr, SocketAddr};
-use std::ops::ControlFlow;
+use std::ops::{ControlFlow, Deref};
 use std::pin::Pin;
 use std::str::FromStr;
+use std::sync::atomic::Ordering;
 use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
 use std::sync::{Arc, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
@@ -42,8 +43,7 @@ use domain::utils::base64;
 use domain::zonefile::inplace;
 use domain::zonetree::error::OutOfZone;
 use domain::zonetree::{
-    Answer, InMemoryZoneDiff, ReadableZone, SharedRrset, StoredName, WalkOp, WritableZone,
-    WritableZoneNode, Zone, ZoneBuilder, ZoneStore, ZoneTree,
+    Answer, InMemoryZoneDiff, ReadableZone, Rrset, SharedRrset, StoredName, WalkOp, WritableZone, WritableZoneNode, Zone, ZoneBuilder, ZoneStore, ZoneTree
 };
 use futures::future::{select, Either};
 use futures::{pin_mut, Future};
@@ -66,6 +66,7 @@ use crate::common::net::{
     ListenAddr, StandardTcpListenerFactory, StandardTcpStream, TcpListener, TcpListenerFactory,
     TcpStreamWrapper,
 };
+use crate::common::light_weight_zone::LightWeightZone;
 use crate::common::status_reporter::{
     sr_log, AnyStatusReporter, Chainable, Named, UnitStatusReporter,
 };
@@ -160,8 +161,21 @@ impl ZoneLoaderUnit {
                 .with_zone_tree(component.unsigned_zones().clone()),
         );
 
+        // Setup REST API endpoint
+        let http_processor = Arc::new(ZoneListApi::new(
+            self.http_api_path.clone(),
+            self.zones.clone(),
+            self.xfr_in.clone(),
+            zone_maintainer.clone(),
+        ));
+        component.register_http_resource(http_processor.clone(), &self.http_api_path);
+
+        // Load primary zones.
+        // Create secondary zones.
         for (zone_name, zone_path) in self.zones.iter() {
             let mut zone = if !zone_path.is_empty() {
+                let before = Instant::now();
+
                 // Load the specified zone file.
                 info!(
                     "[{}]: Loading primary zone '{zone_name}' from '{zone_path}'..",
@@ -215,6 +229,8 @@ impl ZoneLoaderUnit {
                     );
                     return Err(Terminated);
                 };
+
+                info!("Loaded {zone_file_len} bytes from '{zone_path}' in {} secs", before.elapsed().as_secs());
                 zone
             } else {
                 let apex_name = Name::from_str(zone_name)
@@ -229,8 +245,7 @@ impl ZoneLoaderUnit {
                     "[{}]: Adding secondary zone '{zone_name}'",
                     component.name()
                 );
-                let builder = ZoneBuilder::new(apex_name, Class::IN);
-                builder.build()
+                Zone::new(LightWeightZone::new(apex_name, true))
             };
 
             let mut zone_cfg = ZoneConfig::new();
@@ -271,8 +286,6 @@ impl ZoneLoaderUnit {
             zone_maintainer.insert_zone(zone).await.unwrap();
         }
 
-        // let max_concurrency = std::thread::available_parallelism().unwrap().get() / 2;
-
         // Define a server to handle NOTIFY messages and notify the
         // ZoneMaintainer on receipt, thereby triggering it to fetch the
         // latest version of the updated zone.
@@ -293,15 +306,6 @@ impl ZoneLoaderUnit {
                 }
             });
         }
-
-        // Setup REST API endpoint
-        let http_processor = Arc::new(ZoneListApi::new(
-            self.http_api_path.clone(),
-            self.zones.clone(),
-            self.xfr_in.clone(),
-            zone_maintainer.clone(),
-        ));
-        component.register_http_resource(http_processor.clone(), &self.http_api_path);
 
         // Wait for other components to be, and signal to other components
         // that we are, ready to start. All units and targets start together,
@@ -446,12 +450,7 @@ impl WritableZone for NotifyOnCommitZone {
     ) -> Pin<
         Box<dyn Future<Output = Result<Box<dyn WritableZoneNode>, std::io::Error>> + Send + Sync>,
     > {
-        let fut = self.writable_zone.open(create_diff);
-        Box::pin(async move {
-            let writable_zone_node = fut.await?;
-            let writable_zone_node = FilteringWritableZoneNode { writable_zone_node };
-            Ok(Box::new(writable_zone_node) as Box<dyn WritableZoneNode>)
-        })
+        self.writable_zone.open(create_diff)
     }
 
     fn commit(
@@ -491,84 +490,6 @@ impl WritableZone for NotifyOnCommitZone {
             }
             res
         })
-    }
-}
-
-struct FilteringWritableZoneNode {
-    writable_zone_node: Box<dyn WritableZoneNode>,
-}
-
-impl WritableZoneNode for FilteringWritableZoneNode {
-    fn update_child(
-        &self,
-        label: &domain::base::name::Label,
-    ) -> Pin<
-        Box<dyn Future<Output = Result<Box<dyn WritableZoneNode>, std::io::Error>> + Send + Sync>,
-    > {
-        self.writable_zone_node.update_child(label)
-    }
-
-    fn get_rrset(
-        &self,
-        rtype: Rtype,
-    ) -> Pin<
-        Box<
-            dyn Future<Output = Result<Option<domain::zonetree::SharedRrset>, std::io::Error>>
-                + Send
-                + Sync,
-        >,
-    > {
-        self.writable_zone_node.get_rrset(rtype)
-    }
-
-    fn update_rrset(
-        &self,
-        rrset: domain::zonetree::SharedRrset,
-    ) -> Pin<Box<dyn Future<Output = Result<(), std::io::Error>> + Send + Sync>> {
-        // Filter out attempts to add or change DNSSEC records to/in this zone.
-        match rrset.rtype() {
-            Rtype::DNSKEY
-            | Rtype::DS
-            | Rtype::RRSIG
-            | Rtype::NSEC
-            | Rtype::NSEC3
-            | Rtype::NSEC3PARAM => Box::pin(ready(Ok(()))),
-
-            _ => self.writable_zone_node.update_rrset(rrset),
-        }
-    }
-
-    fn remove_rrset(
-        &self,
-        rtype: Rtype,
-    ) -> Pin<Box<dyn Future<Output = Result<(), std::io::Error>> + Send + Sync>> {
-        self.writable_zone_node.remove_rrset(rtype)
-    }
-
-    fn make_regular(
-        &self,
-    ) -> Pin<Box<dyn Future<Output = Result<(), std::io::Error>> + Send + Sync>> {
-        self.writable_zone_node.make_regular()
-    }
-
-    fn make_zone_cut(
-        &self,
-        cut: domain::zonetree::types::ZoneCut,
-    ) -> Pin<Box<dyn Future<Output = Result<(), std::io::Error>> + Send + Sync>> {
-        self.writable_zone_node.make_zone_cut(cut)
-    }
-
-    fn make_cname(
-        &self,
-        cname: domain::zonetree::SharedRr,
-    ) -> Pin<Box<dyn Future<Output = Result<(), std::io::Error>> + Send + Sync>> {
-        self.writable_zone_node.make_cname(cname)
-    }
-
-    fn remove_all(
-        &self,
-    ) -> Pin<Box<dyn Future<Output = Result<(), std::io::Error>> + Send + Sync>> {
-        self.writable_zone_node.remove_all()
     }
 }
 
