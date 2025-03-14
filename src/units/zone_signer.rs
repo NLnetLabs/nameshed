@@ -665,8 +665,8 @@ impl ZoneSigner {
                                         };
                                         let chunk_size = n / parallelism;
                                         trace!(
-                                                    "SIGNER: Using {parallelism} threads to sign {n} owners in chunks of {chunk_size}.",
-                                                );
+                                            "SIGNER: Using {parallelism} threads to sign {n} owners in chunks of {chunk_size}.",
+                                        );
 
                                         // let mut out = Vec::<
                                         //     Option<RrsigRecords<StoredName, Bytes>>,
