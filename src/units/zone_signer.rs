@@ -760,6 +760,7 @@ impl ZoneSigner {
                                                     let zone_name3 = zone_name2.clone();
                                                     // let out = out.clone();
                                                     s.spawn(move |_| {
+                                                            let is_last_chunk = i == parallelism-1;
                                                             let keys = keys2.read().unwrap();
                                                             let Some(keys) = keys.get(&zone_name3) else {
                                                                 error!("No key found for zone '{zone_name3}");
@@ -781,7 +782,11 @@ impl ZoneSigner {
                                                             n = 0;
                                                             m = 0;
                                                             let mut duration = Duration::ZERO;
-                                                            for _ in 0..chunk_size {
+                                                            loop {
+                                                                if !is_last_chunk && n == chunk_size {
+                                                                    trace!("SIGNER: Thread {i} reached the end of the chunk.");
+                                                                    break;
+                                                                }
                                                                 let Some(owner_rrs) = iter.next() else {
                                                                     trace!("SIGNER: Thread {i} reached the end of the data.");
                                                                     break;
