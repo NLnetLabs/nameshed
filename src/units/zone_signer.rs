@@ -654,6 +654,13 @@ impl ZoneSigner {
                                         // Now do RRSIGs in parallel.
                                         let n = RecordsIter::new(&records).count();
                                         // let n = records.len();
+                                        // Relevant user suggestion:
+                                        // "Misschien een tip voor NameShed:
+                                        // Het aantal signerthreads dynamisch
+                                        // maken, zodat de signer zelf extra
+                                        // threads kan opstarten als er
+                                        // geconstateerd wordt dat er veel
+                                        // nieuwe sigs gemaakt moeten worden."
                                         let parallelism = if n < 1024 {
                                             if n >= 2 {
                                                 2
