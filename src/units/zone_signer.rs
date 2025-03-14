@@ -668,7 +668,7 @@ impl ZoneSigner {
                                                 1
                                             }
                                         } else {
-                                            4 // thread::available_parallelism().unwrap().get()
+                                            thread::available_parallelism().unwrap().get() - 1
                                         };
                                         let chunk_size = n / parallelism;
                                         trace!(
