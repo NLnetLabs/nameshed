@@ -867,7 +867,7 @@ impl ZoneSigner {
                                         let insertion_time = insertion_time.saturating_add(insert_start.elapsed()).as_secs();
 
                                         let total_time = start.elapsed().as_secs();
-                                        let rrsig_avg = rrsig_count / rrsig_time as usize;
+                                        let rrsig_avg = if rrsig_time == 0 { 0 } else { rrsig_count / rrsig_time as usize };
                                         info!("[STATS] {zone_name} {zone_serial} RR[count={unsigned_rr_count} walk_time={walk_time}(sec) sort_time={sort_time}(sec)] NSEC3[count={nsec3_rr_count} time={nsec3_time}(sec)] RRSIG[new={rrsig_count} reused=0 time={rrsig_time}(sec) avg={rrsig_avg}(sig/sec)] INSERTION[time={insertion_time}(sec)] TOTAL[time={total_time}(sec)]");
 
                                         self.gate
