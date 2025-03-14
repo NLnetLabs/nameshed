@@ -754,7 +754,10 @@ impl ZoneSigner {
                                                     // let out = out.clone();
                                                     s.spawn(move |_| {
                                                             let keys = keys2.read().unwrap();
-                                                            let keys = keys.get(&zone_name3).unwrap();
+                                                            let Some(keys) = keys.get(&zone_name3) else {
+                                                                error!("No key found for zone '{zone_name3}");
+                                                                return;
+                                                            };
                                                             let mut iter =
                                                                 RecordsIter::new(records_ref);
                                                             let mut n = 0;
