@@ -51,6 +51,7 @@ use domain::zonetree::{
 use futures::future::{select, Either};
 use futures::stream::{once, Once};
 use futures::{pin_mut, Future};
+use hyper::StatusCode;
 use indoc::formatdoc;
 use log::warn;
 use log::{debug, error, info, trace};
@@ -454,8 +455,8 @@ impl ZoneServer {
                                         {
                                             Ok(_) => {
                                                 info!("[{component_name}]: Executed hook '{hook}' for {zone_type} zone '{zone_name}' at serial {zone_serial}");
-                                                info!("[{component_name}]: Confirm with HTTP GET {}{zone_name}/{zone_serial}/approve/{approval_token}", self.http_api_path);
-                                                info!("[{component_name}]: Reject with HTTP GET {}{zone_name}/{zone_serial}/reject/{approval_token}", self.http_api_path);
+                                                info!("[{component_name}]: Confirm with HTTP GET {}approve/{approval_token}?zone={zone_name}&serial={zone_serial}", self.http_api_path);
+                                                info!("[{component_name}]: Reject with HTTP GET {}reject/{approval_token}?zone={zone_name}&serial={zone_serial}", self.http_api_path);
                                             }
                                             Err(err) => {
                                                 error!(
@@ -775,7 +776,11 @@ impl ZoneReviewApi {
     }
 }
 
-// API: GET /<http api path>/<zone name>/<zone serial>/{approve,reject}/<approval token>
+// API: GET /<http api path>/{approve,reject}/<approval token>?zone=<zone name>&serial=<zone serial>
+//
+// NOTE: We use query parameters for the zone details because dots that appear in zone names are
+// decoded specially by HTTP standards compliant libraries, especially occurences of handling of /./
+// are problematic as that gets collapsed to /.
 //
 // TODO: Should we expire old pending approvals, e.g. a hook script failed and
 // they never got approved or rejected?
@@ -791,111 +796,121 @@ impl ProcessRequest for ZoneReviewApi {
         } else if self.mode == Mode::Prepublish && request.method() == hyper::Method::GET // should really be POST with POST body parameters.
             && req_path.starts_with(self.http_api_path.deref())
         {
+            let mut status = StatusCode::BAD_REQUEST;
+
             let (_base_path, remainder) = req_path.split_at(self.http_api_path.len());
 
             let mut parts = remainder.split('/');
-            let zone_name = parts.next();
-            let zone_serial = parts.next();
             let operation = parts.next();
             let given_approval_token = parts.next();
 
-            let mut status = hyper::StatusCode::BAD_REQUEST;
+            // We don't use Url::parse() here because it doesn't like
+            // base-less URIs which is what we receive.
+            if let Some(query) = request.uri().query() {
+                let query_pairs_iter = url::form_urlencoded::parse(query.as_bytes());
+                let query_pairs: HashMap<_, _> = HashMap::from_iter(query_pairs_iter);
+                let zone_name = query_pairs.get("zone");
+                let zone_serial = query_pairs.get("serial");
 
-            // Is this a valid request?
-            if matches!(operation, Some("approve") | Some("reject"))
-                && zone_name.is_some()
-                && zone_serial.is_some()
-                && given_approval_token.is_some()
-                && parts.next().is_none()
-            {
-                let operation = operation.unwrap();
-                let zone_name = zone_name.unwrap();
-                let zone_serial = zone_serial.unwrap();
-                let given_approval_token = given_approval_token.unwrap();
+                // Is this a valid request?
+                if matches!(operation, Some("approve") | Some("reject"))
+                    && zone_name.is_some()
+                    && zone_serial.is_some()
+                    && given_approval_token.is_some()
+                    && parts.next().is_none()
+                {
+                    let operation = operation.unwrap();
+                    let zone_name = zone_name.unwrap();
+                    let zone_serial = zone_serial.unwrap();
+                    let given_approval_token = given_approval_token.unwrap();
 
-                // Is the zone name valid?
-                if let Ok(zone_name) = Name::<Bytes>::from_str(zone_name) {
-                    // Is the zone serial valid?
-                    if let Ok(zone_serial) = Serial::from_str(zone_serial) {
-                        let mut remove_approvals = false;
+                    // Is the zone name valid?
+                    if let Ok(zone_name) = Name::<Bytes>::from_str(zone_name) {
+                        // Is the zone serial valid?
+                        if let Ok(zone_serial) = Serial::from_str(zone_serial) {
+                            let mut remove_approvals = false;
 
-                        // Are approvals pending for this serial of this zone?
-                        if let Some(pending_approvals) = self
-                            .pending_approvals
-                            .write()
-                            .await
-                            .get_mut(&(zone_name.clone(), zone_serial))
-                        {
-                            // Is this a valid approval token?
-                            if let Ok(given_uuid) = Uuid::from_str(given_approval_token) {
-                                if let Some(idx) = pending_approvals
-                                    .iter()
-                                    .position(|&uuid| uuid == given_uuid)
-                                {
-                                    // For a rejection remove all pending approvals for the zone.
-                                    // For an approval remove only the specified approval.
-                                    match operation {
-                                        "approve" => {
-                                            status = hyper::StatusCode::OK;
-                                            pending_approvals.remove(idx);
-
-                                            if pending_approvals.is_empty() {
-                                                let evt_zone_name = zone_name.clone();
-                                                let (zone_type, event) = match self.source {
-                                                    Source::UnsignedZones => (
-                                                        "unsigned",
-                                                        Update::UnsignedZoneApprovedEvent {
-                                                            zone_name: evt_zone_name,
-                                                            zone_serial,
-                                                        },
-                                                    ),
-                                                    Source::SignedZones => (
-                                                        "signed",
-                                                        Update::SignedZoneApprovedEvent {
-                                                            zone_name: evt_zone_name,
-                                                            zone_serial,
-                                                        },
-                                                    ),
-                                                    Source::PublishedZones => unreachable!(),
-                                                };
-                                                info!("Pending {zone_type} zone '{zone_name}' approved at serial {zone_serial}.");
-                                                self.gate.update_data(event).await;
-                                                remove_approvals = true;
-                                            }
-                                        }
-                                        "reject" => {
-                                            info!("Pending zone '{zone_name}' rejected at serial {zone_serial}.");
-                                            status = hyper::StatusCode::OK;
-                                            remove_approvals = true;
-                                        }
-                                        _ => unreachable!(),
-                                    }
-                                } else {
-                                    warn!("No pending approval found for zone name '{zone_name}' at serial {zone_serial} with approval token '{given_uuid}'.");
-                                }
-                            } else {
-                                warn!(
-                                    "Invalid approval token '{given_approval_token}' in request."
-                                );
-                            }
-                        } else {
-                            debug!("No pending approvals for zone name '{zone_name}' at serial {zone_serial}.");
-                        }
-
-                        if remove_approvals {
-                            self.pending_approvals
+                            // Are approvals pending for this serial of this zone?
+                            if let Some(pending_approvals) = self
+                                .pending_approvals
                                 .write()
                                 .await
-                                .remove(&(zone_name, zone_serial));
+                                .get_mut(&(zone_name.clone(), zone_serial))
+                            {
+                                // Is this a valid approval token?
+                                if let Ok(given_uuid) = Uuid::from_str(given_approval_token) {
+                                    if let Some(idx) = pending_approvals
+                                        .iter()
+                                        .position(|&uuid| uuid == given_uuid)
+                                    {
+                                        // For a rejection remove all pending approvals for the zone.
+                                        // For an approval remove only the specified approval.
+                                        match operation {
+                                            "approve" => {
+                                                status = StatusCode::OK;
+                                                pending_approvals.remove(idx);
+
+                                                if pending_approvals.is_empty() {
+                                                    let evt_zone_name = zone_name.clone();
+                                                    let (zone_type, event) = match self.source {
+                                                        Source::UnsignedZones => (
+                                                            "unsigned",
+                                                            Update::UnsignedZoneApprovedEvent {
+                                                                zone_name: evt_zone_name,
+                                                                zone_serial,
+                                                            },
+                                                        ),
+                                                        Source::SignedZones => (
+                                                            "signed",
+                                                            Update::SignedZoneApprovedEvent {
+                                                                zone_name: evt_zone_name,
+                                                                zone_serial,
+                                                            },
+                                                        ),
+                                                        Source::PublishedZones => unreachable!(),
+                                                    };
+                                                    info!("Pending {zone_type} zone '{zone_name}' approved at serial {zone_serial}.");
+                                                    self.gate.update_data(event).await;
+                                                    remove_approvals = true;
+                                                }
+                                            }
+                                            "reject" => {
+                                                info!("Pending zone '{zone_name}' rejected at serial {zone_serial}.");
+                                                status = StatusCode::OK;
+                                                remove_approvals = true;
+                                            }
+                                            _ => unreachable!(),
+                                        }
+                                    } else {
+                                        warn!("No pending approval found for zone name '{zone_name}' at serial {zone_serial} with approval token '{given_uuid}'.");
+                                    }
+                                } else {
+                                    warn!(
+                                        "Invalid approval token '{given_approval_token}' in request."
+                                    );
+                                }
+                            } else {
+                                debug!("No pending approvals for zone name '{zone_name}' at serial {zone_serial}.");
+                            }
+
+                            if remove_approvals {
+                                self.pending_approvals
+                                    .write()
+                                    .await
+                                    .remove(&(zone_name, zone_serial));
+                            }
+                        } else {
+                            warn!("Invalid zone serial '{zone_serial}' in request.");
                         }
                     } else {
-                        warn!("Invalid zone serial '{zone_serial}' in request.");
+                        warn!("Invalid zone name '{zone_name}' in request.");
                     }
                 } else {
-                    warn!("Invalid zone name '{zone_name}' in request.");
                 }
-            } else {
-                debug!("Invalid request: req_path={req_path}, remainder={remainder}, zone_name={zone_name:?}, zone_serial={zone_serial:?}, operation={operation:?}, given_approval_token={given_approval_token:?}");
+            }
+
+            if status == StatusCode::BAD_REQUEST {
+                debug!("Invalid request: {}", request.uri());
             }
 
             Some(
