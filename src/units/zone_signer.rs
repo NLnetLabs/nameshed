@@ -877,7 +877,7 @@ impl ZoneSigner {
 
                                         let total_time = start.elapsed().as_secs();
                                         let rrsig_avg = if rrsig_time == 0 { rrsig_count } else { rrsig_count / rrsig_time as usize };
-                                        info!("[STATS] {zone_name} {zone_serial} RR[count={unsigned_rr_count} walk_time={walk_time}(sec) sort_time={sort_time}(sec)] DENIAL[count={denial_rr_count} time={denial_time}(sec)] RRSIG[new={rrsig_count} reused=0 time={rrsig_time}(sec) avg={rrsig_avg}(sig/sec)] INSERTION[time={insertion_time}(sec)] TOTAL[time={total_time}(sec)]");
+                                        info!("[STATS] {zone_name} {zone_serial} RR[count={unsigned_rr_count} walk_time={walk_time}(sec) sort_time={sort_time}(sec)] DENIAL[count={nsec3_rr_count} time={nsec3_time}(sec)] RRSIG[new={rrsig_count} reused=0 time={rrsig_time}(sec) avg={rrsig_avg}(sig/sec)] INSERTION[time={insertion_time}(sec)] TOTAL[time={total_time}(sec)]");
 
                                         self.gate
                                             .update_data(Update::ZoneSignedEvent {
