@@ -394,22 +394,28 @@ where
                     //    before checking with the primary for a new serial."
                     trace!("REFRESH timer fired: {timer_info:?}");
 
+                    let time_tracking = time_tracking.clone();
+                    let pending_zones = self.pending_zones.clone();
+                    let event_tx = self.event_tx.clone();
+                    let config = self.config.clone();
+                    let zones = self.zones();
+
+                    tokio::spawn(async move {
                     // Are we actively managing refreshing of this zone?
                     let mut tt = time_tracking.write().await;
                     if let Some(zone_refresh_info) = tt.get_mut(&timer_info.zone_id) {
                         // Do we have the zone that is being updated?
-                        let pending_zones = self.pending_zones.read().await;
-                        let zones = self.zones();
+                            let r_pending_zones = pending_zones.read().await;
                         let zone_id = timer_info.zone_id.clone();
 
                         let (is_pending_zone, zone) = {
                             // Is the zone pending?
-                            if let Some(zone) = pending_zones.get(&zone_id) {
+                                if let Some(zone) = r_pending_zones.get(&zone_id) {
                                 (true, zone)
                             } else {
                                 let Some(zone) = zones.get_zone(&zone_id.name, zone_id.class) else {
                                     // The zone no longer exists, ignore.
-                                    continue;
+                                        return;
                                 };
                                 (false, zone)
                             }
@@ -428,18 +434,16 @@ where
                                     zone,
                                     None,
                                     zone_refresh_info,
-                                    self.event_tx.clone(),
-                                    self.config.clone(),
+                                        event_tx.clone(),
+                                        config,
                                 )
                                 .await
                             {
                                 Ok(()) => {
                                     if is_pending_zone {
+                                            // Trigger migration of the zone from the pending set to the active set.
                                         trace!("Removing zone '{}' from the pending set as it was successfully refreshed", zone_id.name);
-                                        drop(pending_zones);
-                                        let mut pending_zones = self.pending_zones.write().await;
-                                        let zone = pending_zones.remove(&zone_id).unwrap();
-                                        self.insert_active_zone(zone).await.unwrap();
+                                            event_tx.send(Event::ZoneAdded(zone_id)).await.unwrap();
                                     }
                                 }
 
@@ -451,6 +455,7 @@ where
                             // TODO
                         }
                     }
+                    });
                 }
             }
         }
