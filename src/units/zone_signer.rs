@@ -509,10 +509,7 @@ impl ZoneSigner {
                                             );
                                             let zones = signed_zones.clone();
                                             let mut new_zones = Arc::unwrap_or_clone(zones);
-                                            let new_zone = Zone::new(LightWeightZone::new(
-                                                zone_name.clone(),
-                                                false,
-                                            ));
+                                            let new_zone = ZoneBuilder::new(zone_name.clone(), Class::IN).build();
                                             new_zones.insert_zone(new_zone.clone()).unwrap();
                                             self.component
                                                 .signed_zones()
