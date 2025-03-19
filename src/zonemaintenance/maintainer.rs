@@ -1414,7 +1414,7 @@ where
         };
 
         let mut xfr_interpreter = XfrResponseInterpreter::new();
-        let mut zone_updater = ZoneUpdater::new(zone.clone()).await?;
+        let mut zone_updater = ZoneUpdater::new(zone.clone(), true).await?;
 
         match transport {
             TransportStrategy::None => unreachable!(),
