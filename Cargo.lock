@@ -432,6 +432,7 @@ dependencies = [
 [[package]]
 name = "domain"
 version = "0.10.3"
+source = "git+https://github.com/NLnetLabs/domain?branch=patches-for-nameshed-prototype#ac5a59bfd7da22e384946e82b789c118e7dc30e9"
 dependencies = [
  "arc-swap",
  "bytes",
