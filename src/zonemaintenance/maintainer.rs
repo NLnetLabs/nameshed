@@ -401,60 +401,60 @@ where
                     let zones = self.zones();
 
                     tokio::spawn(async move {
-                    // Are we actively managing refreshing of this zone?
-                    let mut tt = time_tracking.write().await;
-                    if let Some(zone_refresh_info) = tt.get_mut(&timer_info.zone_id) {
-                        // Do we have the zone that is being updated?
+                        // Are we actively managing refreshing of this zone?
+                        let mut tt = time_tracking.write().await;
+                        if let Some(zone_refresh_info) = tt.get_mut(&timer_info.zone_id) {
+                            // Do we have the zone that is being updated?
                             let r_pending_zones = pending_zones.read().await;
-                        let zone_id = timer_info.zone_id.clone();
+                            let zone_id = timer_info.zone_id.clone();
 
-                        let (is_pending_zone, zone) = {
-                            // Is the zone pending?
+                            let (is_pending_zone, zone) = {
+                                // Is the zone pending?
                                 if let Some(zone) = r_pending_zones.get(&zone_id) {
-                                (true, zone)
-                            } else {
-                                let Some(zone) = zones.get_zone(&zone_id.name, zone_id.class) else {
-                                    // The zone no longer exists, ignore.
+                                    (true, zone)
+                                } else {
+                                    let Some(zone) = zones.get_zone(&zone_id.name, zone_id.class) else {
+                                        // The zone no longer exists, ignore.
                                         return;
-                                };
-                                (false, zone)
-                            }
-                        };
+                                    };
+                                    (false, zone)
+                                }
+                            };
 
-                        // Make sure it's still a secondary and hasn't been
-                        // deleted and re-added as a primary.
-                        let cat_zone: &MaintainedZone = zone.into();
+                            // Make sure it's still a secondary and hasn't been
+                            // deleted and re-added as a primary.
+                            let cat_zone: &MaintainedZone = zone.into();
 
-                        if cat_zone.info().config.is_secondary() {
-                            // If successful this will commit changes to the
-                            // zone causing a notify event message to be sent
-                            // which will be handled above.
-                            match Self::refresh_zone_and_update_state(
-                                    timer_info.cause,
-                                    zone,
-                                    None,
-                                    zone_refresh_info,
+                            if cat_zone.info().config.is_secondary() {
+                                // If successful this will commit changes to the
+                                // zone causing a notify event message to be sent
+                                // which will be handled above.
+                                match Self::refresh_zone_and_update_state(
+                                        timer_info.cause,
+                                        zone,
+                                        None,
+                                        zone_refresh_info,
                                         event_tx.clone(),
                                         config,
-                                )
-                                .await
-                            {
-                                Ok(()) => {
-                                    if is_pending_zone {
+                                    )
+                                    .await
+                                {
+                                    Ok(()) => {
+                                        if is_pending_zone {
                                             // Trigger migration of the zone from the pending set to the active set.
-                                        trace!("Removing zone '{}' from the pending set as it was successfully refreshed", zone_id.name);
+                                            trace!("Removing zone '{}' from the pending set as it was successfully refreshed", zone_id.name);
                                             event_tx.send(Event::ZoneAdded(zone_id)).await.unwrap();
+                                        }
+                                    }
+
+                                    Err(_) => {
+                                        // TODO
                                     }
                                 }
-
-                                Err(_) => {
-                                    // TODO
-                                }
+                            } else {
+                                // TODO
                             }
-                        } else {
-                            // TODO
                         }
-                    }
                     });
                 }
             }
