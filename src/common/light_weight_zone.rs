@@ -1,3 +1,8 @@
+/// A quick PoC to see if using a BTree compared to default in-memory zone
+/// store uses less memory, and it does, even with its dumb way of storing
+/// values in the tree. It's not a fair comparison either as the default
+/// in-memory store also supports proper answers to queries, versioning and
+/// IXFR diff generation.
 use std::{
     any::Any,
     collections::{btree_map::Entry, BTreeMap, HashSet},
@@ -109,14 +114,14 @@ impl ReadableZone for SimpleZoneInner {
             .read()
             .unwrap()
             .get(&qname)
-            .and_then(|rrsets| {
+            .map(|rrsets| {
                 trace!("QUERY RRSETS");
                 let mut answer = Answer::new(Rcode::NOERROR);
                 if let Some(rrset) = rrsets.iter().find(|rrset| rrset.rtype() == qtype) {
                     trace!("QUERY RRSETS: FOUND {qtype}");
                     answer.add_answer(rrset.deref().clone());
                 }
-                Some(answer)
+                answer
             })
             .unwrap_or(Answer::new(Rcode::NOERROR)))
     }

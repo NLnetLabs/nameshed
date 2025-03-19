@@ -1,6 +1,6 @@
 use core::fmt;
 use core::future::pending;
-use core::ops::Add;
+use core::ops::{Add, ControlFlow};
 
 use std::any::Any;
 use std::cmp::Ordering;
@@ -10,7 +10,7 @@ use std::ffi::OsString;
 use std::fmt::Display;
 use std::fs::File;
 use std::net::{IpAddr, SocketAddr};
-use std::ops::{ControlFlow, Sub};
+use std::ops::Sub;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::str::FromStr;
@@ -22,7 +22,7 @@ use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use chrono::{DateTime, Utc};
-use domain::base::iana::{nsec3, Class, Rcode};
+use domain::base::iana::Class;
 use domain::base::name::FlattenInto;
 use domain::base::record::ComposeRecord;
 use domain::base::wire::Composer;
@@ -43,6 +43,7 @@ use domain::net::server::stream::{self, StreamServer};
 use domain::net::server::util::{mk_error_response, service_fn};
 use domain::net::server::ConnectionConfig;
 use domain::rdata::dnssec::Timestamp;
+use domain::rdata::nsec3::Nsec3Salt;
 use domain::rdata::{Nsec3param, Soa, ZoneRecordData};
 use domain::sign::crypto::common::{generate, GenerateParams};
 // Use openssl::KeyPair because ring::KeyPair is not Send.
@@ -50,12 +51,12 @@ use domain::sign::crypto::openssl::KeyPair;
 use domain::sign::denial::config::DenialConfig;
 use domain::sign::denial::nsec::GenerateNsecConfig;
 use domain::sign::denial::nsec3::{
-    GenerateNsec3Config, Nsec3OptOut, Nsec3ParamTtlMode, OnDemandNsec3HashProvider,
+    GenerateNsec3Config, Nsec3ParamTtlMode, OnDemandNsec3HashProvider,
 };
-use domain::sign::error::FromBytesError;
+use domain::sign::error::{FromBytesError, SigningError};
 use domain::sign::keys::keymeta::IntendedKeyPurpose;
 use domain::sign::keys::{DnssecSigningKey, SigningKey};
-use domain::sign::records::{RecordsIter, RrsetIter, SortedRecords, Sorter};
+use domain::sign::records::{DefaultSorter, RecordsIter, RrsetIter, SortedRecords, Sorter};
 use domain::sign::signatures::rrsigs::{generate_rrsigs, GenerateRrsigConfig, RrsigRecords};
 use domain::sign::signatures::strategy::{
     DefaultSigningKeyUsageStrategy, FixedRrsigValidityPeriodStrategy,
@@ -66,11 +67,11 @@ use domain::tsig::KeyStore;
 use domain::tsig::{Algorithm, Key, KeyName};
 use domain::utils::base64;
 use domain::zonefile::inplace;
-use domain::zonetree::types::ZoneUpdate;
+use domain::zonetree::types::{StoredRecordData, ZoneUpdate};
 use domain::zonetree::update::ZoneUpdater;
 use domain::zonetree::{
-    InMemoryZoneDiff, ReadableZone, StoredName, WritableZone, WritableZoneNode, Zone, ZoneBuilder,
-    ZoneStore, ZoneTree,
+    InMemoryZoneDiff, ReadableZone, StoredName, StoredRecord, WritableZone, WritableZoneNode, Zone,
+    ZoneBuilder, ZoneStore, ZoneTree,
 };
 use futures::future::{select, Either};
 use futures::{pin_mut, Future, SinkExt};
@@ -84,8 +85,8 @@ use rayon::slice::ParallelSliceMut;
 use serde::{Deserialize, Deserializer};
 use serde_with::{serde_as, DeserializeFromStr, DisplayFromStr};
 use tokio::net::UdpSocket;
-use tokio::sync::mpsc::{Receiver, Sender};
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::mpsc::{self, Receiver, Sender};
+use tokio::sync::{Mutex, RwLock, Semaphore};
 use tokio::time::sleep;
 #[cfg(feature = "tls")]
 use tokio_rustls::rustls::ServerConfig;
@@ -122,7 +123,7 @@ use crate::zonemaintenance::types::{
     CompatibilityMode, NotifyConfig, TransportStrategy, XfrConfig, XfrStrategy, ZoneConfig,
     ZoneMaintainerKeyStore,
 };
-use std::thread;
+use tokio::task::spawn_blocking;
 
 #[serde_as]
 #[derive(Clone, Debug, Deserialize)]
@@ -144,6 +145,37 @@ pub struct ZoneSignerUnit {
 
     #[serde(default)]
     treat_single_keys_as_csks: bool,
+
+    #[serde(default)]
+    use_lightweight_zone_tree: bool,
+
+    #[serde(default = "ZoneSignerUnit::default_max_concurrent_operations")]
+    max_concurrent_operations: usize,
+
+    #[serde(default = "ZoneSignerUnit::default_max_concurrent_rrsig_generation_tasks")]
+    max_concurrent_rrsig_generation_tasks: usize,
+}
+
+impl ZoneSignerUnit {
+    fn default_http_api_path() -> Arc<String> {
+        Arc::new("/zone-signer/".to_string())
+    }
+
+    fn default_rrsig_inception_offset_secs() -> u32 {
+        60 * 90 // 90 minutes ala Knot
+    }
+
+    fn default_rrsig_expiration_offset_secs() -> u32 {
+        60 * 60 * 24 * 14 // 14 days ala Knot
+    }
+
+    fn default_max_concurrent_operations() -> usize {
+        1
+    }
+
+    fn default_max_concurrent_rrsig_generation_tasks() -> usize {
+        std::thread::available_parallelism().unwrap().get() - 1
+    }
 }
 
 impl ZoneSignerUnit {
@@ -270,23 +302,14 @@ impl ZoneSignerUnit {
             self.rrsig_inception_offset_secs,
             self.rrsig_expiration_offset_secs,
             self.denial_config,
+            self.use_lightweight_zone_tree,
+            self.max_concurrent_operations,
+            self.max_concurrent_rrsig_generation_tasks,
         )
         .run()
         .await?;
 
         Ok(())
-    }
-
-    fn default_http_api_path() -> Arc<String> {
-        Arc::new("/zone-signer/".to_string())
-    }
-
-    fn default_rrsig_inception_offset_secs() -> u32 {
-        60 * 90 // 90 minutes ala Knot
-    }
-
-    fn default_rrsig_expiration_offset_secs() -> u32 {
-        60 * 60 * 24 * 14 // 14 days ala Knot
     }
 
     fn load_private_key(key_path: &Path) -> Result<SecretKeyBytes, Terminated> {
@@ -369,6 +392,9 @@ struct ZoneSigner {
     inception_offset_secs: u32,
     expiration_offset: u32,
     denial_config: TomlDenialConfig,
+    use_lightweight_zone_tree: bool,
+    concurrent_operation_permits: Semaphore,
+    max_concurrent_rrsig_generation_tasks: usize,
 }
 
 impl ZoneSigner {
@@ -383,6 +409,9 @@ impl ZoneSigner {
         inception_offset_secs: u32,
         expiration_offset: u32,
         denial_config: TomlDenialConfig,
+        use_lightweight_zone_tree: bool,
+        max_concurrent_operations: usize,
+        max_concurrent_rrsig_generation_tasks: usize,
     ) -> Self {
         Self {
             component,
@@ -394,6 +423,9 @@ impl ZoneSigner {
             inception_offset_secs,
             expiration_offset,
             denial_config,
+            use_lightweight_zone_tree,
+            concurrent_operation_permits: Semaphore::new(max_concurrent_operations),
+            max_concurrent_rrsig_generation_tasks,
         }
     }
 
@@ -419,6 +451,9 @@ impl ZoneSigner {
                                     rrsig_inception_offset_secs: inception_offset_secs,
                                     rrsig_expiration_offset_secs: expiration_offset_secs,
                                     denial_config,
+                                    use_lightweight_zone_tree,
+                                    max_concurrent_operations,
+                                    max_concurrent_rrsig_generation_tasks,
                                 }),
                         } => {
                             // Runtime reconfiguration of this unit has been
@@ -457,462 +492,11 @@ impl ZoneSigner {
                                     zone_name,
                                     zone_serial,
                                 } => {
-                                    let start = Instant::now();
-
-                                    // Find a key that matches the zone being signed.
-                                    // TODO: We should support multiple keys, not just one.
-                                    let now = Timestamp::now().into_int();
-                                    let inception = now.sub(self.inception_offset_secs);
-                                    let expiration = now.add(self.expiration_offset);
-                                    let validity = FixedRrsigValidityPeriodStrategy::from((
-                                        inception, expiration,
-                                    ));
-
-                                    let unsigned_zone = {
-                                        let unsigned_zones = self.component.unsigned_zones().load();
-                                        unsigned_zones.get_zone(&zone_name, Class::IN).cloned()
-                                    };
-
-                                    // Sign the unsigned zone and store it as a signed zone.
-                                    /*let (soa_rr, records) =*/
-                                    if let Some(unsigned_zone) = unsigned_zone {
-                                        // Sign the zone and store the resulting RRs.
-
-                                        // Temporary: Accumulate the zone into a vec as we can only sign
-                                        // over a slice at the moment, not over an iterator yet (nor can
-                                        // we iterate over a zone yet, only walk it ...).
-
-                                        let read = unsigned_zone.read();
-
-                                        let answer =
-                                            read.query(zone_name.clone(), Rtype::SOA).unwrap();
-
-                                        let (soa_ttl, soa_data) = answer.content().first().unwrap();
-                                        let soa_rr = Record::new(
-                                            zone_name.clone(),
-                                            Class::IN,
-                                            soa_ttl,
-                                            soa_data,
-                                        );
-
-                                        // Create a signing configuration.
-                                        // Store the zone in the signed zone tree.
-                                        // First see if the zone already exists,
-                                        // and ensure we don't hold a read lock.
-                                        let signed_zones = self.component.signed_zones().load();
-                                        let mut zone =
-                                            signed_zones.get_zone(zone_name, Class::IN).cloned();
-
-                                        if zone.is_none() {
-                                            trace!(
-                                                "SIGNER: Creating new zone to hold signed records"
-                                            );
-                                            let zones = signed_zones.clone();
-                                            let mut new_zones = Arc::unwrap_or_clone(zones);
-                                            let new_zone = ZoneBuilder::new(zone_name.clone(), Class::IN).build();
-                                            new_zones.insert_zone(new_zone.clone()).unwrap();
-                                            self.component
-                                                .signed_zones()
-                                                .store(Arc::new(new_zones));
-                                            zone = Some(new_zone);
-                                        };
-
-                                        let zone = zone.unwrap();
-                                        let zone_name = zone.apex_name().clone();
-                                        let zone_serial =
-                                            if let ZoneRecordData::Soa(soa_data) = soa_rr.data() {
-                                                soa_data.serial()
-                                            } else {
-                                                unreachable!()
-                                            };
-
-                                        // Update the content of the zone.
-                                        let mut updater = ZoneUpdater::new(zone).await.unwrap();
-                                        trace!("SIGNER: Deleting records in existing (if any) copy of signed zone.");
-                                        updater.apply(ZoneUpdate::DeleteAllRecords).await.unwrap();
-
-                                        let mut signing_config = self.signing_config();
-                                        signing_config.set_rrsig_validity_period_strategy(validity);
-
-                                        let mut rrsig_config = GenerateRrsigConfig::<
-                                            StoredName,
-                                            DefaultSigningKeyUsageStrategy,
-                                            FixedRrsigValidityPeriodStrategy,
-                                            MultiThreadedSorter,
-                                        >::new(
-                                            signing_config.rrsig_validity_period_strategy,
-                                        );
-                                        rrsig_config.add_used_dnskeys =
-                                            signing_config.add_used_dnskeys;
-
-                                        // Collect the zones unsigned records in zone walking order into an
-                                        // unsorted Vec then sort it after by converting it to SortedRecords.
-                                        // This is faster than using a SortedRecords to start with as it will
-                                        // sort on every insert which is slow, and we can't call
-                                        // SortedRecords::extend() (which is faster because it basically does
-                                        // pushes then sort) because we don't have access to all of the
-                                        // records at once to extend the collection with in one go.
-                                        let records = Arc::new(std::sync::Mutex::new(Vec::new()));
-                                        let passed_records = records.clone();
-
-                                        let component_name = component_name.clone();
-                                        let zone_name2 = zone_name.clone();
-                                        let res = tokio::task::spawn_blocking(move || {
-                                                let walk_start = Instant::now();
-
-                                                trace!("SIGNER: Walking");
-                                                read.walk(Box::new(
-                                                    move |owner, rrset, _at_zone_cut| {
-                                                        let mut unlocked_records =
-                                                            passed_records.lock().unwrap();
-                                                        unlocked_records.extend(
-                                                            rrset.data().iter().map(|rdata| {
-                                                                Record::new(
-                                                                    owner.clone(),
-                                                                    Class::IN,
-                                                                    rrset.ttl(),
-                                                                    rdata.to_owned(),
-                                                                )
-                                                            }),
-                                                        );
-                                                    },
-                                                ));
-
-                                                let walk_time = walk_start.elapsed().as_secs();
-
-                                                let sort_start = Instant::now();
-                                                let records = Arc::into_inner(records)
-                                                    .unwrap()
-                                                    .into_inner()
-                                                    .unwrap();
-                                                let mut records = SortedRecords::from(records);
-                                                let sort_time = sort_start.elapsed().as_secs();
-
-                                                let unsigned_rr_count = records.len();
-
-                                                trace!("SIGNER: Walked: accumulated {} records for signing", records.len());
-
-                                                // TODO: Try generating Vec<u8> output instead of Bytes as then each
-                                                // NSEC3 and RRSIG generated record may take up less space?
-
-                                                // TODO: Generate one RRSIG at a time and push it straight into the
-                                                // final zone instead of collecting in an intermediate Vec, could we
-                                                // even do that from the walker and thus avoid a temporary Vec for
-                                                // signing?
-
-                                                // Then sign the zone adding the generated records to the
-                                                // signer_generated_rrs collection, as we don't want to keep two
-                                                // copies of the unsigned records, we already have those in the
-                                                // zone.
-                                                let nsec3_start = Instant::now();
-                                                if let Err(err) =
-                                                    // records.sign_zone(&mut signing_config, keys)
-                                                    // Don't pass in the keys, then it only does NSEC3, not RRSIGs.
-                                                    records.sign_zone(
-                                                            &mut signing_config,
-                                                            &Vec::<
-                                                                DnssecSigningKey<
-                                                                    Bytes,
-                                                                    KeyPair,
-                                                                >,
-                                                            >::new(),
-                                                        )
-                                                {
-                                                    error!("[{component_name}]: Failed to sign zone '{zone_name2}': {err}");
-                                                    return (soa_rr, 0, 0, 0, 0, None);
-                                                }
-
-                                                let nsec3_time = nsec3_start.elapsed().as_secs();
-                                                (soa_rr, unsigned_rr_count, walk_time, sort_time, nsec3_time, Some(records.into_inner()))
-                                            }).await;
-
-                                        let Ok((
-                                            soa_rr,
-                                            unsigned_rr_count,
-                                            walk_time,
-                                            sort_time,
-                                            nsec3_time,
-                                            Some(records),
-                                        )) = res
-                                        else {
-                                            continue;
-                                        };
-
-                                        let nsec3_rr_count = records.len() - unsigned_rr_count;
-
-                                        let soa_owner = soa_rr.owner().clone();
-                                        rrsig_config.zone_apex = Some(soa_owner);
-
-                                        trace!(
-                                            "SIGNER: Signed: Post NSEC3 contains {} records",
-                                            records.len()
-                                        );
-
-                                        // Now do RRSIGs in parallel.
-                                        let n = RecordsIter::new(&records).count();
-                                        // let n = records.len();
-                                        // Relevant user suggestion:
-                                        // "Misschien een tip voor NameShed:
-                                        // Het aantal signerthreads dynamisch
-                                        // maken, zodat de signer zelf extra
-                                        // threads kan opstarten als er
-                                        // geconstateerd wordt dat er veel
-                                        // nieuwe sigs gemaakt moeten worden."
-                                        let parallelism = if n < 1024 {
-                                            if n >= 2 {
-                                                2
-                                            } else {
-                                                1
-                                            }
-                                        } else {
-                                            thread::available_parallelism().unwrap().get() - 1
-                                        };
-                                        let chunk_size = n / parallelism;
-                                        trace!(
-                                            "SIGNER: Using {parallelism} threads to sign {n} owners in chunks of {chunk_size}.",
-                                        );
-
-                                        // let mut out = Vec::<
-                                        //     Option<RrsigRecords<StoredName, Bytes>>,
-                                        // >::with_capacity(
-                                        //     parallelism
-                                        // );
-                                        // for _ in 0..parallelism {
-                                        //     out.push(None);
-                                        // }
-                                        // let out = Arc::new(std::sync::Mutex::new(out));
-
-                                        let (tx, mut rx) =
-                                            tokio::sync::mpsc::channel::<(
-                                                RrsigRecords<Name<Bytes>, Bytes>,
-                                                Duration,
-                                            )>(10000);
-
-                                        let join_handle = tokio::task::spawn(async move {
-                                            trace!("SIGNER: Adding new signed records to new/existing copy of signed zone.");
-                                            let mut dnskeys_count = 0usize;
-                                            let mut rrsig_count = 0usize;
-                                            let mut max_rrsig_generation_time = Duration::ZERO;
-                                            let mut insertion_time = Duration::ZERO;
-
-                                            while let Some((rrsig_records, duration)) =
-                                                rx.recv().await
-                                            {
-                                                max_rrsig_generation_time = std::cmp::max(
-                                                    max_rrsig_generation_time,
-                                                    duration,
-                                                );
-                                                // trace!(
-                                                //     "Received {} DNSKEY RRs and {} RRSIG RRs.",
-                                                //     rrsig_records.dnskeys.len(),
-                                                //     rrsig_records.rrsigs.len()
-                                                // );
-                                                let insert_start = Instant::now();
-                                                for rr in rrsig_records.dnskeys {
-                                                    updater
-                                                        .apply(ZoneUpdate::AddRecord(
-                                                            Record::from_record(rr),
-                                                        ))
-                                                        .await
-                                                        .unwrap();
-                                                    dnskeys_count += 1;
-                                                }
-
-                                                for rr in rrsig_records.rrsigs {
-                                                    updater
-                                                        .apply(ZoneUpdate::AddRecord(
-                                                            Record::from_record(rr),
-                                                        ))
-                                                        .await
-                                                        .unwrap();
-                                                    rrsig_count += 1;
-                                                }
-
-                                                insertion_time = insertion_time.saturating_add(insert_start.elapsed());
-                                            }
-                                            trace!("SIGNER: Added {dnskeys_count} DNSKEY RRs and {rrsig_count} RRSIG RRs to new/existing copy of signed zone.");
-
-                                            // eprintln!(
-                                            //     "Max RRSIG generation time: {:.2?}, # signatures: {}",
-                                            //     max_rrsig_generation_time, rrsigs_count
-                                            // );
-
-                                            let rrsig_time = max_rrsig_generation_time.as_secs();
-
-                                            (updater, rrsig_time, insertion_time, rrsig_count)
-                                        });
-
-                                        trace!("SIGNER: Signing concurrently..");
-                                        let keys = self.signing_keys.clone();
-                                        let zone_name2 = zone_name.clone();
-
-                                        let join_handle2 = tokio::task::spawn_blocking(move || {
-                                            let records_ref = &records;
-                                            rayon::scope(|s| {
-                                                for i in 0..parallelism {
-                                                    // let j = i;
-                                                    let rrsig_config = &rrsig_config;
-                                                    let tx2 = tx.clone();
-                                                    let keys2 = keys.clone();
-                                                    let zone_name3 = zone_name2.clone();
-                                                    // let out = out.clone();
-                                                    s.spawn(move |_| {
-                                                            let is_last_chunk = i == parallelism-1;
-                                                            let keys = keys2.read().unwrap();
-                                                            let Some(keys) = keys.get(&zone_name3) else {
-                                                                error!("No key found for zone '{zone_name3}");
-                                                                return;
-                                                            };
-                                                            let mut iter =
-                                                                RecordsIter::new(records_ref);
-                                                            let mut n = 0;
-                                                            let mut m = 0;
-                                                            for _ in 0..i*chunk_size {
-                                                                let Some(owner_rrs) = iter.next() else {
-                                                                    trace!("SIGNER: Thread {i} ran out of data after skipping {n} owners covering {m} RRs!");
-                                                                    return;
-                                                                };
-                                                                m += owner_rrs.into_inner().len();
-                                                                n += 1;
-                                                            }
-                                                            trace!("SIGNER: Thread {i} skipped {n} owners covering {m} RRs.");
-                                                            n = 0;
-                                                            m = 0;
-                                                            let mut duration = Duration::ZERO;
-                                                            loop {
-                                                                if !is_last_chunk && n == chunk_size {
-                                                                    trace!("SIGNER: Thread {i} reached the end of the chunk.");
-                                                                    break;
-                                                                }
-                                                                let Some(owner_rrs) = iter.next() else {
-                                                                    trace!("SIGNER: Thread {i} reached the end of the data.");
-                                                                    break;
-                                                                };
-                                                                let slice = owner_rrs.into_inner();
-                                                                m += slice.len();
-                                                                n += 1;
-                                                                // trace!("SIGNER: Thread {i}: processing owner_rrs slice of len {}.", slice.len());
-                                                                let before = Instant::now();
-                                                                let res = generate_rrsigs(
-                                                                    RecordsIter::new(
-                                                                        slice,
-                                                                    ),
-                                                                    keys,
-                                                                    rrsig_config,
-                                                                )
-                                                                .unwrap();
-                                                                duration = duration.saturating_add(before.elapsed());
-
-                                                                if !res.dnskeys.is_empty() || !res.rrsigs.is_empty() {
-                                                                    // trace!("SIGNER: Thread {i}: sending {} DNSKEY RRs and {} RRSIG RRs to be stored", res.dnskeys.len(), res.rrsigs.len());
-                                                                    if tx2.blocking_send((res, duration)).is_err() {
-                                                                        trace!("SIGNER: Thread {i}: unable to send RRs for storage, aborting.");
-                                                                        break;
-                                                                    }
-                                                                } else {
-                                                                    // trace!("SIGNER: Thread {i}: no DNSKEY RRs or RRSIG RRs to be stored");
-                                                                }
-                                                            }
-                                                            // let mut_out =
-                                                            //     &mut out.lock().unwrap()[j];
-                                                            // *mut_out = Some(res);
-
-                                                            trace!("SIGNER: Thread {i} finished processing {n} owners covering {m} RRs.");
-                                                        })
-                                                }
-
-                                                drop(tx);
-                                            });
-
-                                            records
-                                        });
-
-                                        // trace!("SIGNER: Extending result collection with concurrent results");
-                                        // let mut out = std::sync::Mutex::into_inner(
-                                        //     Arc::into_inner(out).unwrap(),
-                                        // )
-                                        // .unwrap();
-
-                                        // let res = tokio::task::spawn_blocking(move || {
-                                        //     use rayon::prelude::*;
-                                        //     for i in 0..parallelism {
-                                        //         let other = out.pop().unwrap().unwrap();
-                                        //         let par_iter = other.rrsigs.into_par_iter();
-                                        //         records.par_extend(
-                                        //             par_iter.map(Record::from_record),
-                                        //         );
-                                        //     }
-
-                                        //     records
-                                        // })
-                                        // .await;
-
-                                        // let Ok(records) = res else {
-                                        //     continue;
-                                        // };
-
-                                        let records = join_handle2.await.unwrap();
-
-                                        // eprintln!(
-                                        //     "Elapsed time: {:.2?}, # signatures: {}",
-                                        //     before_rrsigs.elapsed(),
-                                        //     n_sigs.load(std::sync::atomic::Ordering::SeqCst)
-                                        // );
-
-                                        let (mut updater, rrsig_time, insertion_time, rrsig_count) =
-                                            join_handle.await.unwrap();
-
-                                        let insert_start = Instant::now();
-                                        for rr in records {
-                                            updater
-                                                .apply(ZoneUpdate::AddRecord(Record::from_record(
-                                                    rr,
-                                                )))
-                                                .await
-                                                .unwrap();
-                                        }
-
-                                        updater.apply(ZoneUpdate::Finished(soa_rr)).await.unwrap();
-                                        let insertion_time = insertion_time.saturating_add(insert_start.elapsed()).as_secs();
-
-                                        let total_time = start.elapsed().as_secs();
-                                        let rrsig_avg = if rrsig_time == 0 { rrsig_count } else { rrsig_count / rrsig_time as usize };
-                                        info!("[STATS] {zone_name} {zone_serial} RR[count={unsigned_rr_count} walk_time={walk_time}(sec) sort_time={sort_time}(sec)] DENIAL[count={nsec3_rr_count} time={nsec3_time}(sec)] RRSIG[new={rrsig_count} reused=0 time={rrsig_time}(sec) avg={rrsig_avg}(sig/sec)] INSERTION[time={insertion_time}(sec)] TOTAL[time={total_time}(sec)]");
-
-                                        self.gate
-                                            .update_data(Update::ZoneSignedEvent {
-                                                zone_name,
-                                                zone_serial,
-                                            })
-                                            .await;
-
-                                        // trace!("SIGNER: Sorting collected results");
-                                        // MultiThreadedSorter::sort_by(&mut records, CanonicalOrd::canonical_cmp);
-
-                                        // (soa_rr, records)
-                                    } else {
-                                        unreachable!();
-                                    };
-
-                                    // trace!("SIGNER: Adding new signed records to new/existing copy of signed zone.");
-                                    // for rr in records {
-                                    //     updater
-                                    //         .apply(ZoneUpdate::AddRecord(rr))
-                                    //         .await
-                                    //         .unwrap();
-                                    // }
-                                    // trace!("SIGNER: Finishing adding new signed records to new/existing copy of signed zone.");
-                                    // updater
-                                    //     .apply(ZoneUpdate::Finished(soa_rr))
-                                    //     .await
-                                    //     .unwrap();
-
-                                    // self.gate
-                                    //     .update_data(Update::ZoneSignedEvent {
-                                    //         zone_name,
-                                    //         zone_serial,
-                                    //     })
-                                    //     .await;
+                                    if let Err(err) =
+                                        self.sign_zone(component_name.clone(), zone_name).await
+                                    {
+                                        error!("[{component_name}]: Signing of zone '{zone_name}' failed: {err}");
+                                    }
                                 }
 
                                 _ => { /* Not for us */ }
@@ -924,6 +508,250 @@ impl ZoneSigner {
                 }
             }
         }
+    }
+
+    async fn sign_zone(
+        &self,
+        component_name: Arc<str>,
+        zone_name: &StoredName,
+    ) -> Result<(), String> {
+        // TODO: Implement serial bumping (per policy, e.g. ODS 'keep', 'counter', etc.?)
+
+        info!("[{component_name}]: Waiting to start signing operation for zone '{zone_name}'.");
+        let permit = self.concurrent_operation_permits.acquire().await.unwrap();
+        info!("[{component_name}]: Starting signing operation for zone '{zone_name}'");
+
+        //
+        // Lookup the unsigned zone.
+        //
+        let unsigned_zone = {
+            let unsigned_zones = self.component.unsigned_zones().load();
+            unsigned_zones.get_zone(&zone_name, Class::IN).cloned()
+        };
+        let Some(unsigned_zone) = unsigned_zone else {
+            return Err(format!("Unknown zone '{zone_name}'"));
+        };
+        let soa_rr = get_zone_soa(unsigned_zone.clone(), zone_name.clone())?;
+
+        //
+        // Lookup the signed zone to update, or create a new empty zone to
+        // sign into.
+        //
+        let zone = self.get_or_insert_signed_zone(zone_name);
+
+        //
+        // Create a signing configuration.
+        //
+        let mut signing_config = self.signing_config();
+        let mut rrsig_cfg = GenerateRrsigConfig::from(&signing_config);
+        rrsig_cfg.zone_apex = Some(soa_rr.owner().clone());
+
+        //
+        // Convert zone records into a form we can sign.
+        //
+        trace!("[{component_name}]: Collecting records to sign for zone '{zone_name}'.");
+        let walk_start = Instant::now();
+        let passed_zone = unsigned_zone.clone();
+        let mut records = spawn_blocking(|| collect_zone(passed_zone)).await.unwrap();
+        let walk_time = walk_start.elapsed().as_secs();
+        let unsigned_rr_count = records.len();
+
+        //
+        // Sort them into DNSSEC order ready for NSEC(3) generation.
+        //
+        trace!("[{component_name}]: Sorting collected records for zone '{zone_name}'.");
+        let sort_start = Instant::now();
+        let mut records = spawn_blocking(|| {
+            DefaultSorter::sort_by(&mut records, CanonicalOrd::canonical_cmp);
+            records.dedup();
+            records
+        })
+        .await
+        .unwrap();
+        let sort_time = sort_start.elapsed().as_secs();
+
+        //
+        // Generate NSEC(3) RRs.
+        //
+        trace!("[{component_name}]: Generating denial records for zone '{zone_name}'.");
+        let denial_start = Instant::now();
+        let unsigned_records = spawn_blocking(move || {
+            // By not passing any keys to sign_zone() will only add denial RRs,
+            // not RRSIGs. We could invoke generate_nsecs() or generate_nsec3s()
+            // directly here instead.
+            let no_keys: [DnssecSigningKey<Bytes, KeyPair>; 0] = Default::default();
+            records.sign_zone(&mut signing_config, &no_keys)?;
+            Ok(records)
+        })
+        .await
+        .unwrap()
+        .map_err(|err: SigningError| {
+            format!("Failed to generate denial RRs for zone '{zone_name}': {err}")
+        })?;
+        let denial_time = denial_start.elapsed().as_secs();
+        let denial_rr_count = unsigned_records.len() - unsigned_rr_count;
+
+        //
+        // Generate RRSIG RRs concurrently.
+        //
+        // Use N concurrent Rayon scoped threads to do blocking RRSIG
+        // generation without interfering with Tokio task scheduling, and an
+        // async task which receives generated RRSIGs via a Tokio
+        // mpsc::channel and accumulates them into the signed zone.
+        //
+        trace!("[{component_name}]: Generating RRSIG records.");
+        let rrsig_start = Instant::now();
+
+        // Work out how many RRs have to be signed and how many concurrent
+        // threads to sign with and how big each chunk to be signed should be.
+        let rr_count = RecordsIter::new(&unsigned_records).count();
+        let (parallelism, chunk_size) = self.determine_signing_concurrency(rr_count);
+        trace!("SIGNER: Using {parallelism} threads to sign {rr_count} owners in chunks of {chunk_size}.",);
+
+        // Create a zone updater which will be used to add RRs resulting from
+        // RRSIG generation to the signed zone.
+        let mut updater = ZoneUpdater::new(zone.clone(), false).await.unwrap();
+
+        // Clear out any RRs in the current version of the signed zone. If the zone
+        // supports versioning this is a NO OP.
+        trace!("SIGNER: Deleting records in existing (if any) copy of signed zone.");
+        updater.apply(ZoneUpdate::DeleteAllRecords).await.unwrap();
+
+        // Create a channel for passing RRs generated by RRSIG generation to
+        // a task that will insert them into the signed zone.
+        let (tx, rx) = mpsc::channel::<(RrsigRecords<StoredName, Bytes>, Duration)>(10000);
+
+        // Start a background task that will insert RRs that it receives from
+        // the RRSIG generator below.
+        let inserts_complete = tokio::task::spawn(rrsig_inserter(updater, rx));
+
+        // Generate RRSIGs concurrently.
+        trace!("SIGNER: Generating RRSIGs concurrently..");
+        let keys = self.signing_keys.clone();
+        let passed_zone_name = zone_name.clone();
+
+        // Use spawn_blocking() to prevent blocking the Tokio executor. Pass
+        // the unsigned records in, we get them back out again at the end.
+        let rrsig_generation_complete = spawn_blocking(move || {
+            let records_ref = &unsigned_records;
+
+            //
+            rayon::scope(|scope| {
+                for thread_idx in 0..parallelism {
+                    let is_last_chunk = thread_idx == parallelism - 1;
+                    let rrsig_cfg = &rrsig_cfg;
+                    let tx = tx.clone();
+                    let keys = keys.clone();
+                    let zone_name = passed_zone_name.clone();
+
+                    scope.spawn(move |_| {
+                        sign_rr_chunk(
+                            is_last_chunk,
+                            chunk_size,
+                            records_ref,
+                            thread_idx,
+                            rrsig_cfg,
+                            tx,
+                            keys,
+                            zone_name,
+                        );
+                    })
+                }
+
+                drop(tx);
+            });
+
+            unsigned_records
+        });
+
+        // Wait for RRSIG generation to complete.
+        let unsigned_records = rrsig_generation_complete.await.unwrap();
+
+        // Wait for RRSIG insertion to complete.
+        let (mut updater, rrsig_time, insertion_time, rrsig_count) =
+            inserts_complete.await.unwrap();
+
+        // Insert the unsigned records into the signed zone as well.
+        let insert_start = Instant::now();
+        for rr in unsigned_records {
+            updater
+                .apply(ZoneUpdate::AddRecord(Record::from_record(rr)))
+                .await
+                .unwrap();
+        }
+
+        // Finalize the signed zone update.
+        let ZoneRecordData::Soa(soa_data) = soa_rr.data() else {
+            unreachable!();
+        };
+        let zone_serial = soa_data.serial();
+
+        updater.apply(ZoneUpdate::Finished(soa_rr)).await.unwrap();
+        let insertion_time = insertion_time
+            .saturating_add(insert_start.elapsed())
+            .as_secs();
+
+        let total_time = rrsig_start.elapsed().as_secs();
+        let rrsig_avg = if rrsig_time == 0 {
+            rrsig_count
+        } else {
+            rrsig_count / rrsig_time as usize
+        };
+
+        // Log signing statistics.
+        info!("[STATS] {zone_name} {zone_serial} RR[count={unsigned_rr_count} walk_time={walk_time}(sec) sort_time={sort_time}(sec)] DENIAL[count={denial_rr_count} time={denial_time}(sec)] RRSIG[new={rrsig_count} reused=0 time={rrsig_time}(sec) avg={rrsig_avg}(sig/sec)] INSERTION[time={insertion_time}(sec)] TOTAL[time={total_time}(sec)] with {parallelism} threads");
+
+        // Notify Central Command that we have finished.
+        self.gate
+            .update_data(Update::ZoneSignedEvent {
+                zone_name: zone_name.clone(),
+                zone_serial,
+            })
+            .await;
+
+        Ok(())
+    }
+
+    fn determine_signing_concurrency(&self, rr_count: usize) -> (usize, usize) {
+        // TODO: Relevant user suggestion: "Misschien een tip voor NameShed:
+        // Het aantal signerthreads dynamisch maken, zodat de signer zelf
+        // extra threads kan opstarten als er geconstateerd wordt dat er veel
+        // nieuwe sigs gemaakt moeten worden."
+        let parallelism = if rr_count < 1024 {
+            if rr_count >= 2 {
+                2
+            } else {
+                1
+            }
+        } else {
+            self.max_concurrent_rrsig_generation_tasks
+        };
+        let parallelism = std::cmp::min(parallelism, self.max_concurrent_rrsig_generation_tasks);
+        let chunk_size = rr_count / parallelism;
+        (parallelism, chunk_size)
+    }
+
+    fn get_or_insert_signed_zone(&self, zone_name: &StoredName) -> Zone {
+        // Create an empty zone to sign into if no existing signed zone exists.
+        let signed_zones = self.component.signed_zones().load();
+
+        signed_zones
+            .get_zone(zone_name, Class::IN)
+            .cloned()
+            .unwrap_or_else(move || {
+                let mut new_zones = Arc::unwrap_or_clone(signed_zones.clone());
+
+                let new_zone = if self.use_lightweight_zone_tree {
+                    Zone::new(LightWeightZone::new(zone_name.clone(), false))
+                } else {
+                    ZoneBuilder::new(zone_name.clone(), Class::IN).build()
+                };
+
+                new_zones.insert_zone(new_zone.clone()).unwrap();
+                self.component.signed_zones().store(Arc::new(new_zones));
+
+                new_zone
+            })
     }
 
     fn signing_config(
@@ -955,21 +783,177 @@ impl ZoneSigner {
         };
 
         let add_used_dnskeys = true;
-        // Validity period will be overridden when actually signing.
-        let rrsig_validity_period_strategy = FixedRrsigValidityPeriodStrategy::from((0, 0));
+        let now = Timestamp::now().into_int();
+        let inception = now.sub(self.inception_offset_secs);
+        let expiration = now.add(self.expiration_offset);
+        let rrsig_validity_period_strategy =
+            FixedRrsigValidityPeriodStrategy::from((inception, expiration));
         SigningConfig::new(denial, add_used_dnskeys, rrsig_validity_period_strategy)
     }
+}
+
+fn sign_rr_chunk(
+    is_last_chunk: bool,
+    chunk_size: usize,
+    records: &[Record<StoredName, StoredRecordData>],
+    thread_idx: usize,
+    rrsig_cfg: &GenerateRrsigConfig<
+        StoredName,
+        DefaultSigningKeyUsageStrategy,
+        FixedRrsigValidityPeriodStrategy,
+        MultiThreadedSorter,
+    >,
+    tx: Sender<(RrsigRecords<StoredName, Bytes>, Duration)>,
+    keys: Arc<std::sync::RwLock<HashMap<StoredName, Vec<DnssecSigningKey<Bytes, KeyPair>>>>>,
+    zone_name: StoredName,
+) {
+    let keys = keys.read().unwrap();
+    let Some(keys) = keys.get(&zone_name) else {
+        error!("No key found for zone '{zone_name}");
+        return;
+    };
+
+    let mut iter = RecordsIter::new(records);
+    let mut n = 0;
+    let mut m = 0;
+    for _ in 0..thread_idx * chunk_size {
+        let Some(owner_rrs) = iter.next() else {
+            trace!("SIGNER: Thread {thread_idx} ran out of data after skipping {n} owners covering {m} RRs!");
+            return;
+        };
+        m += owner_rrs.into_inner().len();
+        n += 1;
+    }
+    trace!("SIGNER: Thread {thread_idx} skipped {n} owners covering {m} RRs.");
+
+    let mut duration = Duration::ZERO;
+    n = 0;
+    m = 0;
+    loop {
+        if !is_last_chunk && n == chunk_size {
+            trace!("SIGNER: Thread {thread_idx} reached the end of the chunk.");
+            break;
+        }
+        let Some(owner_rrs) = iter.next() else {
+            trace!("SIGNER: Thread {thread_idx} reached the end of the data.");
+            break;
+        };
+        let slice = owner_rrs.into_inner();
+        m += slice.len();
+        n += 1;
+        // trace!("SIGNER: Thread {i}: processing owner_rrs slice of len {}.", slice.len());
+        let before = Instant::now();
+        let res = generate_rrsigs(RecordsIter::new(slice), keys, rrsig_cfg).unwrap();
+        duration = duration.saturating_add(before.elapsed());
+
+        if !res.dnskeys.is_empty() || !res.rrsigs.is_empty() {
+            // trace!("SIGNER: Thread {i}: sending {} DNSKEY RRs and {} RRSIG RRs to be stored", res.dnskeys.len(), res.rrsigs.len());
+            if tx.blocking_send((res, duration)).is_err() {
+                trace!("SIGNER: Thread {thread_idx}: unable to send RRs for storage, aborting.");
+                break;
+            }
+        } else {
+            // trace!("SIGNER: Thread {i}: no DNSKEY RRs or RRSIG RRs to be stored");
+        }
+    }
+    trace!("SIGNER: Thread {thread_idx} finished processing {n} owners covering {m} RRs.");
+}
+
+async fn rrsig_inserter(
+    mut updater: ZoneUpdater<StoredName>,
+    mut rx: Receiver<(RrsigRecords<StoredName, Bytes>, Duration)>,
+) -> (ZoneUpdater<StoredName>, u64, Duration, usize) {
+    trace!("SIGNER: Adding new signed records to new/existing copy of signed zone.");
+    let mut dnskeys_count = 0usize;
+    let mut rrsig_count = 0usize;
+    let mut max_rrsig_generation_time = Duration::ZERO;
+    let mut insertion_time = Duration::ZERO;
+
+    while let Some((rrsig_records, duration)) = rx.recv().await {
+        max_rrsig_generation_time = std::cmp::max(max_rrsig_generation_time, duration);
+
+        let insert_start = Instant::now();
+        for rr in rrsig_records.dnskeys {
+            updater
+                .apply(ZoneUpdate::AddRecord(Record::from_record(rr)))
+                .await
+                .unwrap();
+            dnskeys_count += 1;
+        }
+
+        for rr in rrsig_records.rrsigs {
+            updater
+                .apply(ZoneUpdate::AddRecord(Record::from_record(rr)))
+                .await
+                .unwrap();
+            rrsig_count += 1;
+        }
+
+        insertion_time = insertion_time.saturating_add(insert_start.elapsed());
+    }
+    trace!("SIGNER: Added {dnskeys_count} DNSKEY RRs and {rrsig_count} RRSIG RRs to new/existing copy of signed zone.");
+
+    let rrsig_time = max_rrsig_generation_time.as_secs();
+
+    (updater, rrsig_time, insertion_time, rrsig_count)
+}
+
+fn get_zone_soa(
+    zone: Zone,
+    zone_name: StoredName,
+) -> Result<Record<StoredName, StoredRecordData>, String> {
+    let answer = zone
+        .read()
+        .query(zone_name.clone(), Rtype::SOA)
+        .map_err(|err| format!("SOA not found for zone '{zone_name}'"))?;
+    let (soa_ttl, soa_data) = answer
+        .content()
+        .first()
+        .ok_or_else(|| format!("SOA not found for zone '{zone_name}'"))?;
+    if !matches!(soa_data, ZoneRecordData::Soa(_)) {
+        return Err(format!("SOA not found for zone '{zone_name}'"));
+    };
+    Ok(Record::new(zone_name.clone(), Class::IN, soa_ttl, soa_data))
+}
+
+fn collect_zone(zone: Zone) -> Vec<StoredRecord> {
+    // Temporary: Accumulate the zone into a vec as we can only sign over a
+    // slice at the moment, not over an iterator yet (nor can we iterate over
+    // a zone yet, only walk it ...).
+    let records = Arc::new(std::sync::Mutex::new(vec![]));
+    let passed_records = records.clone();
+
+    trace!("SIGNER: Walking");
+    zone.read()
+        .walk(Box::new(move |owner, rrset, _at_zone_cut| {
+            let mut unlocked_records = passed_records.lock().unwrap();
+            unlocked_records.extend(
+                rrset.data().iter().map(|rdata| {
+                    Record::new(owner.clone(), Class::IN, rrset.ttl(), rdata.to_owned())
+                }),
+            );
+        }));
+
+    let records = Arc::into_inner(records).unwrap().into_inner().unwrap();
+
+    trace!(
+        "SIGNER: Walked: accumulated {} records for signing",
+        records.len()
+    );
+
+    records
 }
 
 fn parse_nsec3_config(
     config: &TomlNsec3Config,
 ) -> GenerateNsec3Config<StoredName, Bytes, OnDemandNsec3HashProvider<Bytes>, MultiThreadedSorter> {
-    let params = Nsec3param::default();
-    let opt_out = match config.opt_out {
-        TomlNsec3OptOut::NoOptOut => Nsec3OptOut::NoOptOut,
-        TomlNsec3OptOut::OptOut => Nsec3OptOut::OptOut,
-        TomlNsec3OptOut::OptOutFlagsOnly => Nsec3OptOut::OptOutFlagsOnly,
-    };
+    let mut params = Nsec3param::default();
+    if matches!(
+        config.opt_out,
+        TomlNsec3OptOut::OptOut | TomlNsec3OptOut::OptOutFlagOnly
+    ) {
+        params.set_opt_out_flag()
+    }
     let hash_provider = OnDemandNsec3HashProvider::new(
         params.hash_algorithm(),
         params.iterations(),
@@ -980,7 +964,11 @@ fn parse_nsec3_config(
         TomlNsec3ParamTtlMode::Soa => Nsec3ParamTtlMode::Soa,
         TomlNsec3ParamTtlMode::SoaMinimum => Nsec3ParamTtlMode::SoaMinimum,
     };
-    GenerateNsec3Config::new(params, opt_out, hash_provider).with_ttl_mode(ttl_mode)
+    let mut nsec3_config = GenerateNsec3Config::new(params, hash_provider).with_ttl_mode(ttl_mode);
+    if matches!(config.opt_out, TomlNsec3OptOut::OptOutFlagOnly) {
+        nsec3_config = nsec3_config.without_opt_out_excluding_owner_names_of_unsigned_delegations();
+    }
+    nsec3_config
 }
 
 impl std::fmt::Debug for ZoneSigner {
@@ -1214,7 +1202,7 @@ enum TomlNsec3OptOut {
     #[default]
     NoOptOut,
     OptOut,
-    OptOutFlagsOnly,
+    OptOutFlagOnly,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
