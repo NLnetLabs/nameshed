@@ -14,6 +14,7 @@ use std::vec::Vec;
 
 use bytes::Bytes;
 use futures_util::FutureExt;
+use serde::{Serialize, Serializer};
 use tokio::sync::{oneshot, Mutex};
 use tokio::time::{sleep_until, Instant, Sleep};
 use tracing::{enabled, trace, Level};
@@ -41,7 +42,7 @@ pub type ZoneMaintainerKeyStore = HashMap<(KeyName, Algorithm), Key>;
 
 //------------ ZoneId --------------------------------------------------------
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
 pub struct ZoneId {
     pub name: StoredName,
     pub class: Class,
@@ -82,7 +83,7 @@ impl From<Zone> for ZoneId {
 ///
 /// TODO: Change this to support net blocks as the source once PR 340 (which
 /// extends COOKIE middleware to use net blocks) is resolved.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct SrcDstConfig<T: Clone + Debug + Default> {
     entries: HashMap<SocketAddr, T>,
 }
@@ -142,7 +143,7 @@ impl<T: Clone + Debug + Default> SrcDstConfig<T> {
 //------------ XfrStrategy ---------------------------------------------------
 
 /// Which modes of XFR to support.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub enum XfrStrategy {
     /// Do not support XFR at all.
     #[default]
@@ -164,7 +165,7 @@ pub enum XfrStrategy {
 //------------ IxfrTransportStrategy -----------------------------------------
 
 /// Which modes of transport to support.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub enum TransportStrategy {
     #[default]
     None,
@@ -192,7 +193,7 @@ impl Display for TransportStrategy {
 ///    AXFR client basis, the necessity to revert to a single resource record
 ///    per message; in that case, the default SHOULD be to use multiple
 ///    records per message."
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub enum CompatibilityMode {
     #[default]
     Default,
@@ -206,18 +207,20 @@ pub type TsigKey = (tsig::KeyName, tsig::Algorithm);
 
 //------------ XfrConfig -----------------------------------------------------
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct XfrConfig {
     pub strategy: XfrStrategy,
     pub ixfr_transport: TransportStrategy,
     pub compatibility_mode: CompatibilityMode,
+    #[serde(skip)]
     pub tsig_key: Option<TsigKey>,
 }
 
 //------------ NotifyConfig --------------------------------------------------
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct NotifyConfig {
+    #[serde(skip)]
     pub tsig_key: Option<TsigKey>,
 }
 
@@ -228,7 +231,7 @@ pub type NotifySrcDstConfig = SrcDstConfig<NotifyConfig>;
 
 //------------ NotifyStrategy ------------------------------------------------
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
 pub enum NotifyStrategy {
     #[default]
     NotifySourceFirstThenSequentialStoppingAtFirstNewerSerial,
@@ -236,7 +239,7 @@ pub enum NotifyStrategy {
 
 //------------ ZoneType ------------------------------------------------------
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct ZoneConfig {
     pub multi_primary_xfr_strategy: NotifyStrategy,
     pub discover_notify_set: bool,
@@ -327,7 +330,7 @@ pub type ZoneDiffs = BTreeMap<ZoneDiffKey, Arc<InMemoryZoneDiff>>;
 
 //------------ ZoneStatus ----------------------------------------------------
 
-#[derive(Copy, Clone, Debug, Default, PartialEq)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Serialize)]
 pub enum ZoneRefreshStatus {
     /// Refreshing according to the SOA REFRESH interval.
     #[default]
@@ -354,17 +357,54 @@ impl Display for ZoneRefreshStatus {
 
 //------------ ZoneRefreshMetrics --------------------------------------------
 
-#[derive(Clone, Copy, Debug)]
+pub fn instant_to_duration_secs(
+    instant: Instant,
+) -> u64
+{
+    match Instant::now().checked_duration_since(instant) {
+        Some(d) => d.as_secs(),
+        None => 0,
+    }
+}
+
+pub fn serialize_instant_as_duration_secs<S>(
+    instant: &Instant,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    serializer.serialize_u64(instant_to_duration_secs(*instant))
+}
+
+pub fn serialize_opt_instant_as_duration_secs<S>(
+    instant: &Option<Instant>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    match instant {
+        Some(v) => serialize_instant_as_duration_secs(v, serializer),
+        None => serializer.serialize_str("null"),
+    }
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
 pub struct ZoneRefreshMetrics {
+    #[serde(serialize_with = "serialize_instant_as_duration_secs")]
     pub zone_created_at: Instant,
 
     /// None means never checked
+    #[serde(serialize_with = "serialize_opt_instant_as_duration_secs")]
     pub last_refresh_phase_started_at: Option<Instant>,
 
     /// None means never checked
+    #[serde(serialize_with = "serialize_opt_instant_as_duration_secs")]
     pub last_refresh_attempted_at: Option<Instant>,
 
     /// None means never checked
+    #[serde(serialize_with = "serialize_opt_instant_as_duration_secs")]
     pub last_soa_serial_check_succeeded_at: Option<Instant>,
 
     /// None means never checked
@@ -374,6 +414,7 @@ pub struct ZoneRefreshMetrics {
     pub last_soa_serial_check_serial: Option<Serial>,
 
     /// None means never refreshed
+    #[serde(serialize_with = "serialize_opt_instant_as_duration_secs")]
     pub last_refreshed_at: Option<Instant>,
 
     /// None means never refreshed
@@ -398,7 +439,7 @@ impl Default for ZoneRefreshMetrics {
 
 //------------ ZoneRefreshState ----------------------------------------------
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize)]
 pub struct ZoneRefreshState {
     /// SOA REFRESH
     refresh: Ttl,
@@ -506,10 +547,11 @@ impl Default for ZoneRefreshState {
 
 //------------ ZoneRefreshInstant --------------------------------------------
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub(super) struct ZoneRefreshInstant {
     pub cause: ZoneRefreshCause,
     pub zone_id: ZoneId,
+    #[serde(serialize_with = "serialize_instant_as_duration_secs")]
     pub end_instant: Instant,
 }
 
@@ -531,7 +573,7 @@ impl ZoneRefreshInstant {
 
 //------------ ZoneRefreshCause ----------------------------------------------
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub(super) enum ZoneRefreshCause {
     #[allow(dead_code)]
     ManualTrigger,
@@ -687,11 +729,13 @@ impl ZoneNameServers {
 
 //------------ ZoneInfo ------------------------------------------------------
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub struct ZoneInfo {
     pub(super) _catalog_member_id: Option<StoredName>,
     pub(super) config: ZoneConfig,
+    #[serde(skip)]
     pub(super) diffs: Arc<Mutex<ZoneDiffs>>,
+    #[serde(skip)]
     pub(super) nameservers: Arc<Mutex<Option<ZoneNameServers>>>,
     pub(super) expired: Arc<AtomicBool>,
 }
@@ -779,7 +823,7 @@ pub(super) struct ZoneChangedMsg {
 
 //------------ ZoneReport ----------------------------------------------------
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct ZoneReport {
     pub(super) zone_id: ZoneId,
     pub(super) details: ZoneReportDetails,
@@ -800,6 +844,10 @@ impl ZoneReport {
             timers,
             zone_info,
         }
+    }
+
+    pub fn details(&self) -> &ZoneReportDetails {
+        &self.details
     }
 }
 
@@ -860,7 +908,7 @@ impl Display for ZoneReport {
 
 //------------ ZoneReportDetails ---------------------------------------------
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub enum ZoneReportDetails {
     Primary,
 
