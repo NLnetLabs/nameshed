@@ -5,7 +5,7 @@ use core::ops::{Add, ControlFlow};
 use std::any::Any;
 use std::cmp::Ordering;
 use std::collections::hash_map::Entry::{Occupied, Vacant};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
 use std::fmt::Display;
 use std::fs::File;
@@ -16,7 +16,7 @@ use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
 use std::sync::{Arc, Weak};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
@@ -82,12 +82,12 @@ use non_empty_vec::NonEmpty;
 use octseq::{OctetsInto, Parser};
 use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelExtend};
 use rayon::slice::ParallelSliceMut;
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_with::{serde_as, DeserializeFromStr, DisplayFromStr};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::sync::{Mutex, RwLock, Semaphore};
-use tokio::time::sleep;
+use tokio::time::{sleep, Instant};
 #[cfg(feature = "tls")]
 use tokio_rustls::rustls::ServerConfig;
 
@@ -120,6 +120,7 @@ use crate::units::Unit;
 use crate::zonemaintenance::maintainer::{Config, ZoneLookup};
 use crate::zonemaintenance::maintainer::{DefaultConnFactory, TypedZone, ZoneMaintainer};
 use crate::zonemaintenance::types::{
+    serialize_duration_as_secs, serialize_instant_as_duration_secs, serialize_opt_duration_as_secs,
     CompatibilityMode, NotifyConfig, TransportStrategy, XfrConfig, XfrStrategy, ZoneConfig,
     ZoneMaintainerKeyStore,
 };
@@ -395,6 +396,7 @@ struct ZoneSigner {
     use_lightweight_zone_tree: bool,
     concurrent_operation_permits: Semaphore,
     max_concurrent_rrsig_generation_tasks: usize,
+    signer_status: Arc<RwLock<ZoneSignerStatus>>,
 }
 
 impl ZoneSigner {
@@ -426,11 +428,20 @@ impl ZoneSigner {
             use_lightweight_zone_tree,
             concurrent_operation_permits: Semaphore::new(max_concurrent_operations),
             max_concurrent_rrsig_generation_tasks,
+            signer_status: Default::default(),
         }
     }
 
-    async fn run(self) -> Result<(), crate::comms::Terminated> {
+    async fn run(mut self) -> Result<(), crate::comms::Terminated> {
         let component_name = self.component.name().clone();
+
+        // Setup REST API endpoint
+        let http_processor = Arc::new(SigningHistoryApi::new(
+            self.http_api_path.clone(),
+            self.signer_status.clone(),
+        ));
+        self.component
+            .register_http_resource(http_processor.clone(), &self.http_api_path);
 
         loop {
             match self.gate.process().await {
@@ -518,6 +529,8 @@ impl ZoneSigner {
         // TODO: Implement serial bumping (per policy, e.g. ODS 'keep', 'counter', etc.?)
 
         info!("[{component_name}]: Waiting to start signing operation for zone '{zone_name}'.");
+        self.signer_status.write().await.enqueue(zone_name.clone());
+
         let permit = self.concurrent_operation_permits.acquire().await.unwrap();
         info!("[{component_name}]: Starting signing operation for zone '{zone_name}'");
 
@@ -532,6 +545,14 @@ impl ZoneSigner {
             return Err(format!("Unknown zone '{zone_name}'"));
         };
         let soa_rr = get_zone_soa(unsigned_zone.clone(), zone_name.clone())?;
+        let ZoneRecordData::Soa(soa) = soa_rr.data() else {
+            return Err(format!("SOA not found for zone '{zone_name}'"));
+        };
+
+        self.signer_status
+            .write()
+            .await
+            .start(zone_name, soa.serial());
 
         //
         // Lookup the signed zone to update, or create a new empty zone to
@@ -556,6 +577,11 @@ impl ZoneSigner {
         let walk_time = walk_start.elapsed().as_secs();
         let unsigned_rr_count = records.len();
 
+        self.signer_status.write().await.update(zone_name, |s| {
+            s.unsigned_rr_count = Some(unsigned_rr_count);
+            s.walk_time = Some(Duration::from_secs(walk_time));
+        });
+
         //
         // Sort them into DNSSEC order ready for NSEC(3) generation.
         //
@@ -569,6 +595,10 @@ impl ZoneSigner {
         .await
         .unwrap();
         let sort_time = sort_start.elapsed().as_secs();
+
+        self.signer_status.write().await.update(zone_name, |s| {
+            s.sort_time = Some(Duration::from_secs(sort_time));
+        });
 
         //
         // Generate NSEC(3) RRs.
@@ -591,6 +621,11 @@ impl ZoneSigner {
         let denial_time = denial_start.elapsed().as_secs();
         let denial_rr_count = unsigned_records.len() - unsigned_rr_count;
 
+        self.signer_status.write().await.update(zone_name, |s| {
+            s.denial_rr_count = Some(denial_rr_count);
+            s.denial_time = Some(Duration::from_secs(denial_time));
+        });
+
         //
         // Generate RRSIG RRs concurrently.
         //
@@ -607,6 +642,10 @@ impl ZoneSigner {
         let rr_count = RecordsIter::new(&unsigned_records).count();
         let (parallelism, chunk_size) = self.determine_signing_concurrency(rr_count);
         trace!("SIGNER: Using {parallelism} threads to sign {rr_count} owners in chunks of {chunk_size}.",);
+
+        self.signer_status.write().await.update(zone_name, |s| {
+            s.threads_used = Some(parallelism);
+        });
 
         // Create a zone updater which will be used to add RRs resulting from
         // RRSIG generation to the signed zone.
@@ -671,6 +710,12 @@ impl ZoneSigner {
         let (mut updater, rrsig_time, insertion_time, rrsig_count) =
             inserts_complete.await.unwrap();
 
+        self.signer_status.write().await.update(zone_name, |s| {
+            s.rrsig_count = Some(rrsig_count);
+            s.rrsig_reused_count = Some(0); // Not implemented yet
+            s.rrsig_time = Some(Duration::from_secs(rrsig_time));
+        });
+
         // Insert the unsigned records into the signed zone as well.
         let insert_start = Instant::now();
         for rr in unsigned_records {
@@ -697,6 +742,13 @@ impl ZoneSigner {
         } else {
             rrsig_count / rrsig_time as usize
         };
+
+        self.signer_status.write().await.update(zone_name, |s| {
+            s.insertion_time = Some(Duration::from_secs(insertion_time));
+            s.total_time = Some(Duration::from_secs(total_time));
+        });
+
+        self.signer_status.write().await.finish(zone_name);
 
         // Log signing statistics.
         info!("[STATS] {zone_name} {zone_serial} RR[count={unsigned_rr_count} walk_time={walk_time}(sec) sort_time={sort_time}(sec)] DENIAL[count={denial_rr_count} time={denial_time}(sec)] RRSIG[new={rrsig_count} reused=0 time={rrsig_time}(sec) avg={rrsig_avg}(sig/sec)] INSERTION[time={insertion_time}(sec)] TOTAL[time={total_time}(sec)] with {parallelism} threads");
@@ -989,6 +1041,246 @@ impl std::fmt::Debug for ZoneSigner {
 
 // impl AnyDirectUpdate for ZoneSigner {}
 
+//------------ ZoneSigningStatus ---------------------------------------------
+
+#[derive(Copy, Clone, Serialize)]
+struct RequestedStatus {
+    #[serde(serialize_with = "serialize_instant_as_duration_secs")]
+    requested_at: tokio::time::Instant,
+}
+
+impl RequestedStatus {
+    fn new() -> Self {
+        Self {
+            requested_at: Instant::now(),
+        }
+    }
+}
+
+#[derive(Copy, Clone, Serialize)]
+struct InProgressStatus {
+    #[serde(serialize_with = "serialize_instant_as_duration_secs")]
+    requested_at: tokio::time::Instant,
+    zone_serial: Serial,
+    #[serde(serialize_with = "serialize_instant_as_duration_secs")]
+    started_at: tokio::time::Instant,
+    unsigned_rr_count: Option<usize>,
+    #[serde(serialize_with = "serialize_opt_duration_as_secs")]
+    walk_time: Option<Duration>,
+    #[serde(serialize_with = "serialize_opt_duration_as_secs")]
+    sort_time: Option<Duration>,
+    denial_rr_count: Option<usize>,
+    #[serde(serialize_with = "serialize_opt_duration_as_secs")]
+    denial_time: Option<Duration>,
+    rrsig_count: Option<usize>,
+    rrsig_reused_count: Option<usize>,
+    #[serde(serialize_with = "serialize_opt_duration_as_secs")]
+    rrsig_time: Option<Duration>,
+    #[serde(serialize_with = "serialize_opt_duration_as_secs")]
+    insertion_time: Option<Duration>,
+    #[serde(serialize_with = "serialize_opt_duration_as_secs")]
+    total_time: Option<Duration>,
+    threads_used: Option<usize>,
+}
+
+impl InProgressStatus {
+    fn new(requested_status: RequestedStatus, zone_serial: Serial) -> Self {
+        Self {
+            requested_at: requested_status.requested_at,
+            zone_serial,
+            started_at: Instant::now(),
+            unsigned_rr_count: None,
+            walk_time: None,
+            sort_time: None,
+            denial_rr_count: None,
+            denial_time: None,
+            rrsig_count: None,
+            rrsig_reused_count: None,
+            rrsig_time: None,
+            insertion_time: None,
+            total_time: None,
+            threads_used: None,
+        }
+    }
+}
+
+#[derive(Copy, Clone, Serialize)]
+struct FinishedStatus {
+    #[serde(serialize_with = "serialize_instant_as_duration_secs")]
+    requested_at: tokio::time::Instant,
+    #[serde(serialize_with = "serialize_instant_as_duration_secs")]
+    started_at: tokio::time::Instant,
+    zone_serial: Serial,
+    unsigned_rr_count: usize,
+    #[serde(serialize_with = "serialize_duration_as_secs")]
+    walk_time: Duration,
+    #[serde(serialize_with = "serialize_duration_as_secs")]
+    sort_time: Duration,
+    denial_rr_count: usize,
+    #[serde(serialize_with = "serialize_duration_as_secs")]
+    denial_time: Duration,
+    rrsig_count: usize,
+    rrsig_reused_count: usize,
+    #[serde(serialize_with = "serialize_duration_as_secs")]
+    rrsig_time: Duration,
+    #[serde(serialize_with = "serialize_duration_as_secs")]
+    insertion_time: Duration,
+    #[serde(serialize_with = "serialize_duration_as_secs")]
+    total_time: Duration,
+    threads_used: usize,
+    #[serde(serialize_with = "serialize_instant_as_duration_secs")]
+    finished_at: tokio::time::Instant,
+}
+
+impl FinishedStatus {
+    fn new(in_progress_status: InProgressStatus) -> Self {
+        Self {
+            requested_at: in_progress_status.requested_at,
+            zone_serial: in_progress_status.zone_serial,
+            started_at: Instant::now(),
+            unsigned_rr_count: in_progress_status.unsigned_rr_count.unwrap(),
+            walk_time: in_progress_status.walk_time.unwrap(),
+            sort_time: in_progress_status.sort_time.unwrap(),
+            denial_rr_count: in_progress_status.denial_rr_count.unwrap(),
+            denial_time: in_progress_status.denial_time.unwrap(),
+            rrsig_count: in_progress_status.rrsig_count.unwrap(),
+            rrsig_reused_count: in_progress_status.rrsig_reused_count.unwrap(),
+            rrsig_time: in_progress_status.rrsig_time.unwrap(),
+            insertion_time: in_progress_status.insertion_time.unwrap(),
+            total_time: in_progress_status.total_time.unwrap(),
+            threads_used: in_progress_status.threads_used.unwrap(),
+            finished_at: Instant::now(),
+        }
+    }
+}
+
+#[derive(Copy, Clone, Serialize)]
+enum ZoneSigningStatus {
+    Requested(RequestedStatus),
+
+    InProgress(InProgressStatus),
+
+    Finished(FinishedStatus),
+}
+
+impl ZoneSigningStatus {
+    fn new() -> Self {
+        Self::Requested(RequestedStatus::new())
+    }
+
+    fn start(self, zone_serial: Serial) -> Self {
+        match self {
+            ZoneSigningStatus::Requested(s) => {
+                Self::InProgress(InProgressStatus::new(s, zone_serial))
+            }
+            ZoneSigningStatus::InProgress(_) => self,
+            ZoneSigningStatus::Finished(_) => {
+                panic!("Cannot start a signing operation that already finished")
+            }
+        }
+    }
+
+    fn finish(self) -> Self {
+        match self {
+            ZoneSigningStatus::Requested(_) => {
+                panic!("Cannot finish a signing operation that never started")
+            }
+            ZoneSigningStatus::InProgress(s) => Self::Finished(FinishedStatus::new(s)),
+            ZoneSigningStatus::Finished(_) => self,
+        }
+    }
+}
+
+//------------ ZoneSignerStatus ----------------------------------------------
+
+const MAX_SIGNING_HISTORY: usize = 100;
+
+#[derive(Serialize)]
+struct NamedZoneSigningStatus {
+    zone_name: StoredName,
+    status: ZoneSigningStatus,
+}
+
+#[derive(Serialize)]
+struct ZoneSignerStatus {
+    // Maps zone names to signing status, keeping records of previous signing.
+    // Use VecDeque for its ability to act as a ring buffer: check size, if
+    // at max desired capacity pop_front(), then in both cases push_back().
+    zones_being_signed: VecDeque<NamedZoneSigningStatus>,
+}
+
+impl ZoneSignerStatus {
+    pub fn get(&self, wanted_zone_name: &StoredName) -> Option<&NamedZoneSigningStatus> {
+        self.zones_being_signed
+            .iter()
+            .rfind(|v| v.zone_name == wanted_zone_name)
+    }
+
+    fn get_mut(&mut self, wanted_zone_name: &StoredName) -> Option<&mut NamedZoneSigningStatus> {
+        self.zones_being_signed
+            .iter_mut()
+            .rfind(|v| v.zone_name == wanted_zone_name)
+    }
+
+    pub fn enqueue(&mut self, zone_name: StoredName) {
+        if self.zones_being_signed.len() == self.zones_being_signed.capacity() {
+            // Discard oldest.
+            let _ = self.zones_being_signed.pop_front();
+        }
+        self.zones_being_signed.push_back(NamedZoneSigningStatus {
+            zone_name,
+            status: ZoneSigningStatus::new(),
+        });
+    }
+
+    pub fn start(&mut self, zone_name: &StoredName, zone_serial: Serial) {
+        let res = self.get_mut(zone_name);
+        if matches!(
+            res,
+            Some(NamedZoneSigningStatus {
+                status: ZoneSigningStatus::Requested(..),
+                ..
+            })
+        ) {
+            let named_status = res.unwrap();
+            named_status.status = named_status.status.start(zone_serial);
+        }
+    }
+
+    pub fn update<F: Fn(&mut InProgressStatus)>(&mut self, zone_name: &StoredName, cb: F) {
+        if let Some(NamedZoneSigningStatus {
+            status: ZoneSigningStatus::InProgress(in_progress_status),
+            ..
+        }) = self.get_mut(zone_name)
+        {
+            // Only an existing unfinished status can be updated.
+            cb(in_progress_status)
+        }
+    }
+
+    pub fn finish(&mut self, zone_name: &StoredName) {
+        let res = self.get_mut(zone_name);
+        if matches!(
+            res,
+            Some(NamedZoneSigningStatus {
+                status: ZoneSigningStatus::InProgress(..),
+                ..
+            })
+        ) {
+            let named_status = res.unwrap();
+            named_status.status = named_status.status.finish();
+        }
+    }
+}
+
+impl Default for ZoneSignerStatus {
+    fn default() -> Self {
+        Self {
+            zones_being_signed: VecDeque::with_capacity(MAX_SIGNING_HISTORY),
+        }
+    }
+}
+
 //------------ ZoneSignerMetrics ---------------------------------------------
 
 #[derive(Debug, Default)]
@@ -1080,94 +1372,73 @@ impl Named for ZoneSignerStatusReporter {
 
 //------------ ZoneListApi ---------------------------------------------------
 
-struct ZoneListApi {
+struct SigningHistoryApi {
     http_api_path: Arc<String>,
-    zones: Arc<HashMap<String, String>>,
-    xfr_in: Arc<HashMap<String, String>>,
-    zone_maintainer: Arc<ZoneMaintainer<TsigKeyStore, DefaultConnFactory>>,
+    signing_status: Arc<RwLock<ZoneSignerStatus>>,
 }
 
-impl ZoneListApi {
-    fn new(
-        http_api_path: Arc<String>,
-        zones: Arc<HashMap<String, String>>,
-        xfr_in: Arc<HashMap<String, String>>,
-        zone_maintainer: Arc<ZoneMaintainer<TsigKeyStore, DefaultConnFactory>>,
-    ) -> Self {
+impl SigningHistoryApi {
+    fn new(http_api_path: Arc<String>, signing_status: Arc<RwLock<ZoneSignerStatus>>) -> Self {
         Self {
             http_api_path,
-            zones,
-            xfr_in,
-            zone_maintainer,
+            signing_status,
         }
     }
 }
 
 #[async_trait]
-impl ProcessRequest for ZoneListApi {
+impl ProcessRequest for SigningHistoryApi {
     async fn process_request(
         &self,
         request: &hyper::Request<hyper::Body>,
     ) -> Option<hyper::Response<hyper::Body>> {
         let req_path = request.uri().decoded_path();
-        if request.method() == hyper::Method::GET && req_path == *self.http_api_path {
-            Some(self.build_response().await)
-        } else {
-            None
+        if request.method() == hyper::Method::GET {
+            if req_path.starts_with(&*self.http_api_path) {
+                if req_path == format!("{}status.json", *self.http_api_path) {
+                    return Some(self.build_json_status_response().await);
+                } else if req_path.ends_with("/status.json") {
+                    let (_, parts) = req_path.split_at(self.http_api_path.len());
+                    if let Some((zone_name, status_rel_url)) = parts.split_once('/') {
+                        if status_rel_url == "status.json" {
+                            return self.build_json_zone_status_response(zone_name).await;
+                        }
+                    }
+                }
+            }
         }
+        None
     }
 }
 
-impl ZoneListApi {
-    pub async fn build_response(&self) -> hyper::Response<hyper::Body> {
-        let mut response_body = self.build_response_header();
-
-        self.build_response_body(&mut response_body).await;
-
-        self.build_response_footer(&mut response_body);
+impl SigningHistoryApi {
+    pub async fn build_json_status_response(&self) -> hyper::Response<hyper::Body> {
+        let json = serde_json::to_string(&*self.signing_status.read().await).unwrap();
 
         hyper::Response::builder()
-            .header("Content-Type", "text/html")
-            .body(hyper::Body::from(response_body))
+            .header("Content-Type", "application/json")
+            .header("Access-Control-Allow-Origin", "*")
+            .body(hyper::Body::from(json))
             .unwrap()
     }
 
-    fn build_response_header(&self) -> String {
-        formatdoc! {
-            r#"
-            <!DOCTYPE html>
-            <html lang="en">
-                <head>
-                  <meta charset="UTF-8">
-                </head>
-                <body>
-                <pre>Showing {num_zones} monitored zones:
-            "#,
-            num_zones = self.zones.len()
-        }
-    }
-
-    async fn build_response_body(&self, response_body: &mut String) {
-        for zone_name in self.zones.keys() {
-            if let Ok(zone_name) = Name::from_str(zone_name) {
-                if let Ok(report) = self
-                    .zone_maintainer
-                    .zone_status(&zone_name, Class::IN)
-                    .await
-                {
-                    response_body.push_str(&format!("\n{report}"));
-                }
-            }
-            if let Some(xfr_in) = self.xfr_in.get(zone_name) {
-                response_body.push_str(&format!("        source: {xfr_in}"));
+    pub async fn build_json_zone_status_response(
+        &self,
+        zone_name: &str,
+    ) -> Option<hyper::Response<hyper::Body>> {
+        if let Ok(zone_name) = StoredName::from_str(zone_name) {
+            if let Some(status) = self.signing_status.read().await.get(&zone_name) {
+                let json = serde_json::to_string(status).unwrap();
+                return Some(
+                    hyper::Response::builder()
+                        .header("Content-Type", "application/json")
+                        .header("Access-Control-Allow-Origin", "*")
+                        .body(hyper::Body::from(json))
+                        .unwrap(),
+                );
             }
         }
-    }
-
-    fn build_response_footer(&self, response_body: &mut String) {
-        response_body.push_str("    </pre>\n");
-        response_body.push_str("  </body>\n");
-        response_body.push_str("</html>\n");
+        None
     }
 }
 

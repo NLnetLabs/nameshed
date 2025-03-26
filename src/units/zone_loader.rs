@@ -13,7 +13,7 @@ use std::str::FromStr;
 use std::sync::atomic::Ordering;
 use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
 use std::sync::{Arc, Weak};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
@@ -43,7 +43,8 @@ use domain::utils::base64;
 use domain::zonefile::inplace;
 use domain::zonetree::error::OutOfZone;
 use domain::zonetree::{
-    Answer, InMemoryZoneDiff, ReadableZone, Rrset, SharedRrset, StoredName, WalkOp, WritableZone, WritableZoneNode, Zone, ZoneBuilder, ZoneStore, ZoneTree
+    Answer, InMemoryZoneDiff, ReadableZone, Rrset, SharedRrset, StoredName, WalkOp, WritableZone,
+    WritableZoneNode, Zone, ZoneBuilder, ZoneStore, ZoneTree,
 };
 use futures::future::{select, Either};
 use futures::{pin_mut, Future};
@@ -51,22 +52,22 @@ use indoc::formatdoc;
 use log::warn;
 use log::{debug, error, info, trace};
 use non_empty_vec::NonEmpty;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, DeserializeFromStr, DisplayFromStr};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::{Mutex, RwLock};
-use tokio::time::sleep;
+use tokio::time::{sleep, Instant};
 
 #[cfg(feature = "tls")]
 use tokio_rustls::rustls::ServerConfig;
 
 use crate::common::frim::FrimMap;
+use crate::common::light_weight_zone::LightWeightZone;
 use crate::common::net::{
     ListenAddr, StandardTcpListenerFactory, StandardTcpStream, TcpListener, TcpListenerFactory,
     TcpStreamWrapper,
 };
-use crate::common::light_weight_zone::LightWeightZone;
 use crate::common::status_reporter::{
     sr_log, AnyStatusReporter, Chainable, Named, UnitStatusReporter,
 };
@@ -91,7 +92,7 @@ use crate::zonemaintenance::maintainer::{
 };
 use crate::zonemaintenance::types::{
     CompatibilityMode, NotifyConfig, TransportStrategy, XfrConfig, XfrStrategy, ZoneConfig,
-    ZoneMaintainerKeyStore,
+    ZoneMaintainerKeyStore, ZoneRefreshCause, ZoneRefreshStatus, ZoneReportDetails,
 };
 
 #[serde_as]
@@ -230,7 +231,10 @@ impl ZoneLoaderUnit {
                     return Err(Terminated);
                 };
 
-                info!("Loaded {zone_file_len} bytes from '{zone_path}' in {} secs", before.elapsed().as_secs());
+                info!(
+                    "Loaded {zone_file_len} bytes from '{zone_path}' in {} secs",
+                    before.elapsed().as_secs()
+                );
                 zone
             } else {
                 let apex_name = Name::from_str(zone_name)
@@ -783,12 +787,40 @@ impl ProcessRequest for ZoneListApi {
         request: &hyper::Request<hyper::Body>,
     ) -> Option<hyper::Response<hyper::Body>> {
         let req_path = request.uri().decoded_path();
-        if request.method() == hyper::Method::GET && req_path == *self.http_api_path {
-            Some(self.build_response().await)
+        if request.method() == hyper::Method::GET {
+            if req_path == *self.http_api_path {
+                Some(self.build_response().await)
+            } else if req_path == format!("{}status.json", *self.http_api_path) {
+                Some(self.build_json_response().await)
+            } else {
+                None
+            }
         } else {
             None
         }
     }
+}
+
+#[derive(Default, Serialize)]
+struct ZoneSecondaryStatus {
+    status: ZoneRefreshStatus,
+    last_refresh_checked_secs_ago: Option<u64>,
+    last_refresh_checked_serial: Option<Serial>,
+    last_refresh_succeeded_secs_ago: Option<u64>,
+    last_refresh_succeeded_serial: Option<Serial>,
+    next_refresh_secs_from_now: Option<u64>,
+    next_refresh_cause: Option<ZoneRefreshCause>,
+}
+
+#[derive(Serialize)]
+enum ZoneRole {
+    Primary,
+    Secondary(ZoneSecondaryStatus),
+}
+
+#[derive(Serialize)]
+struct ZoneReport {
+    role: ZoneRole,
 }
 
 impl ZoneListApi {
@@ -810,17 +842,19 @@ impl ZoneListApi {
             r#"
             <!DOCTYPE html>
             <html lang="en">
-                <head>
+              <head>
                   <meta charset="UTF-8">
-                </head>
-                <body>
+              </head>
+              <body>
                 <pre>Showing {num_zones} monitored zones:
-            "#,
+            "#,            
             num_zones = self.zones.len()
         }
     }
 
     async fn build_response_body(&self, response_body: &mut String) {
+        let num_zones = self.zones.len();
+        response_body.push_str(&format!("<pre>Showing {num_zones} monitored zones:"));
         for zone_name in self.zones.keys() {
             if let Ok(zone_name) = Name::from_str(zone_name) {
                 if let Ok(report) = self
@@ -835,11 +869,98 @@ impl ZoneListApi {
                 response_body.push_str(&format!("        source: {xfr_in}"));
             }
         }
+        response_body.push_str("</pre>");
     }
 
     fn build_response_footer(&self, response_body: &mut String) {
-        response_body.push_str("    </pre>\n");
         response_body.push_str("  </body>\n");
         response_body.push_str("</html>\n");
+    }
+
+    pub async fn build_json_response(&self) -> hyper::Response<hyper::Body> {
+        let mut status = HashMap::new();
+        let now = Instant::now();
+
+        // for zone in zones.iter_zones() {
+        for zone_name in self.zones.keys() {
+            if let Ok(zone_name) = Name::from_str(zone_name) {
+                if let Ok(report) = self
+                    .zone_maintainer
+                    // .zone_status(zone.apex_name(), Class::IN)
+                    .zone_status(&zone_name, Class::IN)
+                    .await
+                {
+                    let role = match report.details() {
+                        ZoneReportDetails::Primary => ZoneRole::Primary,
+                        ZoneReportDetails::PendingSecondary(zone_refresh_state)
+                        | ZoneReportDetails::Secondary(zone_refresh_state) => {
+                            let status = zone_refresh_state.status();
+
+                            let last_refresh_succeeded_secs_ago = zone_refresh_state
+                                .metrics()
+                                .last_refreshed_at
+                                .map(|earlier| {
+                                    now.checked_duration_since(earlier).map(|d| d.as_secs())
+                                })
+                                .flatten();
+                            let last_refresh_succeeded_serial =
+                                zone_refresh_state.metrics().last_refresh_succeeded_serial;
+
+                            let last_refresh_checked_serial =
+                                zone_refresh_state.metrics().last_soa_serial_check_serial;
+                            let last_refresh_checked_secs_ago = zone_refresh_state
+                                .metrics()
+                                .last_soa_serial_check_succeeded_at
+                                .map(|earlier| {
+                                    now.checked_duration_since(earlier).map(|d| d.as_secs())
+                                })
+                                .flatten();
+
+                            if let Some((next_refresh_secs_from_now, next_refresh_cause)) = report
+                                .timers()
+                                .iter()
+                                .find(|zri| &zri.zone_id == report.zone_id())
+                                .map(|zri| {
+                                    let secs_from_now = zri
+                                        .end_instant
+                                        .checked_duration_since(now)
+                                        .map(|d| d.as_secs());
+                                    (secs_from_now, Some(zri.cause))
+                                })
+                            {
+                                ZoneRole::Secondary(ZoneSecondaryStatus {
+                                    status,
+                                    next_refresh_secs_from_now,
+                                    next_refresh_cause,
+                                    last_refresh_checked_secs_ago,
+                                    last_refresh_checked_serial,
+                                    last_refresh_succeeded_secs_ago,
+                                    last_refresh_succeeded_serial,
+                                })
+                            } else {
+                                ZoneRole::Secondary(ZoneSecondaryStatus {
+                                    status,
+                                    next_refresh_secs_from_now: None,
+                                    next_refresh_cause: None,
+                                    last_refresh_checked_secs_ago,
+                                    last_refresh_checked_serial,
+                                    last_refresh_succeeded_secs_ago,
+                                    last_refresh_succeeded_serial,
+                                })
+                            }
+                        }
+                    };
+                    status.insert(zone_name, ZoneReport { role });
+                }
+            }
+        }
+
+        let json = serde_json::to_string(&status).unwrap();
+
+        hyper::Response::builder()
+            .header("Content-Type", "application/json")
+            .header("Access-Control-Allow-Origin", "*")
+            .body(hyper::Body::from(json))
+            .unwrap()
     }
 }

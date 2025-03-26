@@ -25,6 +25,7 @@ use domain::base::{CanonicalOrd, Name, Serial, Ttl};
 use domain::rdata::Soa;
 use domain::tsig::{self, Algorithm, Key, KeyName};
 use domain::zonetree::{InMemoryZoneDiff, StoredName, Zone};
+use core::time::Duration;
 
 //------------ Constants -----------------------------------------------------
 
@@ -334,10 +335,14 @@ pub type ZoneDiffs = BTreeMap<ZoneDiffKey, Arc<InMemoryZoneDiff>>;
 pub enum ZoneRefreshStatus {
     /// Refreshing according to the SOA REFRESH interval.
     #[default]
-    Refreshing,
+    RefreshPending,
+
+    RefreshInProgress(usize),
 
     /// Periodically retrying according to the SOA RETRY interval.
-    Retrying,
+    RetryPending,
+
+    RetryInProgress,
 
     /// Refresh triggered by NOTIFY currently in progress.
     NotifyInProgress,
@@ -348,8 +353,10 @@ pub enum ZoneRefreshStatus {
 impl Display for ZoneRefreshStatus {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            ZoneRefreshStatus::Refreshing => f.write_str("refreshing"),
-            ZoneRefreshStatus::Retrying => f.write_str("retrying"),
+            ZoneRefreshStatus::RefreshPending => f.write_str("refresh pending"),
+            ZoneRefreshStatus::RefreshInProgress(n) => f.write_fmt(format_args!("refresh in progress ({n} updates applied)")),
+            ZoneRefreshStatus::RetryPending => f.write_str("retrying"),
+            ZoneRefreshStatus::RetryInProgress => f.write_str("retry in progress"),
             ZoneRefreshStatus::NotifyInProgress => f.write_str("notify in progress"),
         }
     }
@@ -389,6 +396,31 @@ where
         None => serializer.serialize_str("null"),
     }
 }
+
+pub fn serialize_duration_as_secs<S>(
+    duration: &Duration,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    serializer.serialize_u64(duration.as_secs())
+}
+
+pub fn serialize_opt_duration_as_secs<S>(
+    instant: &Option<Duration>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    match instant {
+        Some(v) => serialize_duration_as_secs(v, serializer),
+        None => serializer.serialize_str("null"),
+    }
+}
+
+
 
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct ZoneRefreshMetrics {
@@ -513,7 +545,7 @@ impl ZoneRefreshState {
         self.expire = new_soa.expire();
         self.metrics.last_refreshed_at = Some(Instant::now());
         self.metrics.last_refresh_succeeded_serial = Some(new_soa.serial());
-        self.set_status(ZoneRefreshStatus::Refreshing);
+        self.set_status(ZoneRefreshStatus::RefreshPending);
     }
 
     pub fn soa_serial_check_succeeded(&mut self, serial: Option<Serial>) {
@@ -548,7 +580,7 @@ impl Default for ZoneRefreshState {
 //------------ ZoneRefreshInstant --------------------------------------------
 
 #[derive(Clone, Debug, Serialize)]
-pub(super) struct ZoneRefreshInstant {
+pub struct ZoneRefreshInstant {
     pub cause: ZoneRefreshCause,
     pub zone_id: ZoneId,
     #[serde(serialize_with = "serialize_instant_as_duration_secs")]
@@ -574,7 +606,7 @@ impl ZoneRefreshInstant {
 //------------ ZoneRefreshCause ----------------------------------------------
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
-pub(super) enum ZoneRefreshCause {
+pub enum ZoneRefreshCause {
     #[allow(dead_code)]
     ManualTrigger,
 
@@ -849,6 +881,14 @@ impl ZoneReport {
     pub fn details(&self) -> &ZoneReportDetails {
         &self.details
     }
+
+    pub fn timers(&self) -> &[ZoneRefreshInstant] {
+        &self.timers
+    }
+
+    pub fn zone_id(&self) -> &ZoneId {
+        &self.zone_id
+    }
 }
 
 //--- Display
@@ -912,7 +952,7 @@ impl Display for ZoneReport {
 pub enum ZoneReportDetails {
     Primary,
 
-    PendingSecondary,
+    PendingSecondary(ZoneRefreshState),
 
     Secondary(ZoneRefreshState),
 }
@@ -926,11 +966,7 @@ impl Display for ZoneReportDetails {
                 f.write_str("        type: primary\n")?;
                 f.write_str("        state: ok\n")
             }
-            ZoneReportDetails::PendingSecondary => {
-                f.write_str("        type: secondary\n")?;
-                f.write_str("        state: pending initial refresh\n")
-            }
-            ZoneReportDetails::Secondary(state) => {
+            ZoneReportDetails::PendingSecondary(state)|ZoneReportDetails::Secondary(state) => {
                 let now = Instant::now();
                 f.write_str("        type: secondary\n")?;
                 let at = match now.checked_duration_since(state.metrics.zone_created_at) {

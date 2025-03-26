@@ -33,7 +33,7 @@ use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
 use tokio::time::Instant;
-use tracing::{debug, enabled, error, info, trace, warn, Level};
+use tracing::{debug, error, info, trace, warn};
 
 use domain::base::iana::{Class, Opcode, OptRcode};
 use domain::base::net::IpAddr;
@@ -57,6 +57,7 @@ use domain::zonetree::{
     AnswerContent, InMemoryZoneDiff, ReadableZone, SharedRrset, StoredName, WritableZone,
     WritableZoneNode, Zone, ZoneStore, ZoneTree,
 };
+use log::log_enabled;
 
 use super::types::{
     CompatibilityMode, Event, NotifySrcDstConfig, NotifyStrategy, TransportStrategy, XfrConfig,
@@ -342,7 +343,11 @@ where
 
                         Event::ZoneStatusRequested { zone_id, tx } => {
                             let details = if self.pending_zones.read().await.contains_key(&zone_id) {
-                                ZoneReportDetails::PendingSecondary
+                                if let Some(zone_refresh_info) = time_tracking.read().await.get(&zone_id) {
+                                    ZoneReportDetails::PendingSecondary(*zone_refresh_info)
+                                } else {
+                                    ZoneReportDetails::PendingSecondary(Default::default())
+                                }
                             } else if let Some(zone_refresh_info) = time_tracking.read().await.get(&zone_id) {
                                 ZoneReportDetails::Secondary(*zone_refresh_info)
                             } else {
@@ -402,8 +407,12 @@ where
 
                     tokio::spawn(async move {
                         // Are we actively managing refreshing of this zone?
-                        let mut tt = time_tracking.write().await;
-                        if let Some(zone_refresh_info) = tt.get_mut(&timer_info.zone_id) {
+                        let known = {
+                            time_tracking.read().await.contains_key(&timer_info.zone_id)
+                        };
+                        // let mut tt = time_tracking.write().await;
+                        // if let Some(zone_refresh_info) = tt.get_mut(&timer_info.zone_id) {
+                        if known {
                             // Do we have the zone that is being updated?
                             let r_pending_zones = pending_zones.read().await;
                             let zone_id = timer_info.zone_id.clone();
@@ -433,7 +442,7 @@ where
                                         timer_info.cause,
                                         zone,
                                         None,
-                                        zone_refresh_info,
+                                        time_tracking,
                                         event_tx.clone(),
                                         config,
                                     )
@@ -959,7 +968,7 @@ where
             ZoneRefreshCause::NotifyFromPrimary(source),
             zone,
             Some(initial_xfr_addr),
-            zone_refresh_info,
+            time_tracking.clone(),
             event_tx.clone(),
             config,
         )
@@ -980,31 +989,45 @@ where
         cause: ZoneRefreshCause,
         zone: &Zone,
         initial_xfr_addr: Option<SocketAddr>,
-        zone_refresh_info: &mut ZoneRefreshState,
+        // zone_refresh_info: &mut ZoneRefreshState,
+        time_tracking: Arc<RwLock<HashMap<ZoneId, ZoneRefreshState>>>,
         event_tx: Sender<Event>,
         config: Arc<ArcSwap<Config<KS, CF>>>,
     ) -> Result<(), ()> {
-        match cause {
-            ZoneRefreshCause::ManualTrigger
-            | ZoneRefreshCause::NotifyFromPrimary(_)
-            | ZoneRefreshCause::SoaRefreshTimer
-            | ZoneRefreshCause::SoaRefreshTimerAfterStartup
-            | ZoneRefreshCause::SoaRefreshTimerAfterZoneAdded => {
-                zone_refresh_info
-                    .metrics_mut()
-                    .last_refresh_phase_started_at = Some(Instant::now());
-                zone_refresh_info.metrics_mut().last_refresh_attempted_at = Some(Instant::now());
-            }
-            ZoneRefreshCause::SoaRetryTimer => {
-                zone_refresh_info.metrics_mut().last_refresh_attempted_at = Some(Instant::now());
+        let zone_id = ZoneId::from(zone);
+
+        {
+            if let Some(zone_refresh_info) = time_tracking.write().await.get_mut(&zone_id) {
+                match cause {
+                    ZoneRefreshCause::ManualTrigger
+                    | ZoneRefreshCause::NotifyFromPrimary(_)
+                    | ZoneRefreshCause::SoaRefreshTimer
+                    | ZoneRefreshCause::SoaRefreshTimerAfterStartup
+                    | ZoneRefreshCause::SoaRefreshTimerAfterZoneAdded => {
+                        zone_refresh_info
+                            .metrics_mut()
+                            .last_refresh_phase_started_at = Some(Instant::now());
+                        zone_refresh_info.metrics_mut().last_refresh_attempted_at =
+                            Some(Instant::now());
+                        zone_refresh_info.set_status(ZoneRefreshStatus::RefreshInProgress(0));
+                    }
+                    ZoneRefreshCause::SoaRetryTimer => {
+                        zone_refresh_info.metrics_mut().last_refresh_attempted_at =
+                            Some(Instant::now());
+                        zone_refresh_info.set_status(ZoneRefreshStatus::RetryInProgress);
+                    }
+                }
             }
         }
 
-        let zone_id = ZoneId::from(zone);
-
         info!("Refreshing zone '{}' due to {cause}", zone.apex_name());
 
-        let res = Self::refresh_zone(zone, initial_xfr_addr, zone_refresh_info, config).await;
+        let res = Self::refresh_zone(zone, initial_xfr_addr, time_tracking.clone(), config).await;
+
+        let mut tt = time_tracking.write().await;
+        let Some(zone_refresh_info) = tt.get_mut(&zone_id) else {
+            return Err(());
+        };
 
         match res {
             Err(err) => {
@@ -1022,7 +1045,7 @@ where
                 //    check for the EXPIRE interval, it must assume that its
                 //    copy of the zone is obsolete an discard it."
 
-                if zone_refresh_info.status() == ZoneRefreshStatus::Retrying {
+                if zone_refresh_info.status() == ZoneRefreshStatus::RetryInProgress {
                     let time_of_last_soa_check = zone_refresh_info
                         .metrics()
                         .last_soa_serial_check_succeeded_at
@@ -1056,7 +1079,7 @@ where
                         return Err(());
                     }
                 } else {
-                    zone_refresh_info.set_status(ZoneRefreshStatus::Retrying);
+                    zone_refresh_info.set_status(ZoneRefreshStatus::RetryPending);
                 }
 
                 // Schedule a zone refresh according to the SOA RETRY timer value.
@@ -1081,7 +1104,7 @@ where
                     // is up-to-date with the primaries.
                 }
 
-                zone_refresh_info.set_status(ZoneRefreshStatus::Refreshing);
+                zone_refresh_info.set_status(ZoneRefreshStatus::RefreshPending);
 
                 // Schedule a zone refresh according to the SOA REFRESH timer value.
                 Self::schedule_zone_refresh(
@@ -1100,20 +1123,25 @@ where
     async fn refresh_zone(
         zone: &Zone,
         initial_xfr_addr: Option<SocketAddr>,
-        zone_refresh_info: &mut ZoneRefreshState,
+        time_tracking: Arc<RwLock<HashMap<ZoneId, ZoneRefreshState>>>,
         config: Arc<ArcSwap<Config<KS, CF>>>,
     ) -> Result<Option<Soa<Name<Bytes>>>, ZoneMaintainerError> {
+        let zone_id = ZoneId::from(zone);
         // Was this zone already refreshed recently?
-        if let Some(age) = zone_refresh_info.age() {
-            if age < MIN_DURATION_BETWEEN_ZONE_REFRESHES {
-                // Don't refresh, we refreshed very recently
-                debug!(
-                    "Skipping refresh of zone '{}' as it was refreshed less than {}s ago ({}s)",
-                    zone.apex_name(),
-                    MIN_DURATION_BETWEEN_ZONE_REFRESHES.as_secs(),
-                    age.as_secs()
-                );
-                return Ok(None);
+        {
+            if let Some(zone_refresh_info) = time_tracking.read().await.get(&zone_id) {
+                if let Some(age) = zone_refresh_info.age() {
+                    if age < MIN_DURATION_BETWEEN_ZONE_REFRESHES {
+                        // Don't refresh, we refreshed very recently
+                        debug!(
+                        "Skipping refresh of zone '{}' as it was refreshed less than {}s ago ({}s)",
+                        zone.apex_name(),
+                        MIN_DURATION_BETWEEN_ZONE_REFRESHES.as_secs(),
+                        age.as_secs()
+                    );
+                        return Ok(None);
+                    }
+                }
             }
         }
 
@@ -1162,7 +1190,7 @@ where
                     current_serial,
                     *primary_addr,
                     xfr_config,
-                    zone_refresh_info,
+                    time_tracking.clone(),
                     config.clone(),
                 )
                 .await;
@@ -1204,7 +1232,7 @@ where
         current_serial: Option<Serial>,
         primary_addr: SocketAddr,
         xfr_config: &XfrConfig,
-        zone_refresh_info: &mut ZoneRefreshState,
+        time_tracking: Arc<RwLock<HashMap<ZoneId, ZoneRefreshState>>>,
         config: Arc<ArcSwap<Config<KS, CF>>>,
     ) -> Result<Option<Soa<Name<Bytes>>>, ZoneMaintainerError> {
         // Build the SOA request message
@@ -1270,11 +1298,17 @@ where
         debug!("Primary: {primary_soa_serial}");
         debug!("Newer data available: {newer_data_available}");
 
-        if !newer_data_available {
-            zone_refresh_info.soa_serial_check_succeeded(None);
-            return Ok(None);
-        } else {
-            zone_refresh_info.soa_serial_check_succeeded(Some(primary_soa_serial));
+        let zone_id = ZoneId::from(zone);
+        {
+            let mut tt = time_tracking.write().await;
+            if let Some(zone_refresh_info) = tt.get_mut(&zone_id) {
+                if !newer_data_available {
+                    zone_refresh_info.soa_serial_check_succeeded(None);
+                    return Ok(None);
+                } else {
+                    zone_refresh_info.soa_serial_check_succeeded(Some(primary_soa_serial));
+                }
+            }
         }
 
         let mut udp_client = Some(udp_client);
@@ -1333,8 +1367,19 @@ where
                 rtype,
                 key.clone(),
                 config.clone(),
+                time_tracking.clone(),
             )
             .await;
+
+            let zone_id = ZoneId::from(zone);
+            {
+                let mut tt = time_tracking.write().await;
+                let Some(zone_refresh_info) = tt.get_mut(&zone_id) else {
+                    return Err(ZoneMaintainerError::InternalError(
+                        "Cannot find time tracking data for zone",
+                    ));
+                };
+            }
 
             match res {
                 Err(ZoneMaintainerError::ResponseError(OptRcode::NOTIMP))
@@ -1345,7 +1390,10 @@ where
                 }
 
                 Ok(new_soa) => {
-                    zone_refresh_info.refresh_succeeded(&new_soa);
+                    let mut tt = time_tracking.write().await;
+                    if let Some(zone_refresh_info) = tt.get_mut(&zone_id) {
+                        zone_refresh_info.refresh_succeeded(&new_soa);
+                    }
                     return Ok(Some(new_soa));
                 }
 
@@ -1384,6 +1432,7 @@ where
         xfr_type: Rtype,
         key: Option<<<KS as Deref>::Target as KeyStore>::Key>,
         config: Arc<ArcSwap<Config<KS, CF>>>,
+        time_tracking: Arc<RwLock<HashMap<ZoneId, ZoneRefreshState>>>,
     ) -> Result<Soa<Name<Bytes>>, ZoneMaintainerError> {
         // Update the zone from the primary using XFR.
         info!(
@@ -1392,6 +1441,7 @@ where
             primary_addr,
         );
 
+        let zone_id = ZoneId::from(zone);
         let msg = MessageBuilder::new_vec();
         let mut msg = msg.question();
         msg.push((zone.apex_name(), xfr_type)).unwrap();
@@ -1480,7 +1530,17 @@ where
 
                     num_updates_applied += 1;
 
-                    if enabled!(Level::INFO) {
+                    if num_updates_applied % 10000 == 0 {
+                        if let Some(zone_refresh_info) =
+                            time_tracking.write().await.get_mut(&zone_id)
+                        {
+                            zone_refresh_info.set_status(ZoneRefreshStatus::RefreshInProgress(
+                                num_updates_applied,
+                            ));
+                        }
+                    }
+
+                    if log_enabled!(log::Level::Info) {
                         if let Some(report) =
                             progress_reporter.create_report(1, num_updates_applied)
                         {
@@ -1494,7 +1554,7 @@ where
                     return Err(ZoneMaintainerError::IncompleteResponse);
                 }
 
-                if enabled!(Level::INFO) {
+                if log_enabled!(log::Level::Info) {
                     if let Some(report) = progress_reporter.create_report(1, num_updates_applied) {
                         info!("{}", report);
                     }
@@ -1566,8 +1626,17 @@ where
                         zone_updater.apply(update).await?;
 
                         num_updates_applied += 1;
+                        if num_updates_applied % 10000 == 0 {
+                            if let Some(zone_refresh_info) =
+                                time_tracking.write().await.get_mut(&zone_id)
+                            {
+                                zone_refresh_info.set_status(ZoneRefreshStatus::RefreshInProgress(
+                                    num_updates_applied,
+                                ));
+                            }
+                        }
 
-                        if enabled!(Level::INFO) {
+                        if log_enabled!(log::Level::Info) {
                             if let Some(report) = progress_reporter
                                 .create_report(num_responses_received, num_updates_applied)
                             {
@@ -1579,7 +1648,7 @@ where
                     trace!("Processing XFR events complete");
                 }
 
-                if enabled!(Level::INFO) {
+                if log_enabled!(log::Level::Info) {
                     if let Some(report) =
                         progress_reporter.create_report(num_responses_received, num_updates_applied)
                     {
@@ -1857,7 +1926,10 @@ impl XfrProgressReporter {
         num_updates_applied: usize,
     ) -> Option<String> {
         let now = Instant::now();
-        if now.duration_since(self.last_reported_at.unwrap_or(self.start_time)) > self.report_every
+        if now.duration_since(
+            self.last_reported_at
+                .unwrap_or(self.start_time - self.report_every),
+        ) >= self.report_every
         {
             let seconds_so_far = now.duration_since(self.start_time).as_secs() as f64;
             let records_per_second = ((num_updates_applied as f64) / seconds_so_far).floor() as i64;

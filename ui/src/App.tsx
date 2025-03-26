@@ -1,6 +1,3 @@
-// import { useState } from 'react'
-// import reactLogo from './assets/react.svg'
-// import viteLogo from '/vite.svg'
 import axios from 'axios'
 import react from 'react'
 import './App.css'
@@ -12,7 +9,83 @@ import { Node, Graph, Edge } from '@msagl/core'
 import { DrawingEdge, Color, StyleEnum, ShapeEnum } from '@msagl/drawing'
 import { DrawingNode } from '@msagl/drawing'
 
-function createGraph(zoneTree: Object): Graph {
+interface ZoneSignerStatusResponse {
+  zones_being_signed: ZoneSigningReport[]
+}
+
+type ZoneReports = Map<string, ZoneReport>
+
+interface ZoneReport {
+  role: Role,
+}
+
+interface Role {
+  Primary: Primary,
+  Secondary: Secondary,
+}
+
+type Primary = string
+
+interface LoadingStatus {
+  RefreshInProgress: number
+}
+
+interface Secondary {
+  status: string | LoadingStatus,
+  last_refresh_checked_secs_ago: number,
+  last_refresh_checked_serial: number
+  last_refresh_succeeded_secs_ago: number,
+  last_refresh_succeeded_serial: number
+  next_refresh_secs_from_now: number,
+  next_refresh_cause: string,
+}
+
+interface InProgress {
+  denial_rr_count: number,
+  denial_time: number,
+  insertion_time: number,
+  requested_at: number,
+  rrsig_count: number,
+  rrsig_reused_count: number,
+  rrsig_time: number,
+  sort_time: number,
+  started_at: number,
+  threads_used: number,
+  total_time: number,
+  unsigned_rr_count: number,
+  walk_time: number,
+  zone_serial: number,
+}
+
+interface Finished {
+  denial_rr_count: number,
+  denial_time: number,
+  finished_at: number,
+  insertion_time: number,
+  requested_at: number,
+  rrsig_count: number,
+  rrsig_reused_count: number,
+  rrsig_time: number,
+  sort_time: number,
+  started_at: number,
+  threads_used: number,
+  total_time: number,
+  unsigned_rr_count: number,
+  walk_time: number,
+  zone_serial: number,
+}
+
+interface SigningStatus {
+  InProgress: InProgress
+  Finished: Finished
+}
+
+interface ZoneSigningReport {
+  zone_name: string,
+  status: SigningStatus,
+}
+
+function createGraph(zone_reports: ZoneReports, zone_signing_report: ZoneSigningReport[]): Graph {
   const graph = new Graph()
   const nodes_by_name = new Map();
 
@@ -33,9 +106,14 @@ function createGraph(zoneTree: Object): Graph {
   graph.addNode(subGraph)
   nodes_by_name.set('._sub', subGraph)
 
+  const zone_names = Array.from(zone_reports.keys()).sort()
   // add nodes below 
-  for (const [zone_name, values] of Object.entries(zoneTree)) {
-    console.log('zone: ', zone_name)
+  for (const zone_name of zone_names) {
+    let zone_report = zone_reports.get(zone_name)
+    if (zone_report === undefined) {
+      continue
+    }
+
     let abs_zone_name: string = zone_name + '.'
 
     // add a zone node
@@ -54,18 +132,51 @@ function createGraph(zoneTree: Object): Graph {
     const node_d = new DrawingNode(node)
     node_d.shape = ShapeEnum.plaintext
 
-    node_title = node_title + '_details'
-    const box = new Node(node_title)
+    const box = new Node(node_title + '_details')
     nodes_by_name.set(node_title, box)
     const box_d = new DrawingNode(box)
-    if (values.details == 'Primary') {
+    if (zone_report.role.Primary !== undefined) {
       box_d.labelText = 'Primary'
+    } else if (zone_report.role.Secondary !== undefined) {
+      let loading_status = zone_report.role.Secondary.status
+      console.log(loading_status)
+      if (loading_status.RefreshInProgress !== undefined) {
+        loading_status = 'Receiving (' + loading_status.RefreshInProgress + ' updates applied)'
+      }
+      let status = zone_signing_report.find(report => report.zone_name == zone_name )?.status
+      let sign_status = ' '
+      if (status !== undefined) {
+        if (status.Finished !== undefined) {
+          sign_status = ' [Signed] '
+        } else if (status.InProgress !== undefined) {
+          sign_status = ' [Signing] '
+        }
+      }
+      if (zone_report.role.Secondary.last_refresh_succeeded_serial !== null) {
+        box_d.labelText = 'Secondary: ' + zone_report.role.Secondary.last_refresh_succeeded_serial + sign_status + '\n' + loading_status + ' (' + zone_report.role.Secondary.next_refresh_secs_from_now + ' secs away due to ' + zone_report.role.Secondary.next_refresh_cause + ')\n'
+      } else {
+        box_d.labelText = 'Secondary: ' + loading_status + '\n'
+      }
+      // box_d.labelText = 'Secondary: ' + zone_report.role.Secondary.status + '\n'
+      // box_d.labelText += 'Last refresh succeeded ' + zone_report.role.Secondary.last_refresh_succeeded_secs_ago + ' seconds ago with serial ' + zone_report.role.Secondary.last_refresh_succeeded_serial + '\n'
+      // box_d.labelText += 'Last SOA check succeeded ' + zone_report.role.Secondary.last_refresh_checked_secs_ago + ' seconds ago with serial ' + zone_report.role.Secondary.last_refresh_checked_serial + '\n'
+      // box_d.labelText += 'Next refresh ' + zone_report.role.Secondary.next_refresh_secs_from_now + ' seconds from now (due to ' + zone_report.role.Secondary.next_refresh_cause + ')\n'
+      // let status = zone_signing_report.find(report => report.zone_name == zone_name )?.status
+      // if (status !== undefined) {
+      //   if (status.Finished !== undefined) {
+      //     box_d.labelText += 'Last signed ' + status.Finished.finished_at + ' seconds ago in ' + status.Finished.total_time + ' seconds with serial ' + status.Finished.zone_serial
+      //   } else if (status.InProgress !== undefined) {
+      //     box_d.labelText += 'Signing since ' + status.InProgress.started_at + ' seconds ago with serial ' + status.InProgress.zone_serial + '\n'
+      //     box_d.labelText += '(walk time ' + status.InProgress.walk_time;
+      //     box_d.labelText += ', sort time ' + status.InProgress.sort_time;
+      //     box_d.labelText += ', denial time ' + status.InProgress.denial_time
+      //     box_d.labelText += ', rrsig time ' + status.InProgress.rrsig_time
+      //     box_d.labelText += ', insertion time ' + status.InProgress.insertion_time
+      //     box_d.labelText += ')'
+      //   }
+      // }
     } else {
-      box_d.labelText = 'Secondary: ' + values.details.Secondary.status + '\n' + 'Last refreshed ' + values.details.Secondary.metrics.last_refreshed_at + ' seconds ago' + '\n' + 'Next refresh ' + (values.details.Secondary.refresh - values.details.Secondary.metrics.last_refreshed_at) + ' seconds from now'
-
-      // axios.get(API_BASE_URL + 'zs/' + zone_name + '/status.json').then((response) => {
-      //   box_d.labelText += response.data;
-      // });
+      box_d.labelText = ''
     }
     box_d.penwidth = 0
     box_d.fontsize = 6
@@ -75,7 +186,7 @@ function createGraph(zoneTree: Object): Graph {
 
     nodes_by_name.set(abs_zone_name + '_sub', subGraph)
     graph.addNode(subGraph)
-  
+
     // get the parent zone node
     let abs_zone_name_labels = abs_zone_name.split('.')
     let parent_zone_name = abs_zone_name_labels.slice(1).join('.')
@@ -84,8 +195,6 @@ function createGraph(zoneTree: Object): Graph {
     }
     let parent_zone_node = nodes_by_name.get(parent_zone_name + '_sub')
     let this_zone_node = nodes_by_name.get(abs_zone_name + '_sub')
-    console.log("parent: ", parent_zone_name + '_sub', parent_zone_node)
-    console.log("this: ", abs_zone_name + '_sub', this_zone_node)
 
     // draw an edge from child to parent
     const edge = new Edge(parent_zone_node, this_zone_node)
@@ -99,20 +208,24 @@ function createGraph(zoneTree: Object): Graph {
 }
 
 function App() {
-  const [data, setData] = react.useState(null)
+  const [zone_reports, setZoneReports] = react.useState<ZoneReports>()
+  const [zone_signing_reports, setSigningReports] = react.useState<ZoneSigningReport[]>()
 
   react.useEffect(() => {
     axios.get(API_BASE_URL + 'zl/status.json').then((response) => {
-      setData(response.data);
+      setZoneReports(new Map<string, ZoneReport>(Object.entries(response.data)))
+
+      axios.get<ZoneSignerStatusResponse>(API_BASE_URL + 'zs/status.json').then((response) => {
+        setSigningReports(response.data.zones_being_signed)
+      });
     });
   }, []);
 
-  if (data) {
+  if (zone_reports && zone_reports && zone_signing_reports) {
     const viewer = document.getElementById('viewer') || undefined
     const svgRenderer = new RendererSvg(viewer)
     svgRenderer.layoutEditingEnabled = false
-
-    const graph = createGraph(data)
+    const graph = createGraph(zone_reports, zone_signing_reports)
     svgRenderer.setGraph(graph)
   }
 

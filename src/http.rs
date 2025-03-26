@@ -259,6 +259,7 @@ impl Server {
         Response::builder()
             .status(StatusCode::NOT_FOUND)
             .header("Content-Type", "text/plain")
+            .header("Access-Control-Allow-Origin", "*")
             .body("Not Found".into())
             .unwrap()
     }
