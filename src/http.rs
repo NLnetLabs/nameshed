@@ -178,8 +178,17 @@ impl Server {
         metrics: &metrics::Collection,
         resources: &Resources,
     ) -> Result<Response<Body>, Infallible> {
-        if *req.method() != Method::GET {
-            return Ok(Self::method_not_allowed());
+        match *req.method() {
+            Method::GET
+            | Method::POST
+            | Method::PUT
+            | Method::DELETE
+            | Method::HEAD
+            | Method::OPTIONS
+            /* | Method::CONNECT */
+            /* | Method::PATCH */
+            /* | Method::TRACE */ => {}
+            _ => return Ok(Self::method_not_allowed())
         }
 
         let accepts_gzip = req

@@ -379,6 +379,8 @@ impl ProcessRequest for CentralCommandApi {
         let req_path = request.uri().decoded_path();
         if request.method() == hyper::Method::GET && req_path == "/" {
             ControlFlow::Continue(self.build_status_response().await)
+        } else if req_path.starts_with(crate::api::API_BASE_PATH) {
+            ControlFlow::Continue(crate::api::handle_api_request(request).await)
         } else {
             ControlFlow::Break(request)
         }
