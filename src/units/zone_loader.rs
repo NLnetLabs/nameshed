@@ -787,19 +787,19 @@ impl ZoneListApi {
 impl ProcessRequest for ZoneListApi {
     async fn process_request(
         &self,
-        request: &hyper::Request<hyper::Body>,
-    ) -> Option<hyper::Response<hyper::Body>> {
+        request: hyper::Request<hyper::Body>,
+    ) -> ControlFlow<hyper::Request<hyper::Body>, hyper::Response<hyper::Body>> {
         let req_path = request.uri().decoded_path();
         if request.method() == hyper::Method::GET {
             if req_path == *self.http_api_path {
-                Some(self.build_response().await)
+                ControlFlow::Continue(self.build_response().await)
             } else if req_path == format!("{}status.json", *self.http_api_path) {
-                Some(self.build_json_response().await)
+                ControlFlow::Continue(self.build_json_response().await)
             } else {
-                None
+                ControlFlow::Break(request)
             }
         } else {
-            None
+            ControlFlow::Break(request)
         }
     }
 }

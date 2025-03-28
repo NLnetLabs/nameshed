@@ -1390,24 +1390,27 @@ impl SigningHistoryApi {
 impl ProcessRequest for SigningHistoryApi {
     async fn process_request(
         &self,
-        request: &hyper::Request<hyper::Body>,
-    ) -> Option<hyper::Response<hyper::Body>> {
+        request: hyper::Request<hyper::Body>,
+    ) -> ControlFlow<hyper::Request<hyper::Body>, hyper::Response<hyper::Body>> {
         let req_path = request.uri().decoded_path();
         if request.method() == hyper::Method::GET {
             if req_path.starts_with(&*self.http_api_path) {
                 if req_path == format!("{}status.json", *self.http_api_path) {
-                    return Some(self.build_json_status_response().await);
+                    return ControlFlow::Continue(self.build_json_status_response().await)
                 } else if req_path.ends_with("/status.json") {
                     let (_, parts) = req_path.split_at(self.http_api_path.len());
                     if let Some((zone_name, status_rel_url)) = parts.split_once('/') {
                         if status_rel_url == "status.json" {
-                            return self.build_json_zone_status_response(zone_name).await;
+                            return match self.build_json_zone_status_response(zone_name).await {
+                                Some(r) => ControlFlow::Continue(r),
+                                None => ControlFlow::Break(request),
+                            };
                         }
                     }
                 }
             }
         }
-        None
+        ControlFlow::Break(request)
     }
 }
 

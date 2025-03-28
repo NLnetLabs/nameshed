@@ -789,11 +789,11 @@ impl ZoneReviewApi {
 impl ProcessRequest for ZoneReviewApi {
     async fn process_request(
         &self,
-        request: &hyper::Request<hyper::Body>,
-    ) -> Option<hyper::Response<hyper::Body>> {
+        request: hyper::Request<hyper::Body>,
+    ) -> ControlFlow<hyper::Request<hyper::Body>, hyper::Response<hyper::Body>> {
         let req_path = request.uri().decoded_path();
         if request.method() == hyper::Method::GET && req_path == *self.http_api_path {
-            return Some(self.build_status_response().await);
+            return ControlFlow::Continue(self.build_status_response().await);
         } else if self.mode == Mode::Prepublish && request.method() == hyper::Method::GET // should really be POST with POST body parameters.
             && req_path.starts_with(self.http_api_path.deref())
         {
@@ -914,14 +914,14 @@ impl ProcessRequest for ZoneReviewApi {
                 debug!("Invalid request: {}", request.uri());
             }
 
-            Some(
+            ControlFlow::Continue(
                 hyper::Response::builder()
                     .status(status)
                     .body(hyper::Body::empty())
                     .unwrap(),
             )
         } else {
-            None
+            ControlFlow::Break(request)
         }
     }
 }

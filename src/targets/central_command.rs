@@ -374,13 +374,13 @@ impl CentralCommandApi {
 impl ProcessRequest for CentralCommandApi {
     async fn process_request(
         &self,
-        request: &hyper::Request<hyper::Body>,
-    ) -> Option<hyper::Response<hyper::Body>> {
+        request: hyper::Request<hyper::Body>,
+    ) -> ControlFlow<hyper::Request<hyper::Body>, hyper::Response<hyper::Body>> {
         let req_path = request.uri().decoded_path();
         if request.method() == hyper::Method::GET && req_path == "/" {
-            Some(self.build_status_response().await)
+            ControlFlow::Continue(self.build_status_response().await)
         } else {
-            None
+            ControlFlow::Break(request)
         }
     }
 }

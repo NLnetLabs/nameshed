@@ -25,6 +25,7 @@ use std::convert::Infallible;
 use std::fmt::Display;
 use std::net::SocketAddr;
 use std::net::TcpListener as StdListener;
+use std::ops::ControlFlow;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
 use std::sync::{Arc, Mutex, Weak};
@@ -181,16 +182,22 @@ impl Server {
             return Ok(Self::method_not_allowed());
         }
 
+        let accepts_gzip = req
+            .headers()
+            .get("Accept-Encoding")
+            .map(|v| v.to_str().unwrap().contains("gzip"))
+            .unwrap_or_default();
+
         let res = match req.uri().decoded_path().as_ref() {
             "/metrics" => Self::metrics(metrics),
             "/status" => Self::status(metrics),
-            _ => match resources.process_request(&req).await {
-                Some(response) => response,
-                None => Self::not_found(),
+            _ => match resources.process_request(req).await {
+                ControlFlow::Continue(response) => response,
+                ControlFlow::Break(_) => Self::not_found(),
             },
         };
 
-        Ok(Self::encode_response(req, res, resources.compress_responses).await)
+        Ok(Self::encode_response(accepts_gzip, res, resources.compress_responses).await)
     }
 
     /// Produces the response for a call to the `/metrics` endpoint.
@@ -210,7 +217,7 @@ impl Server {
     }
 
     async fn encode_response(
-        req: Request<Body>,
+        accepts_gzip: bool,
         res: Response<Body>,
         compress_responses: bool,
     ) -> Response<Body> {
@@ -218,11 +225,6 @@ impl Server {
             // Streaming the response through the encoder as it's being built
             // would be more efficient, and maybe also only creating the encoder
             // once rather than every time, but this works for now.
-            let accepts_gzip = req
-                .headers()
-                .get("Accept-Encoding")
-                .map(|v| v.to_str().unwrap().contains("gzip"))
-                .unwrap_or_default();
 
             if accepts_gzip {
                 use flate2::{write::GzEncoder, Compression};
@@ -336,16 +338,21 @@ impl Resources {
     ///
     /// Returns some response if any of the registered processors actually
     /// processed the particular request or `None` otherwise.
-    pub async fn process_request(&self, request: &Request<Body>) -> Option<Response<Body>> {
+    pub async fn process_request(
+        &self,
+        request: Request<Body>,
+    ) -> ControlFlow<Request<Body>, Response<Body>> {
+        let mut request = request;
         let sources = self.sources.load();
         for item in sources.iter() {
             if let Some(process) = item.processor.upgrade() {
-                if let Some(response) = process.process_request(request).await {
-                    return Some(response);
+                match process.process_request(request).await {
+                    ControlFlow::Continue(resp) => return ControlFlow::Continue(resp),
+                    ControlFlow::Break(req) => request = req,
                 }
             }
         }
-        None
+        ControlFlow::Break(request)
     }
 
     pub fn resources(&self) -> SmallVec<[Arc<RegisteredResource>; 8]> {
@@ -408,12 +415,18 @@ pub trait ProcessRequest: Send + Sync {
     /// If the processor feels responsible for the reuqest, it should return
     /// some response. This can be an error response. Otherwise it should
     /// return `None`.
-    async fn process_request(&self, request: &Request<Body>) -> Option<Response<Body>>;
+    async fn process_request(
+        &self,
+        request: Request<Body>,
+    ) -> ControlFlow<Request<Body>, Response<Body>>;
 }
 
 #[async_trait]
 impl<T: ProcessRequest> ProcessRequest for Arc<T> {
-    async fn process_request(&self, request: &Request<Body>) -> Option<Response<Body>> {
+    async fn process_request(
+        &self,
+        request: Request<Body>,
+    ) -> ControlFlow<Request<Body>, Response<Body>> {
         AsRef::<T>::as_ref(self).process_request(request).await
     }
 }
@@ -421,9 +434,12 @@ impl<T: ProcessRequest> ProcessRequest for Arc<T> {
 #[async_trait]
 impl<F> ProcessRequest for F
 where
-    F: Fn(&Request<Body>) -> Option<Response<Body>> + Sync + Send,
+    F: Fn(Request<Body>) -> ControlFlow<Request<Body>, Response<Body>> + Sync + Send,
 {
-    async fn process_request(&self, request: &Request<Body>) -> Option<Response<Body>> {
+    async fn process_request(
+        &self,
+        request: Request<Body>,
+    ) -> ControlFlow<Request<Body>, Response<Body>> {
         (self)(request)
     }
 }

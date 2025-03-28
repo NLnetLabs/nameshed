@@ -2,13 +2,14 @@
 
 use arc_swap::ArcSwap;
 use futures::future::{join_all, select, Either};
-use hyper::{Body, Method, Request, Response};
+use hyper::{Method, Request, Response};
+use hyper::body::Body;
 use log::{debug, error, info, log_enabled, trace, warn};
 use non_empty_vec::NonEmpty;
 use reqwest::Client as HttpClient;
 use serde::Deserialize;
 use std::collections::HashSet;
-use std::ops::Deref;
+use std::ops::{ControlFlow, Deref};
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::{Duration, Instant};
 use std::{cell::RefCell, fmt::Display};
@@ -1431,7 +1432,7 @@ impl Manager {
     ) -> (Arc<dyn ProcessRequest>, &'static str) {
         const REL_BASE_URL: &str = "/status/graph";
 
-        let processor = Arc::new(move |request: &Request<_>| {
+        let processor = Arc::new(move |request: Request<_>| {
             let req_path = request.uri().decoded_path();
             if request.method() == Method::GET && req_path.starts_with(REL_BASE_URL) {
                 let (_base_path, restant) = req_path.split_at(REL_BASE_URL.len());
@@ -1504,9 +1505,9 @@ impl Manager {
                     .body(body)
                     .unwrap();
 
-                Some(response)
+                ControlFlow::Continue(response)
             } else {
-                None
+                ControlFlow::Break(request)
             }
         });
 
@@ -1516,7 +1517,7 @@ impl Manager {
     fn mk_tracer_http_processor(tracer: Arc<Tracer>) -> (Arc<dyn ProcessRequest>, &'static str) {
         const REL_BASE_URL: &str = "/status/traces";
 
-        let processor = Arc::new(move |request: &Request<_>| {
+        let processor = Arc::new(move |request: Request<_>| {
             let req_path = request.uri().decoded_path();
             if request.method() == Method::GET && req_path == REL_BASE_URL {
                 let response = Response::builder()
@@ -1525,9 +1526,9 @@ impl Manager {
                     .body(Body::from(format!("{tracer:#?}")))
                     .unwrap();
 
-                Some(response)
+                ControlFlow::Continue(response)
             } else {
-                None
+                ControlFlow::Break(request)
             }
         });
 
