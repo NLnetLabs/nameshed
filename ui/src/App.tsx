@@ -2,7 +2,7 @@ import axios from 'axios'
 import react from 'react'
 import './App.css'
 
-const API_BASE_URL = 'http://rusty.nlnetlabs.nl:8080/'
+const API_BASE_URL = 'http://127.0.0.1:8080/'
 
 import { RendererSvg } from '@msagl/renderer-svg'
 import { Node, Graph, Edge } from '@msagl/core'
