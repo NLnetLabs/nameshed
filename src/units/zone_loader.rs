@@ -235,6 +235,9 @@ impl ZoneLoaderUnit {
                     "Loaded {zone_file_len} bytes from '{zone_path}' in {} secs",
                     before.elapsed().as_secs()
                 );
+
+                zone_updated_tx.send((zone.apex_name().clone(), Serial::now())).await.unwrap();
+
                 zone
             } else {
                 let apex_name = Name::from_str(zone_name)
