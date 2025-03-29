@@ -327,7 +327,7 @@ impl WritableZoneNode for SimpleZoneNode {
         self.tree
             .write()
             .unwrap()
-            .retain(|k, v| !k.starts_with(&self.name));
+            .clear();
         Box::pin(ready(Ok(())))
     }
 }
