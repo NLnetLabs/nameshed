@@ -923,45 +923,47 @@ where
         //    state it would if the zone's refresh timer had expired."
 
         let zone_id = ZoneId::from(zone);
-        let tt = &mut time_tracking.write().await;
-        let Some(zone_refresh_info) = tt.get_mut(&zone_id) else {
-            // TODO
-            warn!(
-                "NOTIFY for {}, from {source}: refused, missing internal state",
-                zone_id.name
-            );
-            return;
-        };
+        {
+            let tt = &mut time_tracking.write().await;
+            let Some(zone_refresh_info) = tt.get_mut(&zone_id) else {
+                // TODO
+                warn!(
+                    "NOTIFY for {}, from {source}: refused, missing internal state",
+                    zone_id.name
+                );
+                return;
+            };
 
-        // https://datatracker.ietf.org/doc/html/rfc1996#section-4 "4.4. A
-        // slave which receives a valid NOTIFY should defer action on any
-        //  subsequent NOTIFY with the same <QNAME,QCLASS,QTYPE> until it has
-        //  completed the transaction begun by the first NOTIFY.  This
-        //  duplicate rejection is necessary to avoid having multiple
-        //  notifications lead to pummeling the master server."
-        //
-        // We only support the original SOA qtype for NOTIFY. The unique tuple
-        // that identifies an in-progress NOTIFY is thus only <QNAME,QCLASS>.
-        // This is the same tuple as that of `ZoneId`, thus we only have one
-        // zone for each unique tuple in our set of zones. Thus to avoid
-        // processing a NOTIFY when one is already in progress for a unique
-        // tuple we only have to look at the status of the zone for which the
-        // notify was received.
-        if matches!(
-            zone_refresh_info.status(),
-            ZoneRefreshStatus::NotifyInProgress
-        ) {
-            // Note: Rather than defer the NOTIFY when one is already in
-            // progress we ignore the additional NOTIFY.
-            // TODO: Should this be WARN, or DEBUG? Or an incremented metric?
-            warn!(
-                "NOTIFY for {}, from {source}: refused, notify already in progress for this zone",
-                msg.apex_name
-            );
-            return;
+            // https://datatracker.ietf.org/doc/html/rfc1996#section-4 "4.4. A
+            // slave which receives a valid NOTIFY should defer action on any
+            //  subsequent NOTIFY with the same <QNAME,QCLASS,QTYPE> until it has
+            //  completed the transaction begun by the first NOTIFY.  This
+            //  duplicate rejection is necessary to avoid having multiple
+            //  notifications lead to pummeling the master server."
+            //
+            // We only support the original SOA qtype for NOTIFY. The unique tuple
+            // that identifies an in-progress NOTIFY is thus only <QNAME,QCLASS>.
+            // This is the same tuple as that of `ZoneId`, thus we only have one
+            // zone for each unique tuple in our set of zones. Thus to avoid
+            // processing a NOTIFY when one is already in progress for a unique
+            // tuple we only have to look at the status of the zone for which the
+            // notify was received.
+            if matches!(
+                zone_refresh_info.status(),
+                ZoneRefreshStatus::NotifyInProgress
+            ) {
+                // Note: Rather than defer the NOTIFY when one is already in
+                // progress we ignore the additional NOTIFY.
+                // TODO: Should this be WARN, or DEBUG? Or an incremented metric?
+                warn!(
+                    "NOTIFY for {}, from {source}: refused, notify already in progress for this zone",
+                    msg.apex_name
+                );
+                return;
+            }
+
+            zone_refresh_info.set_status(ZoneRefreshStatus::NotifyInProgress);
         }
-
-        zone_refresh_info.set_status(ZoneRefreshStatus::NotifyInProgress);
 
         let initial_xfr_addr = SocketAddr::new(source, IANA_DNS_PORT_NUMBER);
         if let Err(()) = Self::refresh_zone_and_update_state(
