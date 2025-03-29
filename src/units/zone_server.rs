@@ -475,7 +475,7 @@ impl ZoneServer {
                                         "[{component_name}]: Publishing signed zone '{zone_name}' at serial {zone_serial}."                                        
                                     );
                                     // Move the zone from the signed collection to the published collection.
-                                    // TODO: Respect the zone serial?
+                                    // TODO: Bump the zone serial?
                                     let component = self.component.write().await;
                                     let signed_zones = component.signed_zones().load();
                                     if let Some(zone) = signed_zones.get_zone(zone_name, Class::IN)
@@ -490,6 +490,7 @@ impl ZoneServer {
                                         info!("[{component_name}]: Adding '{zone_name}' to the set of published zones.");
                                         let mut new_published_zones =
                                             Arc::unwrap_or_clone(published_zones.clone());
+                                        let _ = new_published_zones.remove_zone(zone.apex_name(), zone.class());
                                         new_published_zones.insert_zone(zone.clone()).unwrap();
                                         component
                                             .published_zones()
