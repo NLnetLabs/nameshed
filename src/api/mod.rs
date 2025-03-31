@@ -1,4 +1,9 @@
+pub mod status;
+
+use std::fmt;
+
 use hyper::{Body, Request, Response, StatusCode};
+use serde::{Deserialize, Serialize};
 
 use crate::http::PercentDecodedPath;
 
@@ -36,4 +41,34 @@ fn bad_request() -> Response<Body> {
         .header("Content-Type", "text/plain")
         .body("Bad Request".into())
         .unwrap()
+}
+
+//------------ AuthToken -----------------------------------------------------
+
+/// An authentication token.
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub struct AuthToken(String);
+
+impl From<&str> for AuthToken {
+    fn from(s: &str) -> Self {
+        AuthToken(s.to_string())
+    }
+}
+
+impl From<String> for AuthToken {
+    fn from(s: String) -> Self {
+        AuthToken(s)
+    }
+}
+
+impl AsRef<str> for AuthToken {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for AuthToken {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        self.0.fmt(f)
+    }
 }

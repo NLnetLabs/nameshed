@@ -3,7 +3,8 @@
 #![allow(clippy::unknown_clippy_lints)]
 #![allow(dead_code)]
 #![allow(unused_variables)]
-mod api;
+pub mod api;
+pub mod cli;
 mod common;
 mod comms;
 pub mod config;
