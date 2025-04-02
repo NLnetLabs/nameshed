@@ -3,29 +3,8 @@
 use std::borrow::Cow;
 
 use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
-// use rpki::uri;
-// use rpki::crypto::KeyIdentifier;
-// use rpki::ca::idexchange;
-// use rpki::ca::csr::BgpsecCsr;
-// use rpki::ca::idcert::IdCert;
-// use rpki::ca::idexchange::{
-//     CaHandle, ChildHandle, ParentHandle, PublisherHandle, ServiceUri
-// };
-// use rpki::repository::resources::{Asn, ResourceSet};
-// use rpki::repository::x509::Time;
-use serde::de::DeserializeOwned;
-use serde::ser::Serialize;
 use url::Url;
-// use crate::api::pubd::RepoStats;
-// use crate::api::status::Success;
-// use crate::api::ta::{
-//     TrustAnchorSignedRequest, TrustAnchorSignedResponse,
-//     TrustAnchorSignerInfo,
-// };
-// use crate::commons::httpclient;
-// use crate::commons::httpclient::Error;
 
-use crate::api;
 use crate::api::AuthToken;
 
 //------------ NameshedClient ------------------------------------------------

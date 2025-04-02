@@ -1,6 +1,6 @@
 //! The nameshed command line client.
 
-use std::{env, process};
+use std::process;
 use nameshed::cli::client::NameshedClient;
 use nameshed::cli::options::Options;
 

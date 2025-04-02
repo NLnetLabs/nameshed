@@ -2,6 +2,7 @@
 name = "nameshed"
 version = "0.1.0"
 edition = "2021"
+default-run = "nameshed"
 
 [dependencies]
 arc-swap       = "1.7.0"
