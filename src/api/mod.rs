@@ -7,24 +7,99 @@ use serde::{Deserialize, Serialize};
 
 use crate::http::PercentDecodedPath;
 
+// MUST include leading and trailing slash ("/")
 pub const API_BASE_PATH: &str = "/api/";
 
-// mod v1 { }
+mod v1 {
+    use super::*;
 
+    macro_rules! m {
+        {$else:expr, $($x:expr => $y:expr),*} => {
+            $(
+                if $x {
+                    $y
+                } else
+            )* {
+                $else
+            }
+        }
+    }
+
+    /// Handle the API request
+    ///
+    /// The api_path parameter needs to be stripped of any API version prefixes and only contain
+    /// the actual API path
+    pub async fn handle_api_request(
+        request: Request<Body>,
+        api_path: &str,
+    ) -> Response<Body> {
+        m! {
+            bad_request(),
+            api_path.eq("login") => login(),
+            api_path.starts_with("users/") => users(),
+            api_path.starts_with("stuff/") => stuff()
+        }
+        // if api_path.eq("login") {
+        //     Response::builder()
+        //         .status(StatusCode::OK)
+        //         .header("Content-Type", "text/plain")
+        //         .body(Body::from(format!("You are now logged in. Thanks")))
+        //         .unwrap()
+        // } else if api_path.starts_with("users/") {
+        //     todo!()
+        // } else if api_path.starts_with("stuff/") {
+        //     Response::builder()
+        //         .status(StatusCode::OK)
+        //         .header("Content-Type", "text/plain")
+        //         .body(Body::from(format!(
+        //             "it works: {api_path}\n{}",
+        //             get_body_text(request).await.unwrap()
+        //         )))
+        //         .unwrap()
+        // } else {
+        //     bad_request()
+        // }
+    }
+
+    fn login() -> Response<Body> {
+        Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", "text/plain")
+            .body(Body::from(format!("You are now logged in. Thanks")))
+            .unwrap()
+    }
+
+    fn users() -> Response<Body> {
+        Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", "text/plain")
+            .body(Body::from(format!("Users\n")))
+            .unwrap()
+    }
+
+    fn stuff() -> Response<Body> {
+        Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", "text/plain")
+            .body(Body::from(format!("Stuff\n")))
+            .unwrap()
+    }
+}
+
+/// Map the API request to its version's API handler
 pub async fn handle_api_request(request: Request<Body>) -> Response<Body> {
     let req_path = request.uri().decoded_path().into_owned();
     if req_path.starts_with(API_BASE_PATH) {
-        let api_path = req_path.strip_prefix(API_BASE_PATH).unwrap_or_default();
-        let response = Response::builder()
-            .status(StatusCode::OK)
-            .header("Content-Type", "text/plain")
-            .body(Body::from(format!(
-                "it works: {api_path}\n{}",
-                get_body_text(request).await.unwrap()
-            )))
-            .unwrap();
-
-        response
+        let api_path = req_path.strip_prefix(API_BASE_PATH).unwrap();
+        if api_path.starts_with("v1/") {
+            v1::handle_api_request(
+                request,
+                api_path.strip_prefix("v1/").unwrap(),
+            )
+            .await
+        } else {
+            bad_request()
+        }
     } else {
         bad_request()
     }
