@@ -13,6 +13,19 @@ pub const API_BASE_PATH: &str = "/api/";
 mod v1 {
     use super::*;
 
+    /// A macro to compress the if-else-chain into a more easily copyable and
+    /// readable chain of API mappings.
+    ///
+    /// The first argument must be the fallback else case when no condition matches.
+    /// The following arguments are a comma separated list of condition-expression-mappings:
+    /// ```ignore
+    /// m! {
+    ///     else_function_when_no_condition_matches(),
+    ///     condition1 => function_call(),
+    ///     condition2 => function_call2(),
+    /// }
+    /// ```
+    /// A trailing comma is allowed.
     macro_rules! m {
         {$else:expr, $($x:expr => $y:expr),* $(,)?} => {
             $(
