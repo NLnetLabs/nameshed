@@ -3,12 +3,49 @@ pub mod status;
 use std::fmt;
 
 use hyper::{Body, Request, Response, StatusCode};
+use log::{debug, error, info, trace};
 use serde::{Deserialize, Serialize};
 
 use crate::http::PercentDecodedPath;
 
 // MUST include leading and trailing slash ("/")
 pub const API_BASE_PATH: &str = "/api/";
+
+/// Map the API request to its version's API handler
+pub async fn handle_api_request(request: Request<Body>) -> Response<Body> {
+    let req_path = request.uri().decoded_path().into_owned();
+    if req_path.starts_with(API_BASE_PATH) {
+        let api_path = req_path.strip_prefix(API_BASE_PATH).unwrap();
+        if let Some(p) = api_path.strip_prefix("v1/") {
+            v1::handle_api_request(request, p).await
+        } else {
+            bad_request()
+        }
+    } else {
+        bad_request()
+    }
+}
+
+pub async fn consume_body_text(req: Request<Body>) -> Option<String> {
+    let full_body = hyper::body::to_bytes(req.into_body()).await;
+    match full_body {
+        Ok(b) => Some(String::from_utf8_lossy(&b).to_string()),
+        Err(_) => {
+            error!("Failed to collect HTTP request body");
+            None
+        }
+    }
+}
+
+fn bad_request() -> Response<Body> {
+    Response::builder()
+        .status(StatusCode::BAD_REQUEST)
+        .header("Content-Type", "text/plain")
+        .body("Bad Request".into())
+        .unwrap()
+}
+
+//------------ API v1 --------------------------------------------------------
 
 mod v1 {
     use super::*;
@@ -52,26 +89,6 @@ mod v1 {
             api_path.starts_with("users/") => users(),
             api_path.starts_with("stuff/") => stuff(),
         }
-        // if api_path.eq("login") {
-        //     Response::builder()
-        //         .status(StatusCode::OK)
-        //         .header("Content-Type", "text/plain")
-        //         .body(Body::from(format!("You are now logged in. Thanks")))
-        //         .unwrap()
-        // } else if api_path.starts_with("users/") {
-        //     todo!()
-        // } else if api_path.starts_with("stuff/") {
-        //     Response::builder()
-        //         .status(StatusCode::OK)
-        //         .header("Content-Type", "text/plain")
-        //         .body(Body::from(format!(
-        //             "it works: {api_path}\n{}",
-        //             get_body_text(request).await.unwrap()
-        //         )))
-        //         .unwrap()
-        // } else {
-        //     bad_request()
-        // }
     }
 
     fn login() -> Response<Body> {
@@ -97,38 +114,6 @@ mod v1 {
             .body(Body::from(format!("Stuff\n")))
             .unwrap()
     }
-}
-
-/// Map the API request to its version's API handler
-pub async fn handle_api_request(request: Request<Body>) -> Response<Body> {
-    let req_path = request.uri().decoded_path().into_owned();
-    if req_path.starts_with(API_BASE_PATH) {
-        let api_path = req_path.strip_prefix(API_BASE_PATH).unwrap();
-        if api_path.starts_with("v1/") {
-            v1::handle_api_request(
-                request,
-                api_path.strip_prefix("v1/").unwrap(),
-            )
-            .await
-        } else {
-            bad_request()
-        }
-    } else {
-        bad_request()
-    }
-}
-
-pub async fn get_body_text(req: Request<Body>) -> Option<String> {
-    let full_body = hyper::body::to_bytes(req.into_body()).await.unwrap();
-    Some(String::from_utf8_lossy(&full_body).to_string())
-}
-
-fn bad_request() -> Response<Body> {
-    Response::builder()
-        .status(StatusCode::BAD_REQUEST)
-        .header("Content-Type", "text/plain")
-        .body("Bad Request".into())
-        .unwrap()
 }
 
 //------------ AuthToken -----------------------------------------------------
