@@ -14,7 +14,7 @@ mod v1 {
     use super::*;
 
     macro_rules! m {
-        {$else:expr, $($x:expr => $y:expr),*} => {
+        {$else:expr, $($x:expr => $y:expr),* $(,)?} => {
             $(
                 if $x {
                     $y
@@ -37,7 +37,7 @@ mod v1 {
             bad_request(),
             api_path.eq("login") => login(),
             api_path.starts_with("users/") => users(),
-            api_path.starts_with("stuff/") => stuff()
+            api_path.starts_with("stuff/") => stuff(),
         }
         // if api_path.eq("login") {
         //     Response::builder()
