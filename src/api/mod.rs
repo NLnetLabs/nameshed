@@ -92,6 +92,14 @@ mod v1 {
         }
     }
 
+    fn health() -> Response<Body> {
+        Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", "text/plain")
+            .body(Body::from(format!("OK")))
+            .unwrap()
+    }
+
     fn login() -> Response<Body> {
         Response::builder()
             .status(StatusCode::OK)
