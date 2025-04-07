@@ -64,7 +64,7 @@ mod v1 {
     /// ```
     /// A trailing comma is allowed.
     macro_rules! m {
-        {$else:expr, $($x:expr => $y:expr),* $(,)?} => {
+        {$($x:expr => $y:expr),*, _ => $else:expr $(,)?} => {
             $(
                 if $x {
                     $y
@@ -84,10 +84,11 @@ mod v1 {
         api_path: &str,
     ) -> Response<Body> {
         m! {
-            bad_request(),
+            api_path.eq("health") => health(),
             api_path.eq("login") => login(),
             api_path.starts_with("users/") => users(),
             api_path.starts_with("stuff/") => stuff(),
+            _ => bad_request()
         }
     }
 
