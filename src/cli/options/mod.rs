@@ -47,9 +47,8 @@ pub struct GeneralOptions {
         short,
         long,
         env = "NAMESHED_CLI_SERVER",
-        default_value = "https://localhost:3000/"
+        default_value = "http://localhost:8080/"
     )]
-    // pub server: ServiceUri,
     pub server: Url,
 
     /// The secret token for the nameshed server.

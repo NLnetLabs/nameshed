@@ -3,9 +3,15 @@
 use std::borrow::Cow;
 
 use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
+use serde::de::DeserializeOwned;
 use url::Url;
 
+use crate::api::status::Success;
 use crate::api::AuthToken;
+use crate::common::httpclient;
+use crate::common::httpclient::Error;
+
+// use crate::{api::{status::Success, AuthToken}, error::Error};
 
 //------------ NameshedClient ------------------------------------------------
 
@@ -41,23 +47,31 @@ impl NameshedClient {
         self.token = token
     }
 
-    // /// Performs a GET request and checks that it gets a 200 OK back.
-    // pub async fn get_ok<'a>(
-    //     &self,
-    //     path: impl IntoIterator<Item = Cow<'a, str>>,
-    // ) -> Result<Success, Error> {
-    //     httpclient::get_ok(&self.create_uri(path), Some(&self.token))
-    //         .await
-    //         .map(|_| Success)
-    // }
+    /// Performs a GET request and checks that it gets a 200 OK back.
+    pub async fn get_ok<'a>(
+        &self,
+        path: impl IntoIterator<Item = Cow<'a, str>>,
+    ) -> Result<Success, Error> {
+        httpclient::get_ok(&self.create_uri(path), Some(&self.token))
+            .await
+            .map(|_| Success)
+    }
 
-    // /// Performs a GET request expecting a JSON response.
-    // pub async fn get_json<'a, T: DeserializeOwned>(
-    //     &self,
-    //     path: impl IntoIterator<Item = Cow<'a, str>>,
-    // ) -> Result<T, Error> {
-    //     httpclient::get_json(&self.create_uri(path), Some(&self.token)).await
-    // }
+    /// Performs a GET request and return the response String.
+    pub async fn get_text<'a>(
+        &self,
+        path: impl IntoIterator<Item = Cow<'a, str>>,
+    ) -> Result<String, Error> {
+        httpclient::get_text(&self.create_uri(path), Some(&self.token)).await
+    }
+
+    /// Performs a GET request expecting a JSON response.
+    pub async fn get_json<'a, T: DeserializeOwned>(
+        &self,
+        path: impl IntoIterator<Item = Cow<'a, str>>,
+    ) -> Result<T, Error> {
+        httpclient::get_json(&self.create_uri(path), Some(&self.token)).await
+    }
 
     // /// Performs an empty POST request.
     // pub async fn post_empty<'a>(
@@ -130,25 +144,30 @@ impl NameshedClient {
     //         .map(|_| Success)
     // }
 
-    // /// Creates the full URI for the HTTP request.
-    // fn create_uri<'a>(
-    //     &self,
-    //     path: impl IntoIterator<Item = Cow<'a, str>>,
-    // ) -> String {
-    //     let mut res = String::from(self.base_uri.as_str());
-    //     for item in path {
-    //         if !res.ends_with('/') {
-    //             res.push('/');
-    //         }
-    //         res.push_str(&item);
-    //     }
-    //     res
-    // }
+    /// Creates the full URI for the HTTP request.
+    fn create_uri<'a>(
+        &self,
+        path: impl IntoIterator<Item = Cow<'a, str>>,
+    ) -> String {
+        let mut res = String::from(self.base_uri.as_str());
+        for item in path {
+            if !res.ends_with('/') && !item.starts_with('/') {
+                res.push('/');
+            }
+            res.push_str(&item);
+        }
+        res
+    }
 }
 
 /// # High-level commands
 ///
 impl NameshedClient {
+    pub async fn health(&self) -> Result<String, Error> {
+        // self.get_ok(once("api/v1/health")).await
+        self.get_text(once("api/v1/health")).await
+    }
+
     // pub async fn authorized(&self) -> Result<Success, Error> {
     //     self.get_ok(once("api/v1/authorized")).await
     // }

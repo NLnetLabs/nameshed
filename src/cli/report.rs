@@ -1,8 +1,10 @@
 //! Reporting client results.
 
-use std::{fmt, io};
 use std::io::{stderr, stdout};
+use std::{fmt, io};
+
 use serde::ser::{Serialize, SerializeStruct};
+
 use crate::api::status::Success;
 
 //------------ Report --------------------------------------------------------
@@ -20,7 +22,7 @@ impl Report {
     pub fn new(content: impl ReportContent + 'static) -> Self {
         Self {
             content: Box::new(content),
-            is_err: false
+            is_err: false,
         }
     }
 
@@ -32,8 +34,7 @@ impl Report {
         if self.is_err {
             let _ = self.content.write(format, &mut stdout().lock());
             1
-        }
-        else {
+        } else {
             let _ = self.content.write(format, &mut stderr().lock());
             0
         }
@@ -56,37 +57,36 @@ where
 {
     fn from(content: Result<T, E>) -> Self {
         match content {
-            Ok(content) => {
-                Self {
-                    content: Box::new(content),
-                    is_err: false,
-                }
-            }
-            Err(content) => {
-                Self {
-                    content: Box::new(ErrorReport(content)),
-                    is_err: true,
-                }
-            }
+            Ok(content) => Self {
+                content: Box::new(content),
+                is_err: false,
+            },
+            Err(content) => Self {
+                content: Box::new(ErrorReport(content)),
+                is_err: true,
+            },
         }
     }
 }
-
 
 //------------ ReportContent ------------------------------------------------
 
 pub trait ReportContent {
     fn write(
-        &self, format: ReportFormat, target: &mut dyn io::Write
+        &self,
+        format: ReportFormat,
+        target: &mut dyn io::Write,
     ) -> Result<(), io::Error>;
 }
 
 impl<T: Serialize + fmt::Display> ReportContent for T {
     fn write(
-        &self, format: ReportFormat, target: &mut dyn io::Write
+        &self,
+        format: ReportFormat,
+        target: &mut dyn io::Write,
     ) -> Result<(), io::Error> {
         match format {
-            ReportFormat::None => { Ok(()) }
+            ReportFormat::None => Ok(()),
             ReportFormat::Json => {
                 // The &mut here seems to be necessary to avoid a move into
                 // the function.
@@ -101,7 +101,6 @@ impl<T: Serialize + fmt::Display> ReportContent for T {
     }
 }
 
-
 //------------ OptContent ----------------------------------------------------
 
 struct OptContent<T>(Option<T>);
@@ -110,14 +109,15 @@ impl<T: fmt::Display> fmt::Display for OptContent<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match &self.0 {
             Some(content) => content.fmt(f),
-            None => Success.fmt(f)
+            None => Success.fmt(f),
         }
     }
 }
 
 impl<T: Serialize> Serialize for OptContent<T> {
     fn serialize<S: serde::Serializer>(
-        &self, serializer: S
+        &self,
+        serializer: S,
     ) -> Result<S::Ok, S::Error> {
         match &self.0 {
             Some(content) => content.serialize(serializer),
@@ -125,7 +125,6 @@ impl<T: Serialize> Serialize for OptContent<T> {
         }
     }
 }
-
 
 //------------ ErrorReport ---------------------------------------------------
 
@@ -139,17 +138,15 @@ impl<T: fmt::Display> fmt::Display for ErrorReport<T> {
 
 impl<T: fmt::Display> Serialize for ErrorReport<T> {
     fn serialize<S: serde::Serializer>(
-        &self, serializer: S
+        &self,
+        serializer: S,
     ) -> Result<S::Ok, S::Error> {
-        let mut serializer = serializer.serialize_struct(
-            "HttpClientError", 1
-        )?;
+        let mut serializer =
+            serializer.serialize_struct("HttpClientError", 1)?;
         serializer.serialize_field("error", &format_args!("{}", self.0))?;
         serializer.end()
     }
 }
-
-
 
 //------------ ReportFormat --------------------------------------------------
 
@@ -160,4 +157,3 @@ pub enum ReportFormat {
     Json,
     Text,
 }
-

@@ -8,6 +8,7 @@ pub mod cli;
 mod common;
 mod comms;
 pub mod config;
+mod error;
 mod http;
 pub mod log;
 pub mod manager;
