@@ -50,31 +50,6 @@ fn bad_request() -> Response<Body> {
 mod v1 {
     use super::*;
 
-    /// A macro to compress the if-else-chain into a more easily copyable and
-    /// readable chain of API mappings.
-    ///
-    /// The first argument must be the fallback else case when no condition matches.
-    /// The following arguments are a comma separated list of condition-expression-mappings:
-    /// ```ignore
-    /// m! {
-    ///     else_function_when_no_condition_matches(),
-    ///     condition1 => function_call(),
-    ///     condition2 => function_call2(),
-    /// }
-    /// ```
-    /// A trailing comma is allowed.
-    macro_rules! m {
-        {$($x:expr => $y:expr),*, _ => $else:expr $(,)?} => {
-            $(
-                if $x {
-                    $y
-                } else
-            )* {
-                $else
-            }
-        }
-    }
-
     /// Handle the API request
     ///
     /// The api_path parameter needs to be stripped of any API version prefixes and only contain
@@ -83,12 +58,12 @@ mod v1 {
         request: Request<Body>,
         api_path: &str,
     ) -> Response<Body> {
-        m! {
-            api_path.eq("health") => health(),
-            api_path.eq("login") => login(),
-            api_path.starts_with("users/") => users(),
-            api_path.starts_with("stuff/") => stuff(),
-            _ => bad_request()
+        match api_path {
+            p if p.eq("health") => health(),
+            p if p.eq("login") => login(),
+            p if p.starts_with("users/") => users(),
+            p if p.starts_with("stuff/") => stuff(),
+            _ => bad_request(),
         }
     }
 
