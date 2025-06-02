@@ -1,28 +1,16 @@
-use core::fmt;
 use core::future::ready;
 
 use std::any::Any;
-use std::collections::btree_map::Entry;
-use std::collections::{BTreeMap, HashMap, HashSet};
-use std::fmt::Display;
+use std::collections::HashMap;
 use std::fs::File;
-use std::net::{IpAddr, SocketAddr};
-use std::ops::{ControlFlow, Deref};
 use std::pin::Pin;
 use std::str::FromStr;
-use std::sync::atomic::Ordering;
-use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
 use std::sync::{Arc, Weak};
-use std::time::Duration;
 
 use arc_swap::ArcSwap;
-use async_trait::async_trait;
-use bytes::{BufMut, Bytes, BytesMut};
-use chrono::{DateTime, Utc};
+use bytes::BufMut;
 use domain::base::iana::{Class, Rcode};
-use domain::base::name::Label;
-use domain::base::wire::Composer;
-use domain::base::{Name, NameBuilder, Rtype, Serial};
+use domain::base::{Name, Rtype, Serial};
 use domain::net::server::buf::VecBufSource;
 use domain::net::server::dgram::{self, DgramServer};
 use domain::net::server::message::Request;
@@ -30,78 +18,41 @@ use domain::net::server::middleware::cookies::CookiesMiddlewareSvc;
 use domain::net::server::middleware::edns::EdnsMiddlewareSvc;
 use domain::net::server::middleware::mandatory::MandatoryMiddlewareSvc;
 use domain::net::server::middleware::notify::NotifyMiddlewareSvc;
-use domain::net::server::middleware::tsig::TsigMiddlewareSvc;
-use domain::net::server::middleware::xfr::XfrMiddlewareSvc;
-use domain::net::server::service::{CallResult, Service, ServiceError, ServiceResult};
+use domain::net::server::service::{Service, ServiceError, ServiceResult};
 use domain::net::server::stream::{self, StreamServer};
-use domain::net::server::util::{mk_error_response, service_fn};
+use domain::net::server::util::service_fn;
 use domain::net::server::ConnectionConfig;
 use domain::rdata::ZoneRecordData;
-use domain::tsig::KeyStore;
-use domain::tsig::{Algorithm, Key, KeyName};
-use domain::utils::base64;
 use domain::zonefile::inplace;
-use domain::zonetree::error::OutOfZone;
 use domain::zonetree::{
-    Answer, InMemoryZoneDiff, ReadableZone, Rrset, SharedRrset, StoredName, WalkOp, WritableZone,
-    WritableZoneNode, Zone, ZoneBuilder, ZoneStore, ZoneTree,
+    InMemoryZoneDiff, ReadableZone, StoredName, WritableZone,
+    WritableZoneNode, Zone, ZoneStore, ZoneTree,
 };
-use futures::future::{select, Either};
-use futures::{pin_mut, Future};
-use indoc::formatdoc;
-use log::warn;
-use log::{debug, error, info, trace};
-use non_empty_vec::NonEmpty;
-use serde::{Deserialize, Serialize};
-use serde_with::{serde_as, DeserializeFromStr, DisplayFromStr};
+use futures::Future;
+use log::{debug, error, info};
 use tokio::net::UdpSocket;
-use tokio::sync::mpsc::{Receiver, Sender};
-use tokio::sync::{Mutex, RwLock};
-use tokio::time::{sleep, Instant};
+use tokio::sync::mpsc::Sender;
+use tokio::time::Instant;
 
 #[cfg(feature = "tls")]
 use tokio_rustls::rustls::ServerConfig;
 
-use crate::common::frim::FrimMap;
 use crate::common::light_weight_zone::LightWeightZone;
-use crate::common::net::{
-    ListenAddr, StandardTcpListenerFactory, StandardTcpStream, TcpListener, TcpListenerFactory,
-    TcpStreamWrapper,
-};
-use crate::common::status_reporter::{
-    sr_log, AnyStatusReporter, Chainable, Named, UnitStatusReporter,
-};
+use crate::common::net::ListenAddr;
 use crate::common::tsig::{parse_key_strings, TsigKeyStore};
-use crate::common::unit::UnitActivity;
 use crate::common::xfr::parse_xfr_acl;
-use crate::comms::{
-    AnyDirectUpdate, DirectLink, DirectUpdate, Gate, GateMetrics, GateStatus, GraphStatus,
-    Terminated,
-};
-use crate::http::PercentDecodedPath;
-use crate::http::ProcessRequest;
-use crate::log::ExitError;
-use crate::manager::{Component, WaitPoint};
-use crate::metrics::{self, util::append_per_router_metric, Metric, MetricType, MetricUnit};
-use crate::payload::Update;
-use crate::tokio::TokioTaskMetrics;
-use crate::tracing::Tracer;
-use crate::units::Unit;
+use crate::comms::Terminated;
+use crate::new::{Center, CenterEvent};
 use crate::zonemaintenance::maintainer::{
-    Config, DefaultConnFactory, TypedZone, ZoneLookup, ZoneMaintainer,
+    Config, DefaultConnFactory, TypedZone, ZoneMaintainer,
 };
 use crate::zonemaintenance::types::{
-    CompatibilityMode, NotifyConfig, TransportStrategy, XfrConfig, XfrStrategy, ZoneConfig,
-    ZoneMaintainerKeyStore, ZoneRefreshCause, ZoneRefreshStatus, ZoneReportDetails,
+    CompatibilityMode, NotifyConfig, TransportStrategy, XfrConfig,
+    XfrStrategy, ZoneConfig,
 };
 
-#[serde_as]
-#[derive(Clone, Debug, Deserialize)]
-pub struct ZoneLoaderUnit {
-    /// The relative path at which we should listen for HTTP query API requests
-    #[serde(default = "ZoneLoaderUnit::default_http_api_path")]
-    http_api_path: Arc<String>,
-
+#[derive(Clone, Debug)]
+pub struct ZoneLoaderConfig {
     /// Addresses and protocols to listen on.
     pub listen: Vec<ListenAddr>,
 
@@ -109,31 +60,81 @@ pub struct ZoneLoaderUnit {
     pub zones: Arc<HashMap<String, String>>,
 
     /// XFR in per zone: Allow NOTIFY from, and when with a port also request XFR from.
-    #[serde(default)]
     pub xfr_in: Arc<HashMap<String, String>>,
 
     /// TSIG keys.
-    #[serde(default)]
     pub tsig_keys: HashMap<String, String>,
 }
 
-impl ZoneLoaderUnit {
-    pub async fn run(
-        self,
-        mut component: Component,
-        gate: Gate,
-        mut waitpoint: WaitPoint,
-    ) -> Result<(), Terminated> {
-        let unit_name = component.name().clone();
+pub struct ZoneLoader {
+    center: Weak<Center>,
+    config: ZoneLoaderConfig,
+    tsig_key_store: TsigKeyStore,
+    xfr_in: Arc<ZoneMaintainer<TsigKeyStore, DefaultConnFactory>>,
+}
 
-        // Setup our metrics
-        let metrics = Arc::new(ZoneLoaderMetrics::new(&gate));
-        component.register_metrics(metrics.clone());
+impl ZoneLoader {
+    const UNIT_NAME: &str = "zone-loader";
 
-        // Setup our status reporting
-        let status_reporter = Arc::new(ZoneLoaderStatusReporter::new(&unit_name, metrics.clone()));
+    pub fn new(
+        center: Weak<Center>,
+        config: ZoneLoaderConfig,
+        tsig_key_store: TsigKeyStore,
+        unsigned_zones: Arc<ArcSwap<ZoneTree>>,
+    ) -> Result<Self, ()> {
+        for (key_name, opt_alg_and_hex_bytes) in config.tsig_keys.iter() {
+            let key = parse_key_strings(key_name, opt_alg_and_hex_bytes)
+                .map_err(|err| {
+                    error!(
+                        "[{}]: Failed to parse TSIG key '{key_name}': {err}",
+                        Self::UNIT_NAME,
+                    );
+                    ()
+                })?;
+            tsig_key_store.insert(key);
+        }
 
-        let (zone_updated_tx, zone_updated_rx) = tokio::sync::mpsc::channel(10);
+        let maintainer_config =
+            Config::<_, DefaultConnFactory>::new(tsig_key_store.clone());
+        let zone_maintainer = Arc::new(
+            ZoneMaintainer::new_with_config(maintainer_config)
+                .with_zone_tree(unsigned_zones),
+        );
+
+        Ok(Self {
+            center,
+            config,
+            tsig_key_store,
+            xfr_in: zone_maintainer,
+        })
+    }
+
+    async fn run(self) -> Result<(), crate::comms::Terminated> {
+        let (zone_updated_tx, mut zone_updated_rx) =
+            tokio::sync::mpsc::channel(10);
+
+        // Define a server to handle NOTIFY messages and notify the
+        // ZoneMaintainer on receipt, thereby triggering it to fetch the
+        // latest version of the updated zone.
+        let svc = service_fn(my_noop_service, ());
+        let svc = NotifyMiddlewareSvc::new(svc, self.xfr_in.clone());
+        let svc = CookiesMiddlewareSvc::with_random_secret(svc);
+        let svc = EdnsMiddlewareSvc::new(svc);
+        let svc = MandatoryMiddlewareSvc::new(svc);
+        let svc = Arc::new(svc);
+
+        for addr in self.config.listen.iter().cloned() {
+            info!("[{}]: Binding on {:?}", Self::UNIT_NAME, addr);
+            let svc = svc.clone();
+            tokio::spawn(async move {
+                if let Err(err) = Self::server(addr, svc).await {
+                    error!("[{}]: {}", Self::UNIT_NAME, err);
+                }
+            });
+        }
+
+        let zone_maintainer_clone = self.xfr_in.clone();
+        tokio::spawn(async move { zone_maintainer_clone.run().await });
 
         let mut notify_cfg = NotifyConfig { tsig_key: None };
 
@@ -144,49 +145,22 @@ impl ZoneLoaderUnit {
             tsig_key: None,
         };
 
-        for (key_name, opt_alg_and_hex_bytes) in self.tsig_keys.iter() {
-            let key = parse_key_strings(key_name, opt_alg_and_hex_bytes).map_err(|err| {
-                error!(
-                    "[{}]: Failed to parse TSIG key '{key_name}': {err}",
-                    component.name()
-                );
-                Terminated
-            })?;
-            component.tsig_key_store().insert(key);
-        }
-
-        let maintainer_config =
-            Config::<_, DefaultConnFactory>::new(component.tsig_key_store().clone());
-        let zone_maintainer = Arc::new(
-            ZoneMaintainer::new_with_config(maintainer_config)
-                .with_zone_tree(component.unsigned_zones().clone()),
-        );
-
-        // Setup REST API endpoint
-        let http_processor = Arc::new(ZoneListApi::new(
-            self.http_api_path.clone(),
-            self.zones.clone(),
-            self.xfr_in.clone(),
-            zone_maintainer.clone(),
-        ));
-        component.register_http_resource(http_processor.clone(), &self.http_api_path);
-
         // Load primary zones.
         // Create secondary zones.
-        for (zone_name, zone_path) in self.zones.iter() {
+        for (zone_name, zone_path) in self.config.zones.iter() {
             let mut zone = if !zone_path.is_empty() {
                 let before = Instant::now();
 
                 // Load the specified zone file.
                 info!(
                     "[{}]: Loading primary zone '{zone_name}' from '{zone_path}'..",
-                    component.name()
+                    Self::UNIT_NAME,
                 );
                 let mut zone_file = File::open(zone_path)
                     .inspect_err(|err| {
                         error!(
                             "[{}]: Error: Failed to open zone file '{zone_path}': {err}",
-                            component.name()
+                            Self::UNIT_NAME,
                         )
                     })
                     .map_err(|_| Terminated)?;
@@ -200,17 +174,19 @@ impl ZoneLoaderUnit {
                     .inspect_err(|err| {
                         error!(
                             "[{}]: Error: Failed to read metadata for file '{zone_path}': {err}",
-                            component.name()
+                            Self::UNIT_NAME
                         )
                     })
                     .map_err(|_| Terminated)?
                     .len();
-                let mut buf = inplace::Zonefile::with_capacity(zone_file_len as usize).writer();
+                let mut buf =
+                    inplace::Zonefile::with_capacity(zone_file_len as usize)
+                        .writer();
                 std::io::copy(&mut zone_file, &mut buf)
                     .inspect_err(|err| {
                         error!(
                             "[{}]: Error: Failed to read data from file '{zone_path}': {err}",
-                            component.name()
+                            Self::UNIT_NAME,
                         )
                     })
                     .map_err(|_| Terminated)?;
@@ -219,13 +195,16 @@ impl ZoneLoaderUnit {
                 let res = Zone::try_from(reader);
                 let Ok(zone) = res else {
                     let errors = res.unwrap_err();
-                    let mut msg = format!("Failed to parse zone: {} errors", errors.len());
+                    let mut msg = format!(
+                        "Failed to parse zone: {} errors",
+                        errors.len()
+                    );
                     for (name, err) in errors.into_iter() {
                         msg.push_str(&format!("  {name}: {err}\n"));
                     }
                     error!(
                         "[{}]: Error parsing zone '{zone_name}': {}",
-                        component.name(),
+                        Self::UNIT_NAME,
                         msg
                     );
                     return Err(Terminated);
@@ -236,7 +215,10 @@ impl ZoneLoaderUnit {
                     before.elapsed().as_secs()
                 );
 
-                zone_updated_tx.send((zone.apex_name().clone(), Serial::now())).await.unwrap();
+                zone_updated_tx
+                    .send((zone.apex_name().clone(), Serial::now()))
+                    .await
+                    .unwrap();
 
                 zone
             } else {
@@ -244,34 +226,34 @@ impl ZoneLoaderUnit {
                     .inspect_err(|err| {
                         error!(
                             "[{}]: Error: Invalid zone name '{zone_name}': {err}",
-                            component.name()
+                            Self::UNIT_NAME,
                         )
                     })
                     .map_err(|_| Terminated)?;
                 info!(
                     "[{}]: Adding secondary zone '{zone_name}'",
-                    component.name()
+                    Self::UNIT_NAME
                 );
                 Zone::new(LightWeightZone::new(apex_name, true))
             };
 
             let mut zone_cfg = ZoneConfig::new();
 
-            if let Some(xfr_in) = self.xfr_in.get(zone_name) {
+            if let Some(xfr_in) = self.config.xfr_in.get(zone_name) {
                 let src = parse_xfr_acl(
                     xfr_in,
                     &mut xfr_cfg,
                     &mut notify_cfg,
-                    component.tsig_key_store(),
+                    &self.tsig_key_store,
                 )
                 .map_err(|_| {
-                    error!("[{}]: Error parsing XFR ACL", component.name());
+                    error!("[{}]: Error parsing XFR ACL", Self::UNIT_NAME);
                     Terminated
                 })?;
 
                 info!(
                     "[{}]: Allowing NOTIFY from {} for zone '{zone_name}'",
-                    component.name(),
+                    Self::UNIT_NAME,
                     src.ip()
                 );
                 zone_cfg
@@ -280,77 +262,43 @@ impl ZoneLoaderUnit {
                 if src.port() != 0 {
                     info!(
                         "[{}]: Adding XFR primary {src} for zone '{zone_name}'",
-                        component.name()
+                        Self::UNIT_NAME,
                     );
                     zone_cfg.request_xfr_from.add_dst(src, xfr_cfg.clone());
                 }
             }
 
-            let notify_on_write_zone = NotifyOnWriteZone::new(zone, zone_updated_tx.clone());
+            let notify_on_write_zone =
+                NotifyOnWriteZone::new(zone, zone_updated_tx.clone());
             zone = Zone::new(notify_on_write_zone);
 
             let zone = TypedZone::new(zone, zone_cfg);
-            zone_maintainer.insert_zone(zone).await.unwrap();
+            self.xfr_in.insert_zone(zone).await;
         }
 
-        // Define a server to handle NOTIFY messages and notify the
-        // ZoneMaintainer on receipt, thereby triggering it to fetch the
-        // latest version of the updated zone.
-        let svc = service_fn(my_noop_service, ());
-        let svc = NotifyMiddlewareSvc::new(svc, zone_maintainer.clone());
-        let svc = CookiesMiddlewareSvc::with_random_secret(svc);
-        let svc = EdnsMiddlewareSvc::new(svc);
-        let svc = MandatoryMiddlewareSvc::new(svc);
-        let svc = Arc::new(svc);
-
-        for addr in self.listen.iter().cloned() {
-            info!("[{}]: Binding on {:?}", component.name(), addr);
-            let svc = svc.clone();
-            let component_name = component.name().clone();
-            tokio::spawn(async move {
-                if let Err(err) = Self::server(addr, svc).await {
-                    error!("[{}]: {}", component_name, err);
-                }
-            });
+        while let Some((zone_name, zone_serial)) =
+            zone_updated_rx.recv().await
+        {
+            info!(
+                "[{}]: Received a new copy of zone '{zone_name}' at serial {zone_serial}",
+                Self::UNIT_NAME,
+            );
+            let Some(center) = self.center.upgrade() else {
+                break;
+            };
+            center.process(CenterEvent::ZoneLoaded {
+                zone_name,
+                zone_serial,
+            })
         }
 
-        // Wait for other components to be, and signal to other components
-        // that we are, ready to start. All units and targets start together,
-        // otherwise data passed from one component to another may be lost if
-        // the receiving component is not yet ready to accept it.
-        gate.process_until(waitpoint.ready()).await?;
-
-        let zone_maintainer_clone = zone_maintainer.clone();
-        tokio::spawn(async move { zone_maintainer_clone.run().await });
-
-        // Signal again once we are out of the process_until() so that anyone
-        // waiting to send important gate status updates won't send them while
-        // we are in process_until() which will just eat them without handling
-        // them.
-        waitpoint.running().await;
-
-        let component = Arc::new(RwLock::new(component));
-
-        ZoneLoader::new(
-            component,
-            self.http_api_path,
-            gate,
-            metrics,
-            status_reporter,
-            http_processor,
-            zone_maintainer,
-        )
-        .run(zone_updated_rx)
-        .await?;
-
-        Ok(())
+        Err(Terminated)
     }
 
-    fn default_http_api_path() -> Arc<String> {
-        Arc::new("/zone-loader/".to_string())
-    }
-
-    async fn server<Svc>(addr: ListenAddr, svc: Svc) -> Result<(), std::io::Error>
+    async fn server<Svc>(
+        addr: ListenAddr,
+        svc: Svc,
+    ) -> Result<(), std::io::Error>
     where
         Svc: Service<Vec<u8>, ()> + Clone,
     {
@@ -390,7 +338,10 @@ impl ZoneLoaderUnit {
     }
 }
 
-fn my_noop_service(_request: Request<Vec<u8>, ()>, _meta: ()) -> ServiceResult<Vec<u8>> {
+fn my_noop_service(
+    _request: Request<Vec<u8>, ()>,
+    _meta: (),
+) -> ServiceResult<Vec<u8>> {
     Err(ServiceError::Refused)
 }
 
@@ -426,7 +377,8 @@ impl ZoneStore for NotifyOnWriteZone {
 
     fn write(
         self: Arc<Self>,
-    ) -> Pin<Box<dyn Future<Output = Box<dyn WritableZone>> + Send + Sync>> {
+    ) -> Pin<Box<dyn Future<Output = Box<dyn WritableZone>> + Send + Sync>>
+    {
         let fut = self.store.clone().write();
         Box::pin(async move {
             let writable_zone = fut.await;
@@ -455,7 +407,15 @@ impl WritableZone for NotifyOnCommitZone {
         &self,
         create_diff: bool,
     ) -> Pin<
-        Box<dyn Future<Output = Result<Box<dyn WritableZoneNode>, std::io::Error>> + Send + Sync>,
+        Box<
+            dyn Future<
+                    Output = Result<
+                        Box<dyn WritableZoneNode>,
+                        std::io::Error,
+                    >,
+                > + Send
+                + Sync,
+        >,
     > {
         self.writable_zone.open(create_diff)
     }
@@ -463,8 +423,14 @@ impl WritableZone for NotifyOnCommitZone {
     fn commit(
         &mut self,
         bump_soa_serial: bool,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<InMemoryZoneDiff>, std::io::Error>> + Send + Sync>>
-    {
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<Option<InMemoryZoneDiff>, std::io::Error>,
+                > + Send
+                + Sync,
+        >,
+    > {
         let fut = self.writable_zone.commit(bump_soa_serial);
         let store = self.store.clone();
         let sender = self.sender.clone();
@@ -497,473 +463,5 @@ impl WritableZone for NotifyOnCommitZone {
             }
             res
         })
-    }
-}
-
-//------------ ZoneLoader ----------------------------------------------------
-
-struct ZoneLoader {
-    component: Arc<RwLock<Component>>,
-    #[allow(dead_code)]
-    http_api_path: Arc<String>,
-    gate: Gate,
-    metrics: Arc<ZoneLoaderMetrics>,
-    status_reporter: Arc<ZoneLoaderStatusReporter>,
-    http_processor: Arc<ZoneListApi>,
-    xfr_in: Arc<ZoneMaintainer<TsigKeyStore, DefaultConnFactory>>,
-}
-
-impl ZoneLoader {
-    #[allow(clippy::too_many_arguments)]
-    fn new(
-        component: Arc<RwLock<Component>>,
-        http_api_path: Arc<String>,
-        gate: Gate,
-        metrics: Arc<ZoneLoaderMetrics>,
-        status_reporter: Arc<ZoneLoaderStatusReporter>,
-        http_processor: Arc<ZoneListApi>,
-        xfr_in: Arc<ZoneMaintainer<TsigKeyStore, DefaultConnFactory>>,
-    ) -> Self {
-        Self {
-            component,
-            http_api_path,
-            gate,
-            metrics,
-            status_reporter,
-            http_processor,
-            xfr_in,
-        }
-    }
-
-    async fn run(
-        self,
-        mut zone_updated_rx: Receiver<(StoredName, Serial)>,
-    ) -> Result<(), crate::comms::Terminated> {
-        let status_reporter = self.status_reporter.clone();
-
-        let arc_self = Arc::new(self);
-
-        loop {
-            //     status_reporter.listener_listening(&listen_addr.to_string());
-
-            match arc_self.clone().process_until(zone_updated_rx.recv()).await {
-                ControlFlow::Continue(Some((zone_name, zone_serial))) => {
-                    // status_reporter
-                    //     .listener_connection_accepted(client_addr);
-
-                    info!(
-                        "[{}]: Received a new copy of zone '{zone_name}' at serial {zone_serial}",
-                        arc_self.component.read().await.name(),
-                    );
-
-                    arc_self
-                        .gate
-                        .update_data(Update::UnsignedZoneUpdatedEvent {
-                            zone_name,
-                            zone_serial,
-                        })
-                        .await;
-                }
-                ControlFlow::Continue(None) | ControlFlow::Break(Terminated) => {
-                    return Err(Terminated)
-                }
-            }
-        }
-    }
-
-    async fn process_until<T, U>(
-        self: Arc<Self>,
-        until_fut: T,
-    ) -> ControlFlow<Terminated, Option<U>>
-    where
-        T: Future<Output = Option<U>>,
-    {
-        let mut until_fut = Box::pin(until_fut);
-
-        loop {
-            let process_fut = self.gate.process();
-            pin_mut!(process_fut);
-
-            match select(process_fut, until_fut).await {
-                Either::Left((Err(Terminated), _)) => {
-                    self.status_reporter.terminated();
-                    return ControlFlow::Break(Terminated);
-                }
-                Either::Left((Ok(status), next_fut)) => {
-                    self.status_reporter.gate_status_announced(&status);
-                    match status {
-                        GateStatus::Reconfiguring {
-                            new_config:
-                                Unit::ZoneLoader(ZoneLoaderUnit {
-                                    http_api_path,
-                                    listen,
-                                    zones,
-                                    xfr_in,
-                                    tsig_keys,
-                                }),
-                        } => {
-                            // Runtime reconfiguration of this unit has
-                            // been requested. New connections will be
-                            // handled using the new configuration,
-                            // existing connections handled by
-                            // router_handler() tasks will receive their
-                            // own copy of this Reconfiguring status
-                            // update and can react to it accordingly.
-                            // let rebind = self.listen != new_listen;
-
-                            // self.listen = new_listen;
-                            // self.filter_name.store(new_filter_name.into());
-                            // self.router_id_template
-                            //     .store(new_router_id_template.into());
-                            // self.tracing_mode.store(new_tracing_mode.into());
-
-                            // if rebind {
-                            //     // Trigger re-binding to the new listen port.
-                            //     let err = std::io::ErrorKind::Other;
-                            //     return ControlFlow::Continue(
-                            //         Err(err.into()),
-                            //     );
-                            // }
-                        }
-
-                        GateStatus::ReportLinks { report } => {
-                            report.declare_source();
-                            report.set_graph_status(self.metrics.clone());
-                        }
-
-                        GateStatus::ApplicationCommand { cmd } => {
-                            info!(
-                                "[{}] Received command: {cmd:?}",
-                                self.component.read().await.name()
-                            );
-                        }
-
-                        _ => { /* Nothing to do */ }
-                    }
-
-                    until_fut = next_fut;
-                }
-                Either::Right((updated_zone_name, _)) => {
-                    return ControlFlow::Continue(updated_zone_name);
-                }
-            }
-        }
-    }
-}
-
-impl std::fmt::Debug for ZoneLoader {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ZoneLoader").finish()
-    }
-}
-
-#[async_trait]
-impl DirectUpdate for ZoneLoader {
-    async fn direct_update(&self, event: Update) {
-        info!(
-            "[{}]: Received event: {event:?}",
-            self.component.read().await.name()
-        );
-    }
-}
-
-impl AnyDirectUpdate for ZoneLoader {}
-
-//------------ ZoneLoaderMetrics ---------------------------------------------
-
-#[derive(Debug, Default)]
-pub struct ZoneLoaderMetrics {
-    gate: Option<Arc<GateMetrics>>, // optional to make testing easier
-}
-
-impl GraphStatus for ZoneLoaderMetrics {
-    fn status_text(&self) -> String {
-        "TODO".to_string()
-    }
-
-    fn okay(&self) -> Option<bool> {
-        Some(false)
-    }
-}
-
-impl ZoneLoaderMetrics {
-    // const LISTENER_BOUND_COUNT_METRIC: Metric = Metric::new(
-    //     "bmp_tcp_in_listener_bound_count",
-    //     "the number of times the TCP listen port was bound to",
-    //     MetricType::Counter,
-    //     MetricUnit::Total,
-    // );
-}
-
-impl ZoneLoaderMetrics {
-    pub fn new(gate: &Gate) -> Self {
-        Self {
-            gate: Some(gate.metrics()),
-        }
-    }
-}
-
-impl metrics::Source for ZoneLoaderMetrics {
-    fn append(&self, unit_name: &str, target: &mut metrics::Target) {
-        if let Some(gate) = &self.gate {
-            gate.append(unit_name, target);
-        }
-
-        // target.append_simple(
-        //     &Self::LISTENER_BOUND_COUNT_METRIC,
-        //     Some(unit_name),
-        //     self.listener_bound_count.load(SeqCst),
-        // );
-    }
-}
-
-//------------ ZoneLoaderStatusReporter --------------------------------------
-
-#[derive(Debug, Default)]
-pub struct ZoneLoaderStatusReporter {
-    name: String,
-    metrics: Arc<ZoneLoaderMetrics>,
-}
-
-impl ZoneLoaderStatusReporter {
-    pub fn new<T: Display>(name: T, metrics: Arc<ZoneLoaderMetrics>) -> Self {
-        Self {
-            name: format!("{}", name),
-            metrics,
-        }
-    }
-
-    pub fn _typed_metrics(&self) -> Arc<ZoneLoaderMetrics> {
-        self.metrics.clone()
-    }
-}
-
-impl UnitStatusReporter for ZoneLoaderStatusReporter {}
-
-impl AnyStatusReporter for ZoneLoaderStatusReporter {
-    fn metrics(&self) -> Option<Arc<dyn crate::metrics::Source>> {
-        Some(self.metrics.clone())
-    }
-}
-
-impl Chainable for ZoneLoaderStatusReporter {
-    fn add_child<T: Display>(&self, child_name: T) -> Self {
-        Self::new(self.link_names(child_name), self.metrics.clone())
-    }
-}
-
-impl Named for ZoneLoaderStatusReporter {
-    fn name(&self) -> &str {
-        &self.name
-    }
-}
-
-//------------ ZoneListApi ---------------------------------------------------
-
-struct ZoneListApi {
-    http_api_path: Arc<String>,
-    zones: Arc<HashMap<String, String>>,
-    xfr_in: Arc<HashMap<String, String>>,
-    zone_maintainer: Arc<ZoneMaintainer<TsigKeyStore, DefaultConnFactory>>,
-}
-
-impl ZoneListApi {
-    fn new(
-        http_api_path: Arc<String>,
-        zones: Arc<HashMap<String, String>>,
-        xfr_in: Arc<HashMap<String, String>>,
-        zone_maintainer: Arc<ZoneMaintainer<TsigKeyStore, DefaultConnFactory>>,
-    ) -> Self {
-        Self {
-            http_api_path,
-            zones,
-            xfr_in,
-            zone_maintainer,
-        }
-    }
-}
-
-#[async_trait]
-impl ProcessRequest for ZoneListApi {
-    async fn process_request(
-        &self,
-        request: hyper::Request<hyper::Body>,
-    ) -> ControlFlow<hyper::Request<hyper::Body>, hyper::Response<hyper::Body>> {
-        let req_path = request.uri().decoded_path();
-        if request.method() == hyper::Method::GET {
-            if req_path == *self.http_api_path {
-                ControlFlow::Continue(self.build_response().await)
-            } else if req_path == format!("{}status.json", *self.http_api_path) {
-                ControlFlow::Continue(self.build_json_response().await)
-            } else {
-                ControlFlow::Break(request)
-            }
-        } else {
-            ControlFlow::Break(request)
-        }
-    }
-}
-
-#[derive(Default, Serialize)]
-struct ZoneSecondaryStatus {
-    status: ZoneRefreshStatus,
-    last_refresh_checked_secs_ago: Option<u64>,
-    last_refresh_checked_serial: Option<Serial>,
-    last_refresh_succeeded_secs_ago: Option<u64>,
-    last_refresh_succeeded_serial: Option<Serial>,
-    next_refresh_secs_from_now: Option<u64>,
-    next_refresh_cause: Option<ZoneRefreshCause>,
-}
-
-#[derive(Serialize)]
-enum ZoneRole {
-    Primary,
-    Secondary(ZoneSecondaryStatus),
-}
-
-#[derive(Serialize)]
-struct ZoneReport {
-    role: ZoneRole,
-}
-
-impl ZoneListApi {
-    pub async fn build_response(&self) -> hyper::Response<hyper::Body> {
-        let mut response_body = self.build_response_header();
-
-        self.build_response_body(&mut response_body).await;
-
-        self.build_response_footer(&mut response_body);
-
-        hyper::Response::builder()
-            .header("Content-Type", "text/html")
-            .body(hyper::Body::from(response_body))
-            .unwrap()
-    }
-
-    fn build_response_header(&self) -> String {
-        formatdoc! {
-            r#"
-            <!DOCTYPE html>
-            <html lang="en">
-              <head>
-                  <meta charset="UTF-8">
-              </head>
-              <body>
-                <pre>Showing {num_zones} monitored zones:
-            "#,            
-            num_zones = self.zones.len()
-        }
-    }
-
-    async fn build_response_body(&self, response_body: &mut String) {
-        let num_zones = self.zones.len();
-        response_body.push_str(&format!("<pre>Showing {num_zones} monitored zones:"));
-        for zone_name in self.zones.keys() {
-            if let Ok(zone_name) = Name::from_str(zone_name) {
-                if let Ok(report) = self
-                    .zone_maintainer
-                    .zone_status(&zone_name, Class::IN)
-                    .await
-                {
-                    response_body.push_str(&format!("\n{report}"));
-                }
-            }
-            if let Some(xfr_in) = self.xfr_in.get(zone_name) {
-                response_body.push_str(&format!("        source: {xfr_in}"));
-            }
-        }
-        response_body.push_str("</pre>");
-    }
-
-    fn build_response_footer(&self, response_body: &mut String) {
-        response_body.push_str("  </body>\n");
-        response_body.push_str("</html>\n");
-    }
-
-    pub async fn build_json_response(&self) -> hyper::Response<hyper::Body> {
-        let mut status = HashMap::new();
-        let now = Instant::now();
-
-        // for zone in zones.iter_zones() {
-        for zone_name in self.zones.keys() {
-            if let Ok(zone_name) = Name::from_str(zone_name) {
-                if let Ok(report) = self
-                    .zone_maintainer
-                    // .zone_status(zone.apex_name(), Class::IN)
-                    .zone_status(&zone_name, Class::IN)
-                    .await
-                {
-                    let role = match report.details() {
-                        ZoneReportDetails::Primary => ZoneRole::Primary,
-                        ZoneReportDetails::PendingSecondary(zone_refresh_state)
-                        | ZoneReportDetails::Secondary(zone_refresh_state) => {
-                            let status = zone_refresh_state.status();
-
-                            let last_refresh_succeeded_secs_ago = zone_refresh_state
-                                .metrics()
-                                .last_refreshed_at
-                                .map(|earlier| {
-                                    now.checked_duration_since(earlier).map(|d| d.as_secs())
-                                })
-                                .flatten();
-                            let last_refresh_succeeded_serial =
-                                zone_refresh_state.metrics().last_refresh_succeeded_serial;
-
-                            let last_refresh_checked_serial =
-                                zone_refresh_state.metrics().last_soa_serial_check_serial;
-                            let last_refresh_checked_secs_ago = zone_refresh_state
-                                .metrics()
-                                .last_soa_serial_check_succeeded_at
-                                .map(|earlier| {
-                                    now.checked_duration_since(earlier).map(|d| d.as_secs())
-                                })
-                                .flatten();
-
-                            if let Some((next_refresh_secs_from_now, next_refresh_cause)) = report
-                                .timers()
-                                .iter()
-                                .find(|zri| &zri.zone_id == report.zone_id())
-                                .map(|zri| {
-                                    let secs_from_now = zri
-                                        .end_instant
-                                        .checked_duration_since(now)
-                                        .map(|d| d.as_secs());
-                                    (secs_from_now, Some(zri.cause))
-                                })
-                            {
-                                ZoneRole::Secondary(ZoneSecondaryStatus {
-                                    status,
-                                    next_refresh_secs_from_now,
-                                    next_refresh_cause,
-                                    last_refresh_checked_secs_ago,
-                                    last_refresh_checked_serial,
-                                    last_refresh_succeeded_secs_ago,
-                                    last_refresh_succeeded_serial,
-                                })
-                            } else {
-                                ZoneRole::Secondary(ZoneSecondaryStatus {
-                                    status,
-                                    next_refresh_secs_from_now: None,
-                                    next_refresh_cause: None,
-                                    last_refresh_checked_secs_ago,
-                                    last_refresh_checked_serial,
-                                    last_refresh_succeeded_secs_ago,
-                                    last_refresh_succeeded_serial,
-                                })
-                            }
-                        }
-                    };
-                    status.insert(zone_name, ZoneReport { role });
-                }
-            }
-        }
-
-        let json = serde_json::to_string(&status).unwrap();
-
-        hyper::Response::builder()
-            .header("Content-Type", "application/json")
-            .header("Access-Control-Allow-Origin", "*")
-            .body(hyper::Body::from(json))
-            .unwrap()
     }
 }

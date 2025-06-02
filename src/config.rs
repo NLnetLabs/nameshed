@@ -40,12 +40,6 @@ const ARG_CONFIG: &str = "config";
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    /// Location of the .roto script containing all user defined filters.
-    pub roto_script: Option<PathBuf>,
-
-    /// The set of configured units.
-    pub units: UnitSet,
-
     /// The set of configured targets.
     pub targets: TargetSet,
 
@@ -246,7 +240,8 @@ impl<T> Marked<T> {
 
     /// Formats the mark for displaying.
     pub fn format_mark(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let source = self.source.as_ref().and_then(|source| source.path.as_ref());
+        let source =
+            self.source.as_ref().and_then(|source| source.path.as_ref());
         match (source, self.pos) {
             (Some(source), Some(pos)) => {
                 write!(f, "{}:{}:{}", source.display(), pos.line, pos.col)
@@ -367,14 +362,15 @@ impl ConfigFile {
         // this expansion capability to give at least some verification that
         // it is not obviously broken, but it's not enough.
         let config_str = String::from_utf8_lossy(&bytes);
-        let mut toml: Value = if let Ok(toml) = toml::de::from_str(&config_str) {
-            toml
-        } else {
-            return Err(io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "Cannot parse config file",
-            ));
-        };
+        let mut toml: Value =
+            if let Ok(toml) = toml::de::from_str(&config_str) {
+                toml
+            } else {
+                return Err(io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "Cannot parse config file",
+                ));
+            };
         let mut source_remappings = None;
 
         if let Some(Value::Table(units)) = toml.get_mut(CFG_UNITS) {
@@ -430,7 +426,9 @@ impl ConfigFile {
         LineCol { line, col }
     }
 
-    fn expand_shorthand_vribs(units: &mut toml::Table) -> HashMap<String, String> {
+    fn expand_shorthand_vribs(
+        units: &mut toml::Table,
+    ) -> HashMap<String, String> {
         let mut extra_units = HashMap::<String, Value>::new();
         let mut source_remappings = HashMap::<String, String>::new();
 
@@ -441,9 +439,11 @@ impl ConfigFile {
                 #[allow(clippy::collapsible_if)]
                 if unit_type == Some(&Value::String("rib".to_string())) {
                     if Option::is_none(&rib_type)
-                        || rib_type == Some(&Value::String("Physical".to_string()))
+                        || rib_type
+                            == Some(&Value::String("Physical".to_string()))
                     {
-                        if let Some(Value::Array(filter_names)) = unit_table.remove("filter_names")
+                        if let Some(Value::Array(filter_names)) =
+                            unit_table.remove("filter_names")
                         {
                             if filter_names.len() > 1 {
                                 // This is a shorthand definition of a physical RIB with one or more virtual RIBs.
@@ -486,16 +486,25 @@ impl ConfigFile {
                                 //     [unit.shorthand_unit-vRIB-1.rib_type] # new
                                 //     GeneratedVirtual = 1
                                 let mut source = unit_name.clone();
-                                for (n, filter_name) in filter_names[1..].iter().enumerate() {
-                                    let mut new_unit_table = unit_table.clone();
-                                    let new_unit_name = format!("{unit_name}-vRIB-{n}");
+                                for (n, filter_name) in
+                                    filter_names[1..].iter().enumerate()
+                                {
+                                    let mut new_unit_table =
+                                        unit_table.clone();
+                                    let new_unit_name =
+                                        format!("{unit_name}-vRIB-{n}");
                                     new_unit_table.insert(
                                         "sources".to_string(),
-                                        Value::Array(vec![Value::String(source.clone())]),
+                                        Value::Array(vec![Value::String(
+                                            source.clone(),
+                                        )]),
                                     );
-                                    new_unit_table
-                                        .insert("filter_name".to_string(), filter_name.clone());
-                                    let mut rib_type_table = toml::map::Map::new();
+                                    new_unit_table.insert(
+                                        "filter_name".to_string(),
+                                        filter_name.clone(),
+                                    );
+                                    let mut rib_type_table =
+                                        toml::map::Map::new();
                                     rib_type_table.insert(
                                         "GeneratedVirtual".to_string(),
                                         Value::Integer(n.try_into().unwrap()),
@@ -518,14 +527,17 @@ impl ConfigFile {
                                 // Replace the multiple roto script paths used
                                 // by the physical rib unit with just the
                                 // first roto script path.
-                                unit_table
-                                    .insert("filter_name".to_string(), filter_names[0].clone());
+                                unit_table.insert(
+                                    "filter_name".to_string(),
+                                    filter_names[0].clone(),
+                                );
 
                                 // This unit should no longer be the source of
                                 // another unit, rather the last vRIB that we
                                 // added should replace it as source in all
                                 // places it was used before. See *1 below.
-                                source_remappings.insert(unit_name.clone(), source);
+                                source_remappings
+                                    .insert(unit_name.clone(), source);
                             }
                         }
                     }
@@ -541,13 +553,18 @@ impl ConfigFile {
         source_remappings
     }
 
-    fn remap_sources(units: &mut toml::Table, source_remappings: &HashMap<String, String>) {
+    fn remap_sources(
+        units: &mut toml::Table,
+        source_remappings: &HashMap<String, String>,
+    ) {
         for (_unit_name, unit_table_value) in units.iter_mut() {
             if let Value::Table(unit_table) = unit_table_value {
                 if let Some(source) = unit_table.get_mut("source") {
                     match source {
                         Value::String(old_source) => {
-                            if let Some(new_source) = source_remappings.get(old_source) {
+                            if let Some(new_source) =
+                                source_remappings.get(old_source)
+                            {
                                 old_source.clone_from(new_source);
                             }
                         }
@@ -558,7 +575,9 @@ impl ConfigFile {
                 if let Some(sources) = unit_table.get_mut("sources") {
                     match sources {
                         Value::String(old_source) => {
-                            if let Some(new_source) = source_remappings.get(old_source) {
+                            if let Some(new_source) =
+                                source_remappings.get(old_source)
+                            {
                                 old_source.clone_from(new_source);
                             }
                         }
@@ -567,7 +586,8 @@ impl ConfigFile {
                             for old_source in old_sources {
                                 match old_source {
                                     Value::String(old_source) => {
-                                        if let Some(new_source) = source_remappings.get(old_source)
+                                        if let Some(new_source) =
+                                            source_remappings.get(old_source)
                                         {
                                             old_source.clone_from(new_source);
                                         }
@@ -626,7 +646,9 @@ impl error::Error for ConfigError {}
 /// relative paths from a certain base path so that all relative paths
 /// encountered in a config file are automatically resolved relative to the
 /// location of the config file.
-#[derive(Clone, Debug, Default, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone, Debug, Default, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd,
+)]
 #[serde(from = "String")]
 pub struct ConfigPath(PathBuf);
 

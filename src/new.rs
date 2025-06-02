@@ -1,5 +1,19 @@
 use std::sync::{Arc, Weak};
 
+use arc_swap::ArcSwap;
+use bytes::Bytes;
+use domain::{
+    base::{Name, Serial},
+    zonetree::ZoneTree,
+};
+
+use crate::{
+    common::tsig::TsigKeyStore,
+    http, metrics,
+    tracing::Tracer,
+    units::zone_loader::{ZoneLoader, ZoneLoaderConfig},
+};
+
 pub struct Center {
     // TODO: Can we get away without 'Arc's here?
     zone_loader: Arc<ZoneLoader>,
@@ -10,6 +24,83 @@ pub struct Center {
 
     zone_storage: Arc<ZoneStorage>,
     // TODO: Zone configuration data
+    // // ----- COPIED FROM MANAGER TEMPORARILY -----
+    // /// An HTTP client.
+    // http_client: HttpClient,
+    //
+    // /// The metrics collection maintained by this manager.
+    // metrics: metrics::Collection,
+    //
+    // graph_svg_processor: Arc<dyn ProcessRequest>,
+    //
+    // graph_svg_data: Arc<ArcSwap<(Instant, LinkReport)>>,
+    //
+    // tracer_processor: Arc<dyn ProcessRequest>,
+    // shared_state: SharedShate,
+}
+
+#[derive(Clone, Default)]
+struct SharedShate {
+    /// A reference to the metrics collection.
+    metrics: Option<metrics::Collection>,
+
+    /// A reference to the HTTP resources collection.
+    http_resources: http::Resources,
+
+    /// A reference to the Tracer
+    tracer: Arc<Tracer>,
+
+    /// A reference to the unsigned zones.
+    unsigned_zones: Arc<ArcSwap<ZoneTree>>,
+
+    /// A reference to the signed zones.
+    signed_zones: Arc<ArcSwap<ZoneTree>>,
+
+    /// A reference to the publshed zones.
+    published_zones: Arc<ArcSwap<ZoneTree>>,
+
+    /// A reference to the TsigKeyStore.
+    tsig_key_store: TsigKeyStore,
+}
+
+impl Center {
+    fn new(config: Config) -> Arc<Self> {
+        let shared_state = SharedShate::default();
+        Arc::new_cyclic(|center| Self {
+            zone_loader: Arc::new(
+                ZoneLoader::new(
+                    center.clone(),
+                    config.zone_loader.clone(),
+                    shared_state.tsig_key_store.clone(),
+                    shared_state.unsigned_zones.clone(),
+                )
+                .unwrap(),
+            ),
+            key_manager: Arc::new(KeyManager {
+                center: center.clone(),
+            }),
+            signer: Arc::new(Signer {
+                center: center.clone(),
+            }),
+            review_server: Arc::new(Server {
+                center: center.clone(),
+            }),
+            outbound_server: Arc::new(Server {
+                center: center.clone(),
+            }),
+            zone_storage: Arc::new(ZoneStorage {
+                center: center.clone(),
+            }),
+        })
+    }
+
+    pub fn process(&self, event: CenterEvent) {
+        todo!()
+    }
+}
+
+struct Config {
+    zone_loader: ZoneLoaderConfig,
 }
 
 pub enum CenterEvent {
@@ -37,7 +128,9 @@ pub enum CenterEvent {
     /// - Publish the zone in the outbound server.
     ZoneLoaded {
         // TODO: Which zone is it?
+        zone_name: Name<Bytes>,
         // TODO: What version of the zone is it?
+        zone_serial: Serial,
     },
 
     // TODO:
@@ -204,21 +297,21 @@ pub enum RolloverEvent {
     },
 }
 
-pub struct ZoneLoader {
-    center: Weak<Center>,
-}
+// pub struct ZoneLoader {
+//     center: Weak<Center>,
+// }
 
-impl ZoneLoader {
-    /// Process an external change to the zone set.
-    pub fn on_zone_set_updated(&self, update: ZoneSetUpdate) {
-        todo!()
-    }
+// impl ZoneLoader {
+//     /// Process an external change to the zone set.
+//     pub fn on_zone_set_updated(&self, update: ZoneSetUpdate) {
+//         todo!()
+//     }
 
-    /// Start reloading a zone.
-    pub fn reload_zone(&self) {
-        todo!()
-    }
-}
+//     /// Start reloading a zone.
+//     pub fn reload_zone(&self) {
+//         todo!()
+//     }
+// }
 
 pub struct KeyManager {
     center: Weak<Center>,

@@ -2,8 +2,8 @@
 
 use arc_swap::ArcSwap;
 use futures::future::{join_all, select, Either};
-use hyper::{Method, Request, Response};
 use hyper::body::Body;
+use hyper::{Method, Request, Response};
 use log::{debug, error, info, log_enabled, trace, warn};
 use non_empty_vec::NonEmpty;
 use reqwest::Client as HttpClient;
@@ -21,7 +21,8 @@ use uuid::Uuid;
 use crate::common::file_io::TheFileIo;
 use crate::common::tsig::TsigKeyStore;
 use crate::comms::{
-    ApplicationCommand, DirectLink, Gate, GateAgent, GraphStatus, Link, DEF_UPDATE_QUEUE_LEN,
+    ApplicationCommand, DirectLink, Gate, GateAgent, GraphStatus, Link,
+    DEF_UPDATE_QUEUE_LEN,
 };
 use crate::config::{Config, ConfigFile, Marked};
 use crate::http::{PercentDecodedPath, ProcessRequest};
@@ -54,8 +55,6 @@ pub struct Component {
     /// A reference to the HTTP resources collection.
     http_resources: http::Resources,
 
-    // /// A reference to the compiled Roto script.
-    // roto_compiled: Option<Arc<CompiledRoto>>,
     /// A reference to the Tracer
     tracer: Arc<Tracer>,
 
@@ -211,7 +210,11 @@ impl Component {
         )
     }
 
-    pub async fn send_command(&self, target_unit_name: &str, data: ApplicationCommand) {
+    pub async fn send_command(
+        &self,
+        target_unit_name: &str,
+        data: ApplicationCommand,
+    ) {
         self.app_cmd_tx
             .send((target_unit_name.to_string(), data))
             .await
@@ -308,7 +311,8 @@ impl LinkReport {
         let mut vg = VisualGraph::new(Orientation::LeftToRight);
         let mut nodes = HashMap::new();
 
-        let trace = trace_id.map_or_else(Trace::new, |id| tracer.get_trace(id));
+        let trace =
+            trace_id.map_or_else(Trace::new, |id| tracer.get_trace(id));
 
         // add nodes for each unit and target
         for (unit_or_target_name, report) in &self.links {
@@ -329,7 +333,13 @@ impl LinkReport {
                         None => "black",
                     };
 
-                    let style_attr = StyleAttr::new(Color::fast(line_colour), 2, None, 0, 15);
+                    let style_attr = StyleAttr::new(
+                        Color::fast(line_colour),
+                        2,
+                        None,
+                        0,
+                        15,
+                    );
 
                     (shape_kind, style_attr)
                 }
@@ -339,8 +349,11 @@ impl LinkReport {
                     let mut box_colour = "black";
                     let mut trace_txt = String::new();
 
-                    if let Some(gate_id) = self.get_gate_id(unit_or_target_name) {
-                        let msg_indices = trace.msg_indices(gate_id, MsgRelation::ALL);
+                    if let Some(gate_id) =
+                        self.get_gate_id(unit_or_target_name)
+                    {
+                        let msg_indices =
+                            trace.msg_indices(gate_id, MsgRelation::ALL);
                         if !msg_indices.is_empty() {
                             box_colour = "blue";
                             trace_txt = extract_msg_indices(&trace, gate_id);
@@ -348,8 +361,17 @@ impl LinkReport {
                     }
 
                     (
-                        ShapeKind::new_box(&format!("{}\n{}", &unit_or_target_name, trace_txt)),
-                        StyleAttr::new(Color::fast(box_colour), 2, None, 0, 15),
+                        ShapeKind::new_box(&format!(
+                            "{}\n{}",
+                            &unit_or_target_name, trace_txt
+                        )),
+                        StyleAttr::new(
+                            Color::fast(box_colour),
+                            2,
+                            None,
+                            0,
+                            15,
+                        ),
                     )
                 }
 
@@ -425,49 +447,50 @@ impl LinkReport {
 }
 
 fn extract_msg_indices(trace: &Trace, gate_id: Uuid) -> String {
-    let (mut msg_indices, first, last) = trace.msg_indices(gate_id, MsgRelation::ALL).iter().fold(
-        (String::new(), None::<usize>, None::<usize>),
-        |(mut out, mut first, mut last), idx| {
-            match (first, last) {
-                (None, None) => {
-                    first = Some(*idx);
-                }
-                (None, Some(_l)) => unreachable!(),
-                (Some(f), None) => {
-                    match *idx {
-                        idx if idx == f + 1 => {
-                            last = Some(idx);
-                        }
-                        idx if idx > f + 1 => {
-                            if !out.is_empty() {
-                                out.push_str(", ");
+    let (mut msg_indices, first, last) =
+        trace.msg_indices(gate_id, MsgRelation::ALL).iter().fold(
+            (String::new(), None::<usize>, None::<usize>),
+            |(mut out, mut first, mut last), idx| {
+                match (first, last) {
+                    (None, None) => {
+                        first = Some(*idx);
+                    }
+                    (None, Some(_l)) => unreachable!(),
+                    (Some(f), None) => {
+                        match *idx {
+                            idx if idx == f + 1 => {
+                                last = Some(idx);
                             }
-                            out.push_str(&format!("{}", f));
-                            first = Some(idx);
-                        }
-                        _ => unreachable!(),
-                    };
-                }
-                (Some(f), Some(l)) => {
-                    match *idx {
-                        idx if idx == l + 1 => {
-                            last = Some(idx);
-                        }
-                        idx if idx > l + 1 => {
-                            if !out.is_empty() {
-                                out.push_str(", ");
+                            idx if idx > f + 1 => {
+                                if !out.is_empty() {
+                                    out.push_str(", ");
+                                }
+                                out.push_str(&format!("{}", f));
+                                first = Some(idx);
                             }
-                            out.push_str(&format!("{}-{}", f, l));
-                            first = Some(idx);
-                            last = None;
-                        }
-                        _ => {}
-                    };
+                            _ => unreachable!(),
+                        };
+                    }
+                    (Some(f), Some(l)) => {
+                        match *idx {
+                            idx if idx == l + 1 => {
+                                last = Some(idx);
+                            }
+                            idx if idx > l + 1 => {
+                                if !out.is_empty() {
+                                    out.push_str(", ");
+                                }
+                                out.push_str(&format!("{}-{}", f, l));
+                                first = Some(idx);
+                                last = None;
+                            }
+                            _ => {}
+                        };
+                    }
                 }
-            }
-            (out, first, last)
-        },
-    );
+                (out, first, last)
+            },
+        );
 
     match (first, last) {
         (None, None) => {}
@@ -554,7 +577,8 @@ impl UpstreamLinkReport {
     }
 
     pub fn set_graph_status(&self, graph_status: Arc<dyn GraphStatus>) {
-        *self.graph_status.lock().unwrap() = Some(Arc::downgrade(&graph_status));
+        *self.graph_status.lock().unwrap() =
+            Some(Arc::downgrade(&graph_status));
     }
 
     pub fn graph_status(&self) -> Option<Weak<dyn GraphStatus>> {
@@ -598,7 +622,8 @@ pub struct Manager {
     running_units: HashMap<String, (Discriminant<Unit>, GateAgent)>,
 
     /// The currently active targets represented by their command senders.
-    running_targets: HashMap<String, (Discriminant<Target>, mpsc::Sender<TargetCommand>)>,
+    running_targets:
+        HashMap<String, (Discriminant<Target>, mpsc::Sender<TargetCommand>)>,
 
     /// Gates for newly loaded, not yet spawned units.
     pending_gates: HashMap<String, (Gate, GateAgent)>,
@@ -618,7 +643,6 @@ pub struct Manager {
 
     graph_svg_data: Arc<ArcSwap<(Instant, LinkReport)>>,
 
-    #[allow(dead_code)]
     file_io: TheFileIo,
 
     tracer: Arc<Tracer>,
@@ -635,7 +659,8 @@ pub struct Manager {
 
     app_cmd_tx: Sender<(String, ApplicationCommand)>,
 
-    app_cmd_rx: Arc<tokio::sync::Mutex<Receiver<(String, ApplicationCommand)>>>,
+    app_cmd_rx:
+        Arc<tokio::sync::Mutex<Receiver<(String, ApplicationCommand)>>>,
 }
 
 impl Default for Manager {
@@ -649,11 +674,17 @@ impl Manager {
     pub fn new() -> Self {
         let (app_cmd_tx, app_cmd_rx) = tokio::sync::mpsc::channel(10);
 
-        let graph_svg_data = Arc::new(ArcSwap::from_pointee((Instant::now(), LinkReport::new())));
+        let graph_svg_data = Arc::new(ArcSwap::from_pointee((
+            Instant::now(),
+            LinkReport::new(),
+        )));
         let tracer = Arc::new(Tracer::new());
 
         let (graph_svg_processor, graph_svg_rel_base_url) =
-            Self::mk_svg_http_processor(graph_svg_data.clone(), tracer.clone());
+            Self::mk_svg_http_processor(
+                graph_svg_data.clone(),
+                tracer.clone(),
+            );
 
         let tsig_key_store = Default::default();
         let unsigned_zones = Default::default();
@@ -663,7 +694,10 @@ impl Manager {
         let (tracer_processor, tracer_rel_base_url) =
             Self::mk_tracer_http_processor(tracer.clone());
 
-        #[allow(clippy::let_and_return, clippy::default_constructed_unit_structs)]
+        #[allow(
+            clippy::let_and_return,
+            clippy::default_constructed_unit_structs
+        )]
         let manager = Manager {
             running_units: Default::default(),
             running_targets: Default::default(),
@@ -848,23 +882,11 @@ impl Manager {
     /// Primarily intended for testing purposes, allowing the prepare phase of
     /// the load -> prepare -> spawn pipeline to be tested independently of
     /// the other phases.
-    pub fn prepare(&mut self, config: &Config, file: &ConfigFile) -> Result<(), Terminate> {
-        // let roto_script = config.roto_script.as_ref().and_then(|roto_script| {
-        //     file.path()
-        //         .and_then(|p| p.parent())
-        //         .map(|d| d.to_path_buf())
-        //         .map(|mut dir| {
-        //             dir.push(roto_script);
-        //             dir
-        //         })
-        // });
-
-        // if let Err(err) = self.compile_roto_script(&roto_script) {
-        //     let msg = format!("Unable to load main Roto script: {err}.");
-        //     error!("{msg}");
-        //     Err(Terminate::error())?
-        // }
-
+    pub fn prepare(
+        &mut self,
+        config: &Config,
+        file: &ConfigFile,
+    ) -> Result<(), Terminate> {
         // Drain the singleton static GATES contents to a local variable.
         let gates = GATES
             .with(|gates| gates.replace(Some(Default::default())))
@@ -877,23 +899,27 @@ impl Manager {
         // links the corresponding Gate will be moved to the pending
         // collection to be handled later by spawn(). For unresolvable links
         // the corresponding Gate will be dropped here.
-        for (name, load) in gates {
-            if let Some(mut gate) = load.gate {
-                gate.set_tracer(self.tracer.clone());
-                if !config.units.units.contains_key(&name) {
-                    for mut link in load.links {
-                        link.resolve_config(file);
-                        error!(
-                            "{}",
-                            link.mark(format!("unresolved link to unit '{}'", name))
-                        );
-                    }
-                    return Err(Terminate::error());
-                } else {
-                    self.pending_gates.insert(name.clone(), (gate, load.agent));
-                }
-            }
-        }
+        // for (name, load) in gates {
+        //     if let Some(mut gate) = load.gate {
+        //         gate.set_tracer(self.tracer.clone());
+        //         if !config.units.units.contains_key(&name) {
+        //             for mut link in load.links {
+        //                 link.resolve_config(file);
+        //                 error!(
+        //                     "{}",
+        //                     link.mark(format!(
+        //                         "unresolved link to unit '{}'",
+        //                         name
+        //                     ))
+        //                 );
+        //             }
+        //             return Err(Terminate::error());
+        //         } else {
+        //             self.pending_gates
+        //                 .insert(name.clone(), (gate, load.agent));
+        //         }
+        //     }
+        // }
 
         // At this point self.pending contains the newly created but
         // disconnected Gates, and GateAgents for sending commands to them,
@@ -905,9 +931,13 @@ impl Manager {
     }
 
     pub async fn accept_application_commands(&self) {
-        while let Some((unit_name, data)) = self.app_cmd_rx.lock().await.recv().await {
+        while let Some((unit_name, data)) =
+            self.app_cmd_rx.lock().await.recv().await
+        {
             if let Some((_, agent)) = self.running_units.get(&unit_name) {
-                debug!("Forwarding application command to unit '{unit_name}'");
+                debug!(
+                    "Forwarding application command to unit '{unit_name}'"
+                );
                 agent.send_application_command(data).await.unwrap();
             }
         }
@@ -1084,7 +1114,14 @@ impl Manager {
     /// detect the missing config and send a Terminate command to the orphaned
     /// unit/target.
     #[allow(clippy::too_many_arguments)]
-    fn spawn_internal<SpawnUnit, SpawnTarget, ReconfUnit, ReconfTarget, TermUnit, TermTarget>(
+    fn spawn_internal<
+        SpawnUnit,
+        SpawnTarget,
+        ReconfUnit,
+        ReconfTarget,
+        TermUnit,
+        TermTarget,
+    >(
         &mut self,
         config: &mut Config,
         spawn_unit: SpawnUnit,
@@ -1095,7 +1132,8 @@ impl Manager {
         terminate_target: TermTarget,
     ) where
         SpawnUnit: Fn(Component, Unit, Gate, WaitPoint),
-        SpawnTarget: Fn(Component, Target, Receiver<TargetCommand>, WaitPoint),
+        SpawnTarget:
+            Fn(Component, Target, Receiver<TargetCommand>, WaitPoint),
         ReconfUnit: Fn(&str, GateAgent, Unit, Gate),
         ReconfTarget: Fn(&str, Sender<TargetCommand>, Target),
         TermUnit: Fn(&str, Arc<GateAgent>),
@@ -1107,25 +1145,31 @@ impl Manager {
         // so-called "unused" unit will either be discarded, or if already
         // running (due to a previous invocation of spawn()) will be commanded
         // to terminate.
-        let mut new_running_units = HashMap::new();
         let mut new_running_targets = HashMap::new();
 
         let num_targets = config.targets.targets.len();
-        let num_units = config.units.units.len();
-        let coordinator = Coordinator::new(num_targets + num_units);
+        let coordinator = Coordinator::new(num_targets);
 
         // Spawn, reconfigure and terminate targets according to the config
         for (name, new_target) in config.targets.targets.drain() {
             if let Some(running_target) = self.running_targets.remove(&name) {
-                let (running_target_type, running_target_sender) = running_target;
+                let (running_target_type, running_target_sender) =
+                    running_target;
                 let new_target_type = std::mem::discriminant(&new_target);
                 if new_target_type != running_target_type {
                     // Terminate the current target. The new one replacing it
                     // will be spawned below.
                     terminate_target(&name, running_target_sender.into());
                 } else {
-                    reconfigure_target(&name, running_target_sender.clone(), new_target);
-                    new_running_targets.insert(name, (running_target_type, running_target_sender));
+                    reconfigure_target(
+                        &name,
+                        running_target_sender.clone(),
+                        new_target,
+                    );
+                    new_running_targets.insert(
+                        name,
+                        (running_target_type, running_target_sender),
+                    );
                     // Skip spawning a new target.
                     continue;
                 }
@@ -1160,19 +1204,28 @@ impl Manager {
 
         // Spawn, reconfigure and terminate units according to the config
         for (name, new_unit) in config.units.units.drain() {
-            let (mut new_gate, new_agent) = match self.pending_gates.remove(&name) {
-                Some((gate, agent)) => (gate, agent),
-                None => {
-                    if let Some(running_unit) = self.running_units.remove(&name) {
-                        warn!("Unit '{}' is unused and will be stopped.", name);
-                        let running_unit_agent = running_unit.1;
-                        terminate_unit(&name, running_unit_agent.into());
-                    } else {
-                        error!("Unit '{}' is unused and will not be started.", name);
+            let (mut new_gate, new_agent) =
+                match self.pending_gates.remove(&name) {
+                    Some((gate, agent)) => (gate, agent),
+                    None => {
+                        if let Some(running_unit) =
+                            self.running_units.remove(&name)
+                        {
+                            warn!(
+                                "Unit '{}' is unused and will be stopped.",
+                                name
+                            );
+                            let running_unit_agent = running_unit.1;
+                            terminate_unit(&name, running_unit_agent.into());
+                        } else {
+                            error!(
+                            "Unit '{}' is unused and will not be started.",
+                            name
+                        );
+                        }
+                        continue;
                     }
-                    continue;
-                }
-            };
+                };
 
             new_gate.set_name(&name);
 
@@ -1192,8 +1245,14 @@ impl Manager {
                     // will be launched below.
                     terminate_unit(&name, running_unit_agent.into());
                 } else {
-                    reconfigure_unit(&name, running_unit_agent, new_unit, new_gate);
-                    new_running_units.insert(name, (new_unit_type, new_agent));
+                    reconfigure_unit(
+                        &name,
+                        running_unit_agent,
+                        new_unit,
+                        new_gate,
+                    );
+                    new_running_units
+                        .insert(name, (new_unit_type, new_agent));
                     continue;
                 }
             }
@@ -1242,7 +1301,10 @@ impl Manager {
         self.coordinate_and_track_startup(coordinator);
     }
 
-    fn coordinate_and_track_startup(&mut self, coordinator: Arc<Coordinator>) {
+    fn coordinate_and_track_startup(
+        &mut self,
+        coordinator: Arc<Coordinator>,
+    ) {
         let mut reports = LinkReport::new();
         let mut agent_cmd_futures = vec![];
         let mut target_cmd_futures = vec![];
@@ -1354,7 +1416,12 @@ impl Manager {
         }
     }
 
-    fn spawn_unit(component: Component, new_unit: Unit, new_gate: Gate, waitpoint: WaitPoint) {
+    fn spawn_unit(
+        component: Component,
+        new_unit: Unit,
+        new_gate: Gate,
+        waitpoint: WaitPoint,
+    ) {
         info!("Starting unit '{}'", component.name);
         crate::tokio::spawn(
             &format!("unit[{}]", component.name),
@@ -1375,7 +1442,12 @@ impl Manager {
         );
     }
 
-    fn reconfigure_unit(name: &str, agent: GateAgent, new_config: Unit, new_gate: Gate) {
+    fn reconfigure_unit(
+        name: &str,
+        agent: GateAgent,
+        new_config: Unit,
+        new_gate: Gate,
+    ) {
         info!("Reconfiguring unit '{}'", name);
         let name = name.to_owned();
         crate::tokio::spawn("unit-reconfigurer", async move {
@@ -1388,11 +1460,17 @@ impl Manager {
         });
     }
 
-    fn reconfigure_target(name: &str, sender: Sender<TargetCommand>, new_config: Target) {
+    fn reconfigure_target(
+        name: &str,
+        sender: Sender<TargetCommand>,
+        new_config: Target,
+    ) {
         info!("Reconfiguring target '{}'", name);
         let name = name.to_owned();
         crate::tokio::spawn("target-reconfigurer", async move {
-            if let Err(err) = sender.send(TargetCommand::Reconfigure { new_config }).await {
+            if let Err(err) =
+                sender.send(TargetCommand::Reconfigure { new_config }).await
+            {
                 error!(
                     "Internal error: reconfigure command could not be sent to target '{}': {}",
                     name, err
@@ -1434,14 +1512,18 @@ impl Manager {
 
         let processor = Arc::new(move |request: Request<_>| {
             let req_path = request.uri().decoded_path();
-            if request.method() == Method::GET && req_path.starts_with(REL_BASE_URL) {
-                let (_base_path, restant) = req_path.split_at(REL_BASE_URL.len());
+            if request.method() == Method::GET
+                && req_path.starts_with(REL_BASE_URL)
+            {
+                let (_base_path, restant) =
+                    req_path.split_at(REL_BASE_URL.len());
                 let trace_id = if restant.contains("/traces/") {
                     restant.split_at("/traces/".len()).1.parse::<u8>().ok()
                 } else {
                     None
                 };
-                let svg = graph_svg_data.load().1.get_svg(tracer.clone(), trace_id);
+                let svg =
+                    graph_svg_data.load().1.get_svg(tracer.clone(), trace_id);
                 let traces = if let Some(trace_id) = trace_id {
                     let trace = tracer.get_trace(trace_id);
 
@@ -1514,7 +1596,9 @@ impl Manager {
         (processor, REL_BASE_URL)
     }
 
-    fn mk_tracer_http_processor(tracer: Arc<Tracer>) -> (Arc<dyn ProcessRequest>, &'static str) {
+    fn mk_tracer_http_processor(
+        tracer: Arc<Tracer>,
+    ) -> (Arc<dyn ProcessRequest>, &'static str) {
         const REL_BASE_URL: &str = "/status/traces";
 
         let processor = Arc::new(move |request: Request<_>| {
@@ -1577,7 +1661,8 @@ pub struct Coordinator {
 }
 
 impl Coordinator {
-    pub const SLOW_COMPONENT_ALARM_DURATION: Duration = Duration::from_secs(60);
+    pub const SLOW_COMPONENT_ALARM_DURATION: Duration =
+        Duration::from_secs(60);
 
     pub fn new(max_components: usize) -> Arc<Self> {
         let barrier = Barrier::new(max_components + 1);
@@ -1592,7 +1677,9 @@ impl Coordinator {
     pub fn track(self: Arc<Self>, name: String) -> WaitPoint {
         if self.pending.write().unwrap().insert(name.clone()) {
             if self.pending.read().unwrap().len() > self.max_components {
-                panic!("Coordinator::track() called more times than expected");
+                panic!(
+                    "Coordinator::track() called more times than expected"
+                );
             }
             WaitPoint::new(self, name)
         } else {
@@ -1631,16 +1718,21 @@ impl Coordinator {
         self.wait_internal(&mut alarm, "running").await;
     }
 
-    pub async fn wait_internal<T>(self: Arc<Self>, alarm: &mut T, status: &str)
-    where
+    pub async fn wait_internal<T>(
+        self: Arc<Self>,
+        alarm: &mut T,
+        status: &str,
+    ) where
         T: FnMut(Vec<String>, &str),
     {
         debug!("Waiting for all components to become {}...", status);
-        let num_unused_barriers = self.max_components - self.pending.read().unwrap().len() + 1;
+        let num_unused_barriers =
+            self.max_components - self.pending.read().unwrap().len() + 1;
         let unused_barriers: Vec<_> = (0..num_unused_barriers)
             .map(|_| self.barrier.wait())
             .collect();
-        let slow_startup_alarm = Box::pin(tokio::time::sleep(Self::SLOW_COMPONENT_ALARM_DURATION));
+        let slow_startup_alarm =
+            Box::pin(tokio::time::sleep(Self::SLOW_COMPONENT_ALARM_DURATION));
         match select(join_all(unused_barriers), slow_startup_alarm).await {
             Either::Left(_) => {}
             Either::Right((_, incomplete_join_all)) => {
@@ -1665,8 +1757,6 @@ impl Coordinator {
 //------------ UnitSet -------------------------------------------------------
 
 /// A set of units to be started.
-#[derive(Deserialize)]
-#[serde(transparent)]
 pub struct UnitSet {
     units: HashMap<String, Unit>,
 }
@@ -1785,19 +1875,20 @@ pub fn load_link(link_id: Marked<String>) -> Link {
 /// richer more meaningful configuration syntax for configuring the queue
 /// size.
 fn get_queue_size_for_link(link_id: String) -> (String, usize) {
-    let (name, queue_size) = if let Some((name, options)) = link_id.split_once(':') {
-        let queue_len = options.parse::<usize>().unwrap_or_else(|err| {
-            warn!(
+    let (name, queue_size) =
+        if let Some((name, options)) = link_id.split_once(':') {
+            let queue_len = options.parse::<usize>().unwrap_or_else(|err| {
+                warn!(
                 "Invalid queue length '{}' for '{}', falling back to the \
                 default ({}): {}",
                 options, name, DEF_UPDATE_QUEUE_LEN, err
             );
-            DEF_UPDATE_QUEUE_LEN
-        });
-        (name.to_string(), queue_len)
-    } else {
-        (link_id, DEF_UPDATE_QUEUE_LEN)
-    };
+                DEF_UPDATE_QUEUE_LEN
+            });
+            (name.to_string(), queue_len)
+        } else {
+            (link_id, DEF_UPDATE_QUEUE_LEN)
+        };
     (name, queue_size)
 }
 
@@ -2405,10 +2496,26 @@ mod tests {
         let mut empty_trace = Trace::new();
         let gate_id1 = Uuid::new_v4();
         let gate_id2 = Uuid::new_v4();
-        empty_trace.append_msg(gate_id2, "blah".to_owned(), MsgRelation::GATE);
-        empty_trace.append_msg(gate_id1, "blah".to_owned(), MsgRelation::GATE);
-        empty_trace.append_msg(gate_id2, "blah".to_owned(), MsgRelation::GATE);
-        empty_trace.append_msg(gate_id2, "blah".to_owned(), MsgRelation::GATE);
+        empty_trace.append_msg(
+            gate_id2,
+            "blah".to_owned(),
+            MsgRelation::GATE,
+        );
+        empty_trace.append_msg(
+            gate_id1,
+            "blah".to_owned(),
+            MsgRelation::GATE,
+        );
+        empty_trace.append_msg(
+            gate_id2,
+            "blah".to_owned(),
+            MsgRelation::GATE,
+        );
+        empty_trace.append_msg(
+            gate_id2,
+            "blah".to_owned(),
+            MsgRelation::GATE,
+        );
         let trace_txt = extract_msg_indices(&empty_trace, gate_id2);
         assert_eq!("[0, 2-3]", trace_txt);
     }
@@ -2418,12 +2525,36 @@ mod tests {
         let mut empty_trace = Trace::new();
         let gate_id1 = Uuid::new_v4();
         let gate_id2 = Uuid::new_v4();
-        empty_trace.append_msg(gate_id2, "blah".to_owned(), MsgRelation::GATE);
-        empty_trace.append_msg(gate_id1, "blah".to_owned(), MsgRelation::GATE);
-        empty_trace.append_msg(gate_id2, "blah".to_owned(), MsgRelation::GATE);
-        empty_trace.append_msg(gate_id2, "blah".to_owned(), MsgRelation::GATE);
-        empty_trace.append_msg(gate_id1, "blah".to_owned(), MsgRelation::GATE);
-        empty_trace.append_msg(gate_id2, "blah".to_owned(), MsgRelation::GATE);
+        empty_trace.append_msg(
+            gate_id2,
+            "blah".to_owned(),
+            MsgRelation::GATE,
+        );
+        empty_trace.append_msg(
+            gate_id1,
+            "blah".to_owned(),
+            MsgRelation::GATE,
+        );
+        empty_trace.append_msg(
+            gate_id2,
+            "blah".to_owned(),
+            MsgRelation::GATE,
+        );
+        empty_trace.append_msg(
+            gate_id2,
+            "blah".to_owned(),
+            MsgRelation::GATE,
+        );
+        empty_trace.append_msg(
+            gate_id1,
+            "blah".to_owned(),
+            MsgRelation::GATE,
+        );
+        empty_trace.append_msg(
+            gate_id2,
+            "blah".to_owned(),
+            MsgRelation::GATE,
+        );
         let trace_txt = extract_msg_indices(&empty_trace, gate_id2);
         assert_eq!("[0, 2-3, 5]", trace_txt);
     }
@@ -2433,16 +2564,56 @@ mod tests {
         let mut empty_trace = Trace::new();
         let gate_id1 = Uuid::new_v4();
         let gate_id2 = Uuid::new_v4();
-        empty_trace.append_msg(gate_id2, "blah".to_owned(), MsgRelation::GATE);
-        empty_trace.append_msg(gate_id1, "blah".to_owned(), MsgRelation::GATE);
-        empty_trace.append_msg(gate_id2, "blah".to_owned(), MsgRelation::GATE);
-        empty_trace.append_msg(gate_id2, "blah".to_owned(), MsgRelation::GATE);
-        empty_trace.append_msg(gate_id1, "blah".to_owned(), MsgRelation::GATE);
-        empty_trace.append_msg(gate_id2, "blah".to_owned(), MsgRelation::GATE);
-        empty_trace.append_msg(gate_id1, "blah".to_owned(), MsgRelation::GATE);
-        empty_trace.append_msg(gate_id2, "blah".to_owned(), MsgRelation::GATE);
-        empty_trace.append_msg(gate_id2, "blah".to_owned(), MsgRelation::GATE);
-        empty_trace.append_msg(gate_id2, "blah".to_owned(), MsgRelation::GATE);
+        empty_trace.append_msg(
+            gate_id2,
+            "blah".to_owned(),
+            MsgRelation::GATE,
+        );
+        empty_trace.append_msg(
+            gate_id1,
+            "blah".to_owned(),
+            MsgRelation::GATE,
+        );
+        empty_trace.append_msg(
+            gate_id2,
+            "blah".to_owned(),
+            MsgRelation::GATE,
+        );
+        empty_trace.append_msg(
+            gate_id2,
+            "blah".to_owned(),
+            MsgRelation::GATE,
+        );
+        empty_trace.append_msg(
+            gate_id1,
+            "blah".to_owned(),
+            MsgRelation::GATE,
+        );
+        empty_trace.append_msg(
+            gate_id2,
+            "blah".to_owned(),
+            MsgRelation::GATE,
+        );
+        empty_trace.append_msg(
+            gate_id1,
+            "blah".to_owned(),
+            MsgRelation::GATE,
+        );
+        empty_trace.append_msg(
+            gate_id2,
+            "blah".to_owned(),
+            MsgRelation::GATE,
+        );
+        empty_trace.append_msg(
+            gate_id2,
+            "blah".to_owned(),
+            MsgRelation::GATE,
+        );
+        empty_trace.append_msg(
+            gate_id2,
+            "blah".to_owned(),
+            MsgRelation::GATE,
+        );
         let trace_txt = extract_msg_indices(&empty_trace, gate_id2);
         assert_eq!("[0, 2-3, 5, 7-9]", trace_txt);
     }
@@ -2452,10 +2623,26 @@ mod tests {
         let mut empty_trace = Trace::new();
         let gate_id1 = Uuid::new_v4();
         let gate_id2 = Uuid::new_v4();
-        empty_trace.append_msg(gate_id2, "blah".to_owned(), MsgRelation::GATE);
-        empty_trace.append_msg(gate_id2, "blah".to_owned(), MsgRelation::GATE);
-        empty_trace.append_msg(gate_id1, "blah".to_owned(), MsgRelation::GATE);
-        empty_trace.append_msg(gate_id2, "blah".to_owned(), MsgRelation::GATE);
+        empty_trace.append_msg(
+            gate_id2,
+            "blah".to_owned(),
+            MsgRelation::GATE,
+        );
+        empty_trace.append_msg(
+            gate_id2,
+            "blah".to_owned(),
+            MsgRelation::GATE,
+        );
+        empty_trace.append_msg(
+            gate_id1,
+            "blah".to_owned(),
+            MsgRelation::GATE,
+        );
+        empty_trace.append_msg(
+            gate_id2,
+            "blah".to_owned(),
+            MsgRelation::GATE,
+        );
         let trace_txt = extract_msg_indices(&empty_trace, gate_id2);
         assert_eq!("[0-1, 3]", trace_txt);
     }
@@ -2482,7 +2669,8 @@ mod tests {
 
         // when loaded into the manager and spawned
         let mut manager = init_manager();
-        let (_source, config) = Config::from_config_file(config_file, &mut manager)?;
+        let (_source, config) =
+            Config::from_config_file(config_file, &mut manager)?;
         spawn(&mut manager, config);
 
         // then it should spawn the unit and target
@@ -2511,7 +2699,8 @@ mod tests {
 
         // when loaded into the manager and spawned
         let mut manager = init_manager();
-        let (_source, config) = Config::from_config_file(config_file, &mut manager)?;
+        let (_source, config) =
+            Config::from_config_file(config_file, &mut manager)?;
         spawn(&mut manager, config);
 
         // then it should spawn the unit and target
@@ -2539,7 +2728,8 @@ mod tests {
         let config_file = mk_config_from_toml(toml);
 
         // when loaded into the manager and spawned
-        let (_source, config) = Config::from_config_file(config_file, &mut manager)?;
+        let (_source, config) =
+            Config::from_config_file(config_file, &mut manager)?;
         spawn(&mut manager, config);
 
         // then it should spawn the added target
@@ -2573,7 +2763,8 @@ mod tests {
 
         // when loaded into the manager and spawned
         let mut manager = init_manager();
-        let (_source, config) = Config::from_config_file(config_file, &mut manager)?;
+        let (_source, config) =
+            Config::from_config_file(config_file, &mut manager)?;
         spawn(&mut manager, config);
 
         // then it should spawn the unit and target
@@ -2602,7 +2793,8 @@ mod tests {
         let config_file = mk_config_from_toml(toml);
 
         // when loaded into the manager and spawned
-        let (_source, config) = Config::from_config_file(config_file, &mut manager)?;
+        let (_source, config) =
+            Config::from_config_file(config_file, &mut manager)?;
         spawn(&mut manager, config);
 
         // then it should terminate the removed target
@@ -2620,7 +2812,8 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn modified_settings_are_correctly_announced() -> Result<(), Terminate> {
+    async fn modified_settings_are_correctly_announced(
+    ) -> Result<(), Terminate> {
         // given a config with only a single target with a link to a missing unit
         let toml = r#"
         http_listen = []
@@ -2637,7 +2830,8 @@ mod tests {
 
         // when loaded into the manager and spawned
         let mut manager = init_manager();
-        let (_source, config) = Config::from_config_file(config_file, &mut manager)?;
+        let (_source, config) =
+            Config::from_config_file(config_file, &mut manager)?;
         spawn(&mut manager, config);
 
         // then it should spawn the unit and target
@@ -2661,7 +2855,8 @@ mod tests {
         let config_file = mk_config_from_toml(toml);
 
         // when loaded into the manager and spawned
-        let (_source, config) = Config::from_config_file(config_file, &mut manager)?;
+        let (_source, config) =
+            Config::from_config_file(config_file, &mut manager)?;
         spawn(&mut manager, config);
 
         // then it should terminate the removed target
@@ -2717,7 +2912,8 @@ mod tests {
     async fn coordinator_with_one_ready_component_should_not_raise_alarm() {
         let coordinator = Coordinator::new(1);
         let mut alarm_fired = false;
-        let wait_point = coordinator.clone().track(SOME_COMPONENT.to_string());
+        let wait_point =
+            coordinator.clone().track(SOME_COMPONENT.to_string());
         let join_handle = tokio::task::spawn(wait_point.running());
         assert!(!join_handle.is_finished());
         coordinator.wait(|_, _| alarm_fired = true).await;
@@ -2729,8 +2925,10 @@ mod tests {
     async fn coordinator_with_two_ready_components_should_not_raise_alarm() {
         let coordinator = Coordinator::new(2);
         let mut alarm_fired = false;
-        let wait_point1 = coordinator.clone().track(SOME_COMPONENT.to_string());
-        let wait_point2 = coordinator.clone().track(OTHER_COMPONENT.to_string());
+        let wait_point1 =
+            coordinator.clone().track(SOME_COMPONENT.to_string());
+        let wait_point2 =
+            coordinator.clone().track(OTHER_COMPONENT.to_string());
         let join_handle1 = tokio::task::spawn(wait_point1.running());
         let join_handle2 = tokio::task::spawn(wait_point2.running());
         assert!(!join_handle1.is_finished());
@@ -2742,10 +2940,12 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn coordinator_with_component_with_slow_ready_phase_should_raise_alarm() {
+    async fn coordinator_with_component_with_slow_ready_phase_should_raise_alarm(
+    ) {
         let coordinator = Coordinator::new(1);
         let alarm_fired_count = Arc::new(AtomicU8::new(0));
-        let wait_point = coordinator.clone().track(SOME_COMPONENT.to_string());
+        let wait_point =
+            coordinator.clone().track(SOME_COMPONENT.to_string());
 
         // Deliberately don't call wait_point.ready() or wait_point.running()
         let join_handle = {
@@ -2757,7 +2957,8 @@ mod tests {
 
         // Advance time beyond the maximum time allowed for the 'ready' state to be reached
         let advance_time_by = Coordinator::SLOW_COMPONENT_ALARM_DURATION;
-        let advance_time_by = advance_time_by.checked_add(Duration::from_secs(1)).unwrap();
+        let advance_time_by =
+            advance_time_by.checked_add(Duration::from_secs(1)).unwrap();
         tokio::time::sleep(advance_time_by).await;
 
         // Check that the alarm fired once
@@ -2771,10 +2972,12 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn coordinator_with_component_with_slow_running_phase_should_raise_alarm() {
+    async fn coordinator_with_component_with_slow_running_phase_should_raise_alarm(
+    ) {
         let coordinator = Coordinator::new(1);
         let alarm_fired_count = Arc::new(AtomicU8::new(0));
-        let mut wait_point = coordinator.clone().track(SOME_COMPONENT.to_string());
+        let mut wait_point =
+            coordinator.clone().track(SOME_COMPONENT.to_string());
 
         // Deliberately don't call wait_point.ready() or wait_point.running()
         let join_handle = {
@@ -2786,7 +2989,8 @@ mod tests {
 
         // Advance time beyond the maximum time allowed for the 'ready' state to be reached
         let advance_time_by = Coordinator::SLOW_COMPONENT_ALARM_DURATION;
-        let advance_time_by = advance_time_by.checked_add(Duration::from_secs(1)).unwrap();
+        let advance_time_by =
+            advance_time_by.checked_add(Duration::from_secs(1)).unwrap();
         tokio::time::sleep(advance_time_by).await;
 
         // Check that the alarm fired once
@@ -2797,7 +3001,8 @@ mod tests {
 
         // Advance time beyond the maximum time allowed for the 'running' state to be reached
         let advance_time_by = Coordinator::SLOW_COMPONENT_ALARM_DURATION;
-        let advance_time_by = advance_time_by.checked_add(Duration::from_secs(1)).unwrap();
+        let advance_time_by =
+            advance_time_by.checked_add(Duration::from_secs(1)).unwrap();
         tokio::time::sleep(advance_time_by).await;
 
         // Check that the alarm fired again
@@ -2833,10 +3038,16 @@ mod tests {
             match self {
                 SpawnAction::SpawnUnit => f.write_str("SpawnUnit"),
                 SpawnAction::SpawnTarget => f.write_str("SpawnTarget"),
-                SpawnAction::ReconfigureUnit => f.write_str("ReconfigureUnit"),
-                SpawnAction::ReconfigureTarget => f.write_str("ReconfigureTarget"),
+                SpawnAction::ReconfigureUnit => {
+                    f.write_str("ReconfigureUnit")
+                }
+                SpawnAction::ReconfigureTarget => {
+                    f.write_str("ReconfigureTarget")
+                }
                 SpawnAction::TerminateUnit => f.write_str("TerminateUnit"),
-                SpawnAction::TerminateTarget => f.write_str("TerminateTarget"),
+                SpawnAction::TerminateTarget => {
+                    f.write_str("TerminateTarget")
+                }
             }
         }
     }
@@ -2856,7 +3067,11 @@ mod tests {
     }
 
     impl SpawnLogItem {
-        fn new(name: UnitOrTargetName, action: SpawnAction, _config: UnitOrTargetConfig) -> Self {
+        fn new(
+            name: UnitOrTargetName,
+            action: SpawnAction,
+            _config: UnitOrTargetConfig,
+        ) -> Self {
             Self {
                 name,
                 action,
@@ -2919,7 +3134,11 @@ mod tests {
         );
     }
 
-    fn get_log_item<'a>(log: &'a SpawnLog, name: &str, action: SpawnAction) -> &'a SpawnLogItem {
+    fn get_log_item<'a>(
+        log: &'a SpawnLog,
+        name: &str,
+        action: SpawnAction,
+    ) -> &'a SpawnLogItem {
         let found = log
             .iter()
             .find(|item| item.name == name && item.action == action);
@@ -2935,7 +3154,12 @@ mod tests {
         );
     }
 
-    fn spawn_target(c: Component, t: Target, _: Receiver<TargetCommand>, _: WaitPoint) {
+    fn spawn_target(
+        c: Component,
+        t: Target,
+        _: Receiver<TargetCommand>,
+        _: WaitPoint,
+    ) {
         log_spawn_action(
             c.name.to_string(),
             SpawnAction::SpawnTarget,
@@ -2979,8 +3203,14 @@ mod tests {
         SPAWN_LOG.with(|log| log.borrow_mut().clear());
     }
 
-    fn log_spawn_action(name: String, action: SpawnAction, cfg: UnitOrTargetConfig) {
-        SPAWN_LOG.with(|log| log.borrow_mut().push(SpawnLogItem::new(name, action, cfg)));
+    fn log_spawn_action(
+        name: String,
+        action: SpawnAction,
+        cfg: UnitOrTargetConfig,
+    ) {
+        SPAWN_LOG.with(|log| {
+            log.borrow_mut().push(SpawnLogItem::new(name, action, cfg))
+        });
     }
 
     fn spawn(manager: &mut Manager, mut config: Config) {
