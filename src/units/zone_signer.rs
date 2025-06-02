@@ -29,6 +29,15 @@ use domain::base::wire::Composer;
 use domain::base::{
     CanonicalOrd, Name, ParsedName, ParsedRecord, Record, Rtype, Serial, ToName, Ttl,
 };
+use domain::crypto::sign::{generate, FromBytesError, GenerateParams, SecretKeyBytes};
+use domain::dnssec::common::parse_from_bind;
+use domain::dnssec::sign::keys::SigningKey;
+use domain::dnssec::sign::records::{DefaultSorter, RecordsIter, Rrset, Sorter};
+use domain::dnssec::sign::signatures::rrsigs::{
+    sign_rrset, sign_sorted_zone_records, GenerateRrsigConfig,
+};
+use domain::dnssec::sign::traits::SignableZoneInPlace;
+use domain::dnssec::sign::SigningConfig;
 use domain::net::server::buf::VecBufSource;
 use domain::net::server::dgram::{self, DgramServer};
 use domain::net::server::message::Request;
@@ -44,25 +53,13 @@ use domain::net::server::util::{mk_error_response, service_fn};
 use domain::net::server::ConnectionConfig;
 use domain::rdata::dnssec::Timestamp;
 use domain::rdata::nsec3::Nsec3Salt;
-use domain::rdata::{Nsec3param, Soa, ZoneRecordData};
-use domain::sign::crypto::common::{generate, GenerateParams};
+use domain::rdata::{Dnskey, Nsec3param, Rrsig, Soa, ZoneRecordData};
 // Use openssl::KeyPair because ring::KeyPair is not Send.
-use domain::sign::crypto::openssl::KeyPair;
-use domain::sign::denial::config::DenialConfig;
-use domain::sign::denial::nsec::GenerateNsecConfig;
-use domain::sign::denial::nsec3::{
-    GenerateNsec3Config, Nsec3ParamTtlMode, OnDemandNsec3HashProvider,
-};
-use domain::sign::error::{FromBytesError, SigningError};
-use domain::sign::keys::keymeta::IntendedKeyPurpose;
-use domain::sign::keys::{DnssecSigningKey, SigningKey};
-use domain::sign::records::{DefaultSorter, RecordsIter, RrsetIter, SortedRecords, Sorter};
-use domain::sign::signatures::rrsigs::{generate_rrsigs, GenerateRrsigConfig, RrsigRecords};
-use domain::sign::signatures::strategy::{
-    DefaultSigningKeyUsageStrategy, FixedRrsigValidityPeriodStrategy,
-};
-use domain::sign::traits::SignableZoneInPlace;
-use domain::sign::{SecretKeyBytes, SigningConfig};
+use domain::crypto::openssl::sign::KeyPair;
+use domain::dnssec::sign::denial::config::DenialConfig;
+use domain::dnssec::sign::denial::nsec::GenerateNsecConfig;
+use domain::dnssec::sign::denial::nsec3::{GenerateNsec3Config, Nsec3ParamTtlMode};
+use domain::dnssec::sign::error::SigningError;
 use domain::tsig::KeyStore;
 use domain::tsig::{Algorithm, Key, KeyName};
 use domain::utils::base64;
@@ -79,7 +76,7 @@ use indoc::formatdoc;
 use log::warn;
 use log::{debug, error, info, trace};
 use non_empty_vec::NonEmpty;
-use octseq::{OctetsInto, Parser};
+use octseq::{EmptyBuilder, OctetsInto, Parser};
 use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelExtend};
 use rayon::slice::ParallelSliceMut;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -196,7 +193,7 @@ impl ZoneSignerUnit {
         let status_reporter = Arc::new(ZoneSignerStatusReporter::new(&unit_name, metrics.clone()));
 
         let mut key_path_stems = HashSet::new();
-        let mut keys = HashMap::<StoredName, Vec<DnssecSigningKey<Bytes, KeyPair>>>::new();
+        let mut keys = HashMap::<StoredName, Vec<SigningKey<Bytes, KeyPair>>>::new();
 
         info!("Loading key pairs from '{}'.", self.keys_path.display());
         for entry in std::fs::read_dir(&self.keys_path).map_err(|err| {
@@ -245,22 +242,20 @@ impl ZoneSignerUnit {
                 );
             })?;
 
-            let key = Self::mk_signing_key(&private_key, public_key).map_err(|err| {
-                error!(
-                    "Failed to make key pair for '{}': {err}",
-                    key_path.display()
-                );
-                Terminated
-            })?;
+            let key = self
+                .mk_signing_key(
+                    (*public_key.owner()).clone(),
+                    &private_key,
+                    (*public_key.data()).clone(),
+                )
+                .map_err(|err| {
+                    error!(
+                        "Failed to make key pair for '{}': {err}",
+                        key_path.display()
+                    );
+                    Terminated
+                })?;
 
-            // TODO: Don't assume the key is a CSK.
-            let key = DnssecSigningKey::from(key);
-            info!(
-                "Loaded key pair '{}' for zone '{}' as {}.",
-                key_path.display(),
-                key.owner(),
-                key.purpose()
-            );
             match keys.entry(key.owner().to_owned()) {
                 Occupied(mut e) => {
                     e.get_mut().push(key);
@@ -269,16 +264,8 @@ impl ZoneSignerUnit {
                     e.insert(vec![key]);
                 }
             }
-        }
 
-        if self.treat_single_keys_as_csks {
-            for (owner, owner_keys) in keys.iter_mut().filter(|(_, keys)| keys.len() == 1) {
-                info!(
-                    "Lone key {} for zone '{owner}' will be used as a CSK",
-                    owner_keys[0].purpose()
-                );
-                owner_keys[0].set_purpose(IntendedKeyPurpose::CSK);
-            }
+            info!("Loaded key pair from {}", key_path.display());
         }
 
         // Wait for other components to be, and signal to other components
@@ -306,6 +293,7 @@ impl ZoneSignerUnit {
             self.use_lightweight_zone_tree,
             self.max_concurrent_operations,
             self.max_concurrent_rrsig_generation_tasks,
+            self.treat_single_keys_as_csks,
         )
         .run()
         .await?;
@@ -334,21 +322,24 @@ impl ZoneSignerUnit {
         Ok(secret_key)
     }
 
-    fn load_public_key(key_path: &Path) -> Result<domain::validate::Key<Bytes>, Terminated> {
-        let public_data = std::fs::read_to_string(key_path).map_err(|_| Terminated)?;
+    fn load_public_key(key_path: &Path) -> Result<Record<StoredName, Dnskey<Bytes>>, Terminated> {
+        let public_data = std::fs::read_to_string(key_path).map_err(|err| {
+            error!("loading public key from file '{}'", key_path.display(),);
+            Terminated
+        })?;
 
         // Note: Compared to the original ldns-signzone there is a minor
         // regression here because at the time of writing the error returned
         // from parsing indicates broadly the type of parsing failure but does
         // note indicate the line number at which parsing failed.
-        let public_key_info =
-            domain::validate::Key::parse_from_bind(&public_data).map_err(|err| {
-                error!(
-                    "Unable to parse BIND formatted public key file '{}': {err}",
-                    key_path.display(),
-                );
-                Terminated
-            })?;
+        let public_key_info = parse_from_bind(&public_data).map_err(|err| {
+            error!(
+                "Unable to parse BIND formatted public key file '{}': {}",
+                key_path.display(),
+                err
+            );
+            Terminated
+        })?;
 
         Ok(public_key_info)
     }
@@ -370,11 +361,13 @@ impl ZoneSignerUnit {
     }
 
     fn mk_signing_key(
+        &self,
+        owner: Name<Bytes>,
         private_key: &SecretKeyBytes,
-        public_key: domain::validate::Key<Bytes>,
+        public_key: Dnskey<Bytes>,
     ) -> Result<SigningKey<Bytes, KeyPair>, FromBytesError> {
-        let key_pair = KeyPair::from_bytes(private_key, public_key.raw_public_key())?;
-        let signing_key = SigningKey::new(public_key.owner().clone(), public_key.flags(), key_pair);
+        let key_pair = KeyPair::from_bytes(private_key, &public_key)?;
+        let signing_key = SigningKey::new(owner, public_key.flags(), key_pair);
         Ok(signing_key)
     }
 }
@@ -388,8 +381,7 @@ struct ZoneSigner {
     gate: Gate,
     metrics: Arc<ZoneSignerMetrics>,
     status_reporter: Arc<ZoneSignerStatusReporter>,
-    signing_keys:
-        Arc<std::sync::RwLock<HashMap<StoredName, Vec<DnssecSigningKey<Bytes, KeyPair>>>>>,
+    signing_keys: Arc<std::sync::RwLock<HashMap<StoredName, Vec<SigningKey<Bytes, KeyPair>>>>>,
     inception_offset_secs: u32,
     expiration_offset: u32,
     denial_config: TomlDenialConfig,
@@ -397,6 +389,7 @@ struct ZoneSigner {
     concurrent_operation_permits: Semaphore,
     max_concurrent_rrsig_generation_tasks: usize,
     signer_status: Arc<RwLock<ZoneSignerStatus>>,
+    treat_single_keys_as_csks: bool,
 }
 
 impl ZoneSigner {
@@ -407,13 +400,14 @@ impl ZoneSigner {
         gate: Gate,
         metrics: Arc<ZoneSignerMetrics>,
         status_reporter: Arc<ZoneSignerStatusReporter>,
-        signing_keys: HashMap<StoredName, Vec<DnssecSigningKey<Bytes, KeyPair>>>,
+        signing_keys: HashMap<StoredName, Vec<SigningKey<Bytes, KeyPair>>>,
         inception_offset_secs: u32,
         expiration_offset: u32,
         denial_config: TomlDenialConfig,
         use_lightweight_zone_tree: bool,
         max_concurrent_operations: usize,
         max_concurrent_rrsig_generation_tasks: usize,
+        treat_single_keys_as_csks: bool,
     ) -> Self {
         Self {
             component,
@@ -429,6 +423,7 @@ impl ZoneSigner {
             concurrent_operation_permits: Semaphore::new(max_concurrent_operations),
             max_concurrent_rrsig_generation_tasks,
             signer_status: Default::default(),
+            treat_single_keys_as_csks,
         }
     }
 
@@ -564,8 +559,8 @@ impl ZoneSigner {
         // Create a signing configuration.
         //
         let mut signing_config = self.signing_config();
-        let mut rrsig_cfg = GenerateRrsigConfig::from(&signing_config);
-        rrsig_cfg.zone_apex = Some(soa_rr.owner().clone());
+        let rrsig_cfg =
+            GenerateRrsigConfig::new(signing_config.inception, signing_config.expiration);
 
         //
         // Convert zone records into a form we can sign.
@@ -581,6 +576,68 @@ impl ZoneSigner {
             s.unsigned_rr_count = Some(unsigned_rr_count);
             s.walk_time = Some(Duration::from_secs(walk_time));
         });
+
+        //
+        // Get the signing keys for the zone.
+        // TODO: Receive these from the key manager.
+        //
+        let no_keys = vec![];
+        let mut ksks = vec![];
+
+        //
+        // Generate RRSIGs for DNSKEY RRs.
+        // TODO: Receive the DNSKEY RRset and its RRSIG from the key manager.
+        //
+        {
+            let signing_keys = self.signing_keys.read().unwrap();
+            let signing_keys = signing_keys.get(zone_name).unwrap_or(&no_keys);
+
+            for k in signing_keys {
+                // Is KSK?
+                if k.is_secure_entry_point() {
+                    trace!("[{component_name}]: Found KSK for '{zone_name}'.");
+                    ksks.push(k);
+                }
+            }
+
+            // TODO: This will not be correct if there are some KSK/ZSK pairs and
+            // some lone ZSKs, the lone ZSKs will not be treated as KSKs by this
+            // simplistic approach.
+            if self.treat_single_keys_as_csks && ksks.is_empty() {
+                for k in signing_keys {
+                    trace!("[{component_name}]: Using ZSK as KSK for '{zone_name}'.");
+                    ksks.push(k);
+                }
+            }
+
+            // Add a DNSKEY RR to the zone for each signing key.
+            // Assumes that the incoming unsigned zone has no DNSKEY RRs.
+            let mut dnskey_rrs = vec![];
+            for k in signing_keys {
+                let pubkey: Dnskey<Bytes> = k.dnskey().convert();
+                let data: ZoneRecordData<Bytes, StoredName> = ZoneRecordData::Dnskey(pubkey);
+                let record = Record::new(zone_name.clone(), Class::IN, soa_rr.ttl(), data);
+                dnskey_rrs.push(record.clone());
+                records.push(record);
+                trace!("[{component_name}]: Generated DNSKEY RR for '{zone_name}'.");
+            }
+            let dnskey_rrset = Rrset::new(&dnskey_rrs).unwrap();
+
+            // Add an RRSIG RR for the new DNSKEY RRset for each KSK that we use.
+            for k in &ksks {
+                let rrsig = sign_rrset(
+                    k,
+                    &dnskey_rrset,
+                    signing_config.inception,
+                    signing_config.expiration,
+                )
+                .expect("should not fail");
+                let data = ZoneRecordData::Rrsig(rrsig.data().clone());
+                let record = Record::new(rrsig.owner().clone(), rrsig.class(), rrsig.ttl(), data);
+                records.push(record);
+                trace!("[{component_name}]: Generated RRSIG for DNSKEY RRset for '{zone_name}'.");
+            }
+        }
 
         //
         // Sort them into DNSSEC order ready for NSEC(3) generation.
@@ -605,12 +662,13 @@ impl ZoneSigner {
         //
         trace!("[{component_name}]: Generating denial records for zone '{zone_name}'.");
         let denial_start = Instant::now();
+        let apex_owner = zone_name.clone();
         let unsigned_records = spawn_blocking(move || {
             // By not passing any keys to sign_zone() will only add denial RRs,
             // not RRSIGs. We could invoke generate_nsecs() or generate_nsec3s()
             // directly here instead.
-            let no_keys: [DnssecSigningKey<Bytes, KeyPair>; 0] = Default::default();
-            records.sign_zone(&mut signing_config, &no_keys)?;
+            let no_keys: [&SigningKey<Bytes, KeyPair>; 0] = Default::default();
+            records.sign_zone(&apex_owner, &mut signing_config, &no_keys)?;
             Ok(records)
         })
         .await
@@ -658,7 +716,8 @@ impl ZoneSigner {
 
         // Create a channel for passing RRs generated by RRSIG generation to
         // a task that will insert them into the signed zone.
-        let (tx, rx) = mpsc::channel::<(RrsigRecords<StoredName, Bytes>, Duration)>(10000);
+        let (tx, rx) =
+            mpsc::channel::<(Vec<Record<StoredName, Rrsig<Bytes, StoredName>>>, Duration)>(10000);
 
         // Start a background task that will insert RRs that it receives from
         // the RRSIG generator below.
@@ -668,6 +727,7 @@ impl ZoneSigner {
         trace!("SIGNER: Generating RRSIGs concurrently..");
         let keys = self.signing_keys.clone();
         let passed_zone_name = zone_name.clone();
+        let treat_single_keys_as_csks = self.treat_single_keys_as_csks;
 
         // Use spawn_blocking() to prevent blocking the Tokio executor. Pass
         // the unsigned records in, we get them back out again at the end.
@@ -693,6 +753,7 @@ impl ZoneSigner {
                             tx,
                             keys,
                             zone_name,
+                            treat_single_keys_as_csks,
                         );
                     })
                 }
@@ -806,23 +867,17 @@ impl ZoneSigner {
             })
     }
 
-    fn signing_config(
-        &self,
-    ) -> SigningConfig<
-        StoredName,
-        Bytes,
-        domain::sign::crypto::openssl::KeyPair,
-        DefaultSigningKeyUsageStrategy,
-        FixedRrsigValidityPeriodStrategy,
-        MultiThreadedSorter,
-        OnDemandNsec3HashProvider<Bytes>,
-    > {
+    fn signing_config(&self) -> SigningConfig<Bytes, MultiThreadedSorter> {
         let denial = match &self.denial_config {
             TomlDenialConfig::Nsec => DenialConfig::Nsec(Default::default()),
             TomlDenialConfig::Nsec3(nsec3) => {
+                assert_eq!(
+                    1,
+                    nsec3.len().get(),
+                    "Multiple NSEC3 configurations per zone is not yet supported"
+                );
                 let first = parse_nsec3_config(&nsec3[0]);
-                let rest = nsec3[1..].iter().map(parse_nsec3_config).collect();
-                DenialConfig::Nsec3(first, rest)
+                DenialConfig::Nsec3(first)
             }
             TomlDenialConfig::TransitioningToNsec3(
                 toml_nsec3_config,
@@ -836,11 +891,9 @@ impl ZoneSigner {
 
         let add_used_dnskeys = true;
         let now = Timestamp::now().into_int();
-        let inception = now.sub(self.inception_offset_secs);
-        let expiration = now.add(self.expiration_offset);
-        let rrsig_validity_period_strategy =
-            FixedRrsigValidityPeriodStrategy::from((inception, expiration));
-        SigningConfig::new(denial, add_used_dnskeys, rrsig_validity_period_strategy)
+        let inception = now.sub(self.inception_offset_secs).into();
+        let expiration = now.add(self.expiration_offset).into();
+        SigningConfig::new(denial, inception, expiration)
     }
 }
 
@@ -849,15 +902,11 @@ fn sign_rr_chunk(
     chunk_size: usize,
     records: &[Record<StoredName, StoredRecordData>],
     thread_idx: usize,
-    rrsig_cfg: &GenerateRrsigConfig<
-        StoredName,
-        DefaultSigningKeyUsageStrategy,
-        FixedRrsigValidityPeriodStrategy,
-        MultiThreadedSorter,
-    >,
-    tx: Sender<(RrsigRecords<StoredName, Bytes>, Duration)>,
-    keys: Arc<std::sync::RwLock<HashMap<StoredName, Vec<DnssecSigningKey<Bytes, KeyPair>>>>>,
+    rrsig_cfg: &GenerateRrsigConfig,
+    tx: Sender<(Vec<Record<StoredName, Rrsig<Bytes, StoredName>>>, Duration)>,
+    keys: Arc<std::sync::RwLock<HashMap<StoredName, Vec<SigningKey<Bytes, KeyPair>>>>>,
     zone_name: StoredName,
+    treat_single_keys_as_csks: bool,
 ) {
     let keys = keys.read().unwrap();
     let Some(keys) = keys.get(&zone_name) else {
@@ -895,12 +944,29 @@ fn sign_rr_chunk(
         n += 1;
         // trace!("SIGNER: Thread {i}: processing owner_rrs slice of len {}.", slice.len());
         let before = Instant::now();
-        let res = generate_rrsigs(RecordsIter::new(slice), keys, rrsig_cfg).unwrap();
+        // TODO: It's stupid to build this same ZSK set every time this fn is called.
+        let mut zsks = keys
+            .iter()
+            .filter(|k| !k.is_secure_entry_point())
+            .collect::<Vec<_>>();
+
+        // TODO: This will not be correct if there are some KSK/ZSK pairs and
+        // some lone KSKs, the lone KSKs will not be treated as ZSKs by this
+        // simplistic approach.
+        if treat_single_keys_as_csks && zsks.is_empty() {
+            for k in keys {
+                zsks.push(k);
+            }
+        }
+
+        let rrsigs =
+            sign_sorted_zone_records(&zone_name, RecordsIter::new(slice), &zsks, rrsig_cfg)
+                .unwrap();
         duration = duration.saturating_add(before.elapsed());
 
-        if !res.dnskeys.is_empty() || !res.rrsigs.is_empty() {
+        if !rrsigs.is_empty() {
             // trace!("SIGNER: Thread {i}: sending {} DNSKEY RRs and {} RRSIG RRs to be stored", res.dnskeys.len(), res.rrsigs.len());
-            if tx.blocking_send((res, duration)).is_err() {
+            if tx.blocking_send((rrsigs, duration)).is_err() {
                 trace!("SIGNER: Thread {thread_idx}: unable to send RRs for storage, aborting.");
                 break;
             }
@@ -913,10 +979,9 @@ fn sign_rr_chunk(
 
 async fn rrsig_inserter(
     mut updater: ZoneUpdater<StoredName>,
-    mut rx: Receiver<(RrsigRecords<StoredName, Bytes>, Duration)>,
+    mut rx: Receiver<(Vec<Record<StoredName, Rrsig<Bytes, StoredName>>>, Duration)>,
 ) -> (ZoneUpdater<StoredName>, u64, Duration, usize) {
     trace!("SIGNER: Adding new signed records to new/existing copy of signed zone.");
-    let mut dnskeys_count = 0usize;
     let mut rrsig_count = 0usize;
     let mut max_rrsig_generation_time = Duration::ZERO;
     let mut insertion_time = Duration::ZERO;
@@ -925,15 +990,8 @@ async fn rrsig_inserter(
         max_rrsig_generation_time = std::cmp::max(max_rrsig_generation_time, duration);
 
         let insert_start = Instant::now();
-        for rr in rrsig_records.dnskeys {
-            updater
-                .apply(ZoneUpdate::AddRecord(Record::from_record(rr)))
-                .await
-                .unwrap();
-            dnskeys_count += 1;
-        }
 
-        for rr in rrsig_records.rrsigs {
+        for rr in rrsig_records {
             updater
                 .apply(ZoneUpdate::AddRecord(Record::from_record(rr)))
                 .await
@@ -943,7 +1001,7 @@ async fn rrsig_inserter(
 
         insertion_time = insertion_time.saturating_add(insert_start.elapsed());
     }
-    trace!("SIGNER: Added {dnskeys_count} DNSKEY RRs and {rrsig_count} RRSIG RRs to new/existing copy of signed zone.");
+    trace!("SIGNER: Added {rrsig_count} RRSIG RRs to new/existing copy of signed zone.");
 
     let rrsig_time = max_rrsig_generation_time.as_secs();
 
@@ -996,9 +1054,7 @@ fn collect_zone(zone: Zone) -> Vec<StoredRecord> {
     records
 }
 
-fn parse_nsec3_config(
-    config: &TomlNsec3Config,
-) -> GenerateNsec3Config<StoredName, Bytes, OnDemandNsec3HashProvider<Bytes>, MultiThreadedSorter> {
+fn parse_nsec3_config(config: &TomlNsec3Config) -> GenerateNsec3Config<Bytes, MultiThreadedSorter> {
     let mut params = Nsec3param::default();
     if matches!(
         config.opt_out,
@@ -1006,17 +1062,12 @@ fn parse_nsec3_config(
     ) {
         params.set_opt_out_flag()
     }
-    let hash_provider = OnDemandNsec3HashProvider::new(
-        params.hash_algorithm(),
-        params.iterations(),
-        params.salt().clone(),
-    );
     let ttl_mode = match config.nsec3_param_ttl_mode {
         TomlNsec3ParamTtlMode::Fixed(ttl) => Nsec3ParamTtlMode::Fixed(ttl),
         TomlNsec3ParamTtlMode::Soa => Nsec3ParamTtlMode::Soa,
         TomlNsec3ParamTtlMode::SoaMinimum => Nsec3ParamTtlMode::SoaMinimum,
     };
-    let mut nsec3_config = GenerateNsec3Config::new(params, hash_provider).with_ttl_mode(ttl_mode);
+    let mut nsec3_config = GenerateNsec3Config::new(params).with_ttl_mode(ttl_mode);
     if matches!(config.opt_out, TomlNsec3OptOut::OptOutFlagOnly) {
         nsec3_config = nsec3_config.without_opt_out_excluding_owner_names_of_unsigned_delegations();
     }
@@ -1514,7 +1565,7 @@ enum TomlNsec3ToNsecTransitionState {
 /// default Rayon behaviour of using as many threads as their are CPU cores?
 struct MultiThreadedSorter;
 
-impl domain::sign::records::Sorter for MultiThreadedSorter {
+impl domain::dnssec::sign::records::Sorter for MultiThreadedSorter {
     fn sort_by<N, D, F>(records: &mut Vec<Record<N, D>>, compare: F)
     where
         F: Fn(&Record<N, D>, &Record<N, D>) -> Ordering + Sync,
