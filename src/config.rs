@@ -1,1157 +1,686 @@
-//! Configuration for the server.
+//! Configuration.
 //!
-//! This module primarily contains the type [`Config`] that holds all the
-//! configuration used. It can be loaded both from a TOML
-//! formatted config file and command line options.
+//! Rotonda is configured through a single TOML configuration file. We use
+//! [serde] to deserialize this file into the [`Config`] struct provided by
+//! this module. This struct also provides the facilities to load the config
+//! file referred to in command line options.
 
-use crate::error::Failed;
-use clap::{App, Arg, ArgMatches};
-use dirs::home_dir;
-use log::{error, LevelFilter};
+use crate::http;
+use crate::log::{LogConfig, Terminate};
+use crate::manager::{Manager, TargetSet, UnitSet};
+use clap::{Arg, ArgMatches, Command};
+use log::{error, trace};
+use serde::Deserialize;
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::io::Read;
-use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
-use std::{env, fmt, fs};
-#[cfg(unix)]
-use syslog::Facility;
-#[cfg(feature = "tls")]
-use tokio_rustls::rustls::ServerConfig;
+use std::sync::Arc;
+use std::{borrow, error, fmt, fs, io, ops};
+use toml::{Spanned, Value};
+
+//------------ Constants -----------------------------------------------------
+
+const CFG_UNITS: &str = "units";
+const CFG_TARGETS: &str = "targets";
+
+const ARG_CONFIG: &str = "config";
 
 //------------ Config --------------------------------------------------------
 
-#[derive(Clone, Debug)]
+/// The complete Rotonda configuration.
+///
+/// All configuration is available via public fields.
+///
+/// The associated function [`init`](Self::init) should be called first thing
+/// as it initializes the operational environment such as logging. Thereafter,
+/// [`config_args`](Self::config_args) can be used to configure a clap app to
+/// be able to pick up the path to the configuration file.
+/// [`from_arg_matches`](Self::from_arg_matches) will then load the file
+/// referenced in the command line and, upon success, return the config.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
-    /// Addresses and protocols to listen on.
-    pub listen: Vec<ListenAddr>,
+    /// Location of the .roto script containing all user defined filters.
+    pub roto_script: Option<PathBuf>,
 
-    /// The log levels to be logged.
-    pub log_level: LevelFilter,
+    /// The set of configured units.
+    pub units: UnitSet,
 
-    /// The target to log to.
-    pub log_target: LogTarget,
+    /// The set of configured targets.
+    pub targets: TargetSet,
 
-    /// The zone names and corresponding zone file paths to load.
-    pub zones: HashMap<String, String>,
+    /// The logging configuration.
+    #[serde(flatten)]
+    pub log: LogConfig,
 
-    /// XFR in per zone: Allow NOTIFY from, and when with a port also request XFR from.
-    pub xfr_in: HashMap<String, String>,
-
-    /// XFR out per zone: Allow XFR to, and when with a port also send NOTIFY to.
-    pub xfr_out: HashMap<String, String>,
-
-    /// TSIG keys.
-    pub tsig_keys: HashMap<String, String>,
-
-    /// Directory to write XFR updated zones to.
-    pub xfr_store_path: Option<PathBuf>,
+    /// The HTTP server configuration.
+    #[serde(flatten)]
+    pub http: http::Server,
 }
 
 impl Config {
-    /// Adds the basic arguments to a clapp app.
+    /// Initialises everything.
     ///
-    /// The function follows clap’s builder pattern: it takes an app,
-    /// adds a bunch of arguments to it and returns it at the end.
-    pub fn config_args<'a: 'b, 'b>(app: App<'a, 'b>) -> App<'a, 'b> {
-        app.arg(
-            Arg::with_name("config")
-                .short("c")
-                .long("config")
-                .takes_value(true)
+    /// This function should be called first thing.
+    pub fn init() -> Result<(), Terminate> {
+        LogConfig::init_logging()
+    }
+
+    /// Creates a configuration from a bytes slice with TOML data.
+    pub fn from_bytes(
+        slice: &[u8],
+        base_dir: Option<impl AsRef<Path>>,
+    ) -> Result<Self, toml::de::Error> {
+        if let Some(ref base_dir) = base_dir {
+            ConfigPath::set_base_path(base_dir.as_ref().into())
+        }
+        let config_str = String::from_utf8_lossy(slice);
+        let res = toml::from_str(&config_str);
+        ConfigPath::clear_base_path();
+        res
+    }
+
+    /// Configures a clap app with the arguments to load the configuration.
+    pub fn config_args(app: Command) -> Command {
+        let app = app.arg(
+            Arg::new(ARG_CONFIG)
+                .short('c')
+                .long(ARG_CONFIG)
+                .required(true)
                 .value_name("PATH")
-                .help("Read base configuration from this file"),
-        )
-        .arg(
-            Arg::with_name("plain-listen")
-                .long("listen")
-                .display_order(1000)
-                .value_name("ADDR:PORT")
-                .help("Listen on address/port for both plain UDP and TCP")
-                .takes_value(true)
-                .multiple(true)
-                .number_of_values(1),
-        )
-        .arg(
-            Arg::with_name("udp-listen")
-                .long("udp")
-                .display_order(1001)
-                .value_name("ADDR:PORT")
-                .help("Listen on address/port for plain UDP")
-                .takes_value(true)
-                .multiple(true)
-                .number_of_values(1),
-        )
-        .arg(
-            Arg::with_name("tcp-listen")
-                .long("tcp")
-                .display_order(1002)
-                .value_name("ADDR:PORT")
-                .help("Listen on address/port for plain TCP")
-                .takes_value(true)
-                .multiple(true)
-                .number_of_values(1),
-        )
-        .arg(
-            Arg::with_name("tls-listen")
-                .long("tls")
-                .display_order(1003)
-                .value_name("ADDR:PORT,CERT,KEY")
-                .help("CERT and KEY must be paths to PEM encoded certificate and key files")
-                .takes_value(true)
-                .multiple(true)
-                .number_of_values(1),
-        )
-        .arg(
-            Arg::with_name("tls-key")
-                .long("key")
-                .display_order(1004)
-                .help("Path to a PEM encoded key file to use for TLS encrypted TCP")
-                .takes_value(true)
-                .multiple(true)
-                .number_of_values(1)
-                .requires("listen-tcp"),
-        )
-        .arg(
-            Arg::with_name("verbose")
-                .short("v")
-                .long("verbose")
-                .multiple(true)
-                .help("Log more information, twice for even more"),
-        )
-        .arg(
-            Arg::with_name("quiet")
-                .short("q")
-                .long("quiet")
-                .multiple(true)
-                .conflicts_with("verbose")
-                .help("Log less information, twice for no information"),
-        )
-        .arg(
-            Arg::with_name("syslog")
-                .long("syslog")
-                .help("Log to syslog"),
-        )
-        .arg(
-            Arg::with_name("syslog-facility")
-                .long("syslog-facility")
-                .takes_value(true)
-                .default_value("daemon")
-                .help("Facility to use for syslog logging"),
-        )
-        .arg(
-            Arg::with_name("logfile")
-                .long("logfile")
-                .takes_value(true)
-                .value_name("PATH")
-                .help("Log to this file"),
-        )
-        .arg(
-            Arg::with_name("init")
-                .long("init")
-                .help("Initialize new database"),
-        )
+                .help("Config file to use"),
+        );
+        LogConfig::config_args(app)
     }
 
-    /// Creates a configuration from command line matches.
+    /// Loads the configuration based on command line options provided.
     ///
-    /// The function attempts to create configuration from the command line
-    /// arguments provided via `matches`. It will try to read a config file
-    /// if provided via the config file option (`-c` or `--config`) or a
-    /// file in `$HOME/.routinator.conf` otherwise. If the latter doesn’t
-    /// exist either, starts with a default configuration.
+    /// The `matches` must be the result of getting argument matches from a
+    /// clap app previously configured with
+    /// [`config_args`](Self::config_args). Otherwise, the function is likely
+    /// to panic.
     ///
-    /// All relative paths given in command line arguments will be interpreted
-    /// relative to `cur_dir`. Conversely, paths in the config file are
-    /// treated as relative to the config file’s directory.
-    ///
-    /// If you are runming in server mode, you need to also apply the server
-    /// arguments via [`apply_server_arg_matches`].
-    ///
-    /// [`apply_server_arg_matches`]: #method.apply_server_arg_matches
-    pub fn from_arg_matches(matches: &ArgMatches, cur_dir: &Path) -> Result<Self, Failed> {
-        let mut res = Self::create_base_config(
-            Self::path_value_of(matches, "config", cur_dir)
-                .as_ref()
-                .map(AsRef::as_ref),
-        )?;
-
-        res.apply_arg_matches(matches, cur_dir)?;
-
-        Ok(res)
-    }
-
-    /// Creates the correct base configuration for the given config file path.
-    ///
-    /// If no config path is given, tries to read the default config in
-    /// `$HOME/.nameshed.conf`. If that doesn’t exist, creates a default
-    /// config.
-    fn create_base_config(path: Option<&Path>) -> Result<Self, Failed> {
-        let file = match path {
-            Some(path) => match ConfigFile::read(path)? {
-                Some(file) => file,
-                None => {
-                    error!("Cannot read config file {}", path.display());
-                    return Err(Failed);
-                }
-            },
-            None => match home_dir() {
-                Some(dir) => match ConfigFile::read(&dir.join(".nameshed.conf"))? {
-                    Some(file) => file,
-                    None => return Ok(Self::default()),
-                },
-                None => return Ok(Self::default()),
-            },
-        };
-        Self::from_config_file(file)
-    }
-
-    /// Creates a base config from a config file.
-    fn from_config_file(mut file: ConfigFile) -> Result<Self, Failed> {
-        let log_target = Self::log_target_from_config_file(&mut file)?;
-        eprintln!("Constructing config");
-        let res = Config {
-            listen: { file.take_from_str_array("listen")?.unwrap_or_default() },
-            log_level: {
-                file.take_from_str("log-level")?
-                    .unwrap_or(LevelFilter::Warn)
-            },
-            log_target,
-            zones: { file.take_string_map("zones")?.unwrap_or_default() },
-            xfr_in: { file.take_string_map("xfr_in")?.unwrap_or_default() },
-            xfr_out: { file.take_string_map("xfr_out")?.unwrap_or_default() },
-            tsig_keys: { file.take_string_map("tsig_keys")?.unwrap_or_default() },
-            xfr_store_path: { file.take_path("xfr_store_path")? },
-        };
-        file.check_exhausted()?;
-        Ok(res)
-    }
-
-    /// Determines the logging target from the config file.
-    ///
-    /// This is the Unix version that also deals with syslog.
-    #[cfg(unix)]
-    fn log_target_from_config_file(file: &mut ConfigFile) -> Result<LogTarget, Failed> {
-        let facility = file.take_string("syslog-facility")?;
-        let facility = facility.as_ref().map(AsRef::as_ref).unwrap_or("daemon");
-        let facility = match Facility::from_str(facility) {
-            Ok(value) => value,
-            Err(_) => {
+    /// The current path needs to be provided to be able to deal with relative
+    /// paths. The manager is necessary to resolve links given in the
+    /// configuration.
+    pub fn from_arg_matches(
+        args: &ArgMatches,
+        cur_dir: &Path,
+        manager: &mut Manager,
+    ) -> Result<(Source, Self), Terminate> {
+        let config_file = {
+            // With ARG_CONFIG required, we can unwrap here.
+            let conf_path_arg = args.get_one::<String>(ARG_CONFIG).unwrap();
+            let config_path = cur_dir.join(conf_path_arg);
+            ConfigFile::load(&config_path).map_err(|err| {
                 error!(
-                    "Failed in config file {}: invalid syslog-facility.",
-                    file.path.display()
+                    "Failed to read config file '{}': {}",
+                    config_path.display(),
+                    err
                 );
-                return Err(Failed);
-            }
+                Terminate::error()
+            })?
         };
-        let log_target = file.take_string("log")?;
-        let log_file = file.take_path("log-file")?;
-        match log_target.as_ref().map(AsRef::as_ref) {
-            Some("default") | None => Ok(LogTarget::Default(facility)),
-            Some("syslog") => Ok(LogTarget::Syslog(facility)),
-            Some("stderr") => Ok(LogTarget::Stderr),
-            Some("file") => match log_file {
-                Some(file) => Ok(LogTarget::File(file)),
-                None => {
-                    error!(
-                        "Failed in config file {}: \
-                             log target \"file\" requires 'log-file' value.",
-                        file.path.display()
-                    );
-                    Err(Failed)
-                }
-            },
-            Some(value) => {
-                error!(
-                    "Failed in config file {}: \
-                     invalid log target '{}'",
-                    file.path.display(),
-                    value
-                );
-                Err(Failed)
-            }
-        }
+
+        let mut config = manager.load(&config_file)?;
+        config.log.update_with_arg_matches(args, cur_dir)?;
+        config.finalise(config_file, manager)
     }
 
-    /// Determines the logging target from the config file.
-    ///
-    /// This is the non-Unix version that only logs to stderr or a file.
-    #[cfg(not(unix))]
-    fn log_target_from_config_file(file: &mut ConfigFile) -> Result<LogTarget, Failed> {
-        let log_target = file.take_string("log")?;
-        let log_file = file.take_path("log-file")?;
-        match log_target.as_ref().map(AsRef::as_ref) {
-            Some("default") | Some("stderr") | None => Ok(LogTarget::Stderr),
-            Some("file") => match log_file {
-                Some(file) => Ok(LogTarget::File(file)),
-                None => {
-                    error!(
-                        "Failed in config file {}: \
-                             log target \"file\" requires 'log-file' value.",
-                        file.path.display()
-                    );
-                    Err(Failed)
-                }
-            },
-            Some(value) => {
-                error!(
-                    "Failed in config file {}: \
-                     invalid log target '{}'",
-                    file.path.display(),
-                    value
-                );
-                Err(Failed)
-            }
-        }
+    pub fn from_config_file(
+        config_file: ConfigFile,
+        manager: &mut Manager,
+    ) -> Result<(Source, Self), Terminate> {
+        manager.load(&config_file)?.finalise(config_file, manager)
     }
 
-    /// Applies the basic command line arguments to a configuration.
-    ///
-    /// The path arguments in `matches` will be interpreted relative to
-    /// `cur_dir`.
-    #[allow(clippy::cognitive_complexity)]
-    fn apply_arg_matches(&mut self, matches: &ArgMatches, cur_dir: &Path) -> Result<(), Failed> {
-        // udp_listen
-        let list = matches.values_of("udp-listen").unwrap_or_default();
-        let list = list.chain(matches.values_of("plain-listen").unwrap_or_default());
-        for value in list {
-            match SocketAddr::from_str(value) {
-                Ok(some) => self.listen.push(ListenAddr::Udp(some)),
-                Err(_) => {
-                    error!("Invalid value for udp: {}", value);
-                    return Err(Failed);
-                }
-            }
+    fn finalise(
+        self,
+        config_file: ConfigFile,
+        manager: &mut Manager,
+    ) -> Result<(Source, Self), Terminate> {
+        self.log.switch_logging(true)?;
+
+        if log::log_enabled!(log::Level::Trace) {
+            trace!("After processing the config file looks like this:");
+            trace!("{}", config_file.to_string());
         }
 
-        // tcp_listen
-        let list = matches.values_of("tcp-listen").unwrap_or_default();
-        let list = list.chain(matches.values_of("plain-listen").unwrap_or_default());
-        for value in list {
-            match SocketAddr::from_str(value) {
-                Ok(some) => self.listen.push(ListenAddr::Tcp(some)),
-                Err(_) => {
-                    error!("Invalid value for tcp: {}", value);
-                    return Err(Failed);
-                }
-            }
-        }
+        manager.prepare(&self, &config_file)?;
 
-        // tls_listen
-        #[cfg(feature = "tls")]
-        {
-            let list = matches.values_of("tls-listen").unwrap_or_default();
-            for value in list {
-                let parts = value.splitn(3, ',').collect::<Vec<_>>();
-                if parts.len() < 3 {
-                    error!("Invalid value for tls: insufficient comma-separated values");
-                    return Err(Failed);
-                }
-                let (addr, cert_path, key_path) = (parts[0], parts[1], parts[2]);
-                match SocketAddr::from_str(addr) {
-                    Ok(addr) => {
-                        let cert = tls::load_certs(Path::new(cert_path)).map_err(|err| {
-                            error!("Invalid CERT for tls: {}", err);
-                            Failed
-                        })?;
-                        let mut key = tls::load_keys(Path::new(key_path)).map_err(|err| {
-                            error!("Invalid KEY for tls: {}", err);
-                            Failed
-                        })?;
-                        let key = key.remove(0);
-                        let config = tokio_rustls::rustls::ServerConfig::builder()
-                            .with_safe_defaults()
-                            .with_no_client_auth()
-                            .with_single_cert(cert, key)
-                            .unwrap();
-                        self.listen.push(ListenAddr::Tls(addr, config))
-                    }
-                    Err(_) => {
-                        error!("Invalid ADDR:PORT for tls: {}", value);
-                        return Err(Failed);
-                    }
-                }
-            }
-        }
-
-        // log_level
-        match (
-            matches.occurrences_of("verbose"),
-            matches.occurrences_of("quiet"),
-        ) {
-            // This assumes that -v and -q are conflicting.
-            (0, 0) => {}
-            (1, 0) => self.log_level = LevelFilter::Info,
-            (_, 0) => self.log_level = LevelFilter::Debug,
-            (0, 1) => self.log_level = LevelFilter::Error,
-            (0, _) => self.log_level = LevelFilter::Off,
-            _ => {}
-        }
-
-        // log_target
-        self.apply_log_matches(matches, cur_dir)?;
-
-        Ok(())
-    }
-
-    /// Applies the logging-specific command line arguments to the config.
-    ///
-    /// This is the Unix version that also considers syslog as a valid
-    /// target.
-    #[cfg(unix)]
-    fn apply_log_matches(&mut self, matches: &ArgMatches, cur_dir: &Path) -> Result<(), Failed> {
-        if matches.is_present("syslog") {
-            self.log_target = LogTarget::Syslog(
-                match Facility::from_str(matches.value_of("syslog-facility").unwrap()) {
-                    Ok(value) => value,
-                    Err(_) => {
-                        error!("Invalid value for syslog-facility.");
-                        return Err(Failed);
-                    }
-                },
-            )
-        } else if let Some(file) = matches.value_of("logfile") {
-            if file == "-" {
-                self.log_target = LogTarget::Stderr
-            } else {
-                self.log_target = LogTarget::File(cur_dir.join(file))
-            }
-        }
-        Ok(())
-    }
-
-    /// Applies the logging-specific command line arguments to the config.
-    ///
-    /// This is the non-Unix version that does not use syslog.
-    #[cfg(not(unix))]
-    #[allow(clippy::unnecessary_wraps)]
-    fn apply_log_matches(&mut self, matches: &ArgMatches, cur_dir: &Path) -> Result<(), Failed> {
-        if let Some(file) = matches.value_of("logfile") {
-            if file == "-" {
-                self.log_target = LogTarget::Stderr
-            } else {
-                self.log_target = LogTarget::File(cur_dir.join(file))
-            }
-        }
-        Ok(())
-    }
-
-    /// Returns a TOML representation of the config.
-    pub fn to_toml(&self) -> toml::Value {
-        unimplemented!()
-    }
-
-    /// Returns a path value in arg matches.
-    ///
-    /// This expands a relative path based on the given directory.
-    fn path_value_of(matches: &ArgMatches, key: &str, dir: &Path) -> Option<PathBuf> {
-        matches.value_of(key).map(|path| dir.join(path))
+        // Pass the config file path, as well as the processed config, back to
+        // the caller so that they can monitor it for changes while the
+        // application is running.
+        Ok((config_file.source, self))
     }
 }
 
-//--- Default
+//------------ Source --------------------------------------------------------
 
-impl Default for Config {
-    fn default() -> Self {
-        Config {
-            listen: Vec::new(),
-            log_level: LevelFilter::Warn,
-            log_target: LogTarget::default(),
-            zones: HashMap::new(),
-            xfr_in: HashMap::new(),
-            xfr_out: HashMap::new(),
-            tsig_keys: HashMap::new(),
-            xfr_store_path: None,
+/// Description of the source of configuration.
+///
+/// This type is used for error reporting. It can refer to a configuration
+/// file or an interactive session.
+///
+/// File names are kept behind and arc and thus this type can be cloned
+/// cheaply.
+#[derive(Clone, Debug, Default)]
+pub struct Source {
+    /// The optional path of a config file.
+    ///
+    /// If this in `None`, the source is an interactive session.
+    path: Option<Arc<Path>>,
+}
+
+impl Source {
+    pub fn is_path(&self) -> bool {
+        self.path.is_some()
+    }
+
+    pub fn path(&self) -> &Option<Arc<Path>> {
+        &self.path
+    }
+}
+
+impl<'a, T: AsRef<Path>> From<&'a T> for Source {
+    fn from(path: &'a T) -> Source {
+        Source {
+            path: Some(path.as_ref().into()),
         }
     }
 }
 
-//--- Display
+//------------ LineCol -------------------------------------------------------
 
-impl fmt::Display for Config {
+/// A pair of a line and column number.
+///
+/// This is used for error reporting.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+struct LineCol {
+    pub line: usize,
+    pub col: usize,
+}
+
+//------------ Marked --------------------------------------------------------
+
+/// A value marked with its source location.
+///
+/// This wrapper is used when data needs to be resolved after parsing has
+/// finished. In this case, we need information about the source location
+/// to be able to produce meaningful error messages.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(from = "Spanned<T>")]
+pub struct Marked<T> {
+    value: T,
+    index: usize,
+    source: Option<Source>,
+    pos: Option<LineCol>,
+}
+
+impl<T> Marked<T> {
+    /// Resolves the position for the given config file.
+    pub fn resolve_config(&mut self, config: &ConfigFile) {
+        self.source = Some(config.source.clone());
+        self.pos = Some(config.resolve_pos(self.index));
+    }
+
+    /// Returns a reference to the value.
+    pub fn as_inner(&self) -> &T {
+        &self.value
+    }
+
+    /// Converts the marked value into is unmarked value.
+    pub fn into_inner(self) -> T {
+        self.value
+    }
+
+    /// Marks some other value with this value’s position.
+    pub fn mark<U>(&self, value: U) -> Marked<U> {
+        Marked {
+            value,
+            index: self.index,
+            source: self.source.clone(),
+            pos: self.pos,
+        }
+    }
+
+    /// Formats the mark for displaying.
+    pub fn format_mark(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let source = self.source.as_ref().and_then(|source| source.path.as_ref());
+        match (source, self.pos) {
+            (Some(source), Some(pos)) => {
+                write!(f, "{}:{}:{}", source.display(), pos.line, pos.col)
+            }
+            (Some(source), None) => write!(f, "{}", source.display()),
+            (None, Some(pos)) => write!(f, "{}:{}", pos.line, pos.col),
+            (None, None) => Ok(()),
+        }
+    }
+}
+
+//--- From
+
+impl<T> From<T> for Marked<T> {
+    fn from(src: T) -> Marked<T> {
+        Marked {
+            value: src,
+            index: 0,
+            source: None,
+            pos: None,
+        }
+    }
+}
+
+impl<T> From<Spanned<T>> for Marked<T> {
+    fn from(src: Spanned<T>) -> Marked<T> {
+        Marked {
+            index: src.span().start,
+            value: src.into_inner(),
+            source: None,
+            pos: None,
+        }
+    }
+}
+
+//--- Deref, AsRef, Borrow
+
+impl<T> ops::Deref for Marked<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        self.as_inner()
+    }
+}
+
+impl<T> AsRef<T> for Marked<T> {
+    fn as_ref(&self) -> &T {
+        self.as_inner()
+    }
+}
+
+impl<T> borrow::Borrow<T> for Marked<T> {
+    fn borrow(&self) -> &T {
+        self.as_inner()
+    }
+}
+
+//--- Display and Error
+
+impl<T: fmt::Display> fmt::Display for Marked<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self.to_toml())
+        self.format_mark(f)?;
+        write!(f, ": {}", self.value)
     }
 }
 
-//------------ ListenAddr ----------------------------------------------------
-
-/// An address and the protocol to serve queries on.
-#[derive(Clone, Debug)]
-pub enum ListenAddr {
-    /// Plain, unencrypted UDP.
-    Udp(SocketAddr),
-
-    /// Plain, unencrypted TCP.
-    Tcp(SocketAddr),
-
-    /// Encrypted TCP.
-    #[cfg(feature = "tls")]
-    Tls(SocketAddr, ServerConfig),
-}
-
-impl std::fmt::Display for ListenAddr {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ListenAddr::Udp(addr) => write!(f, "Udp({})", addr),
-            ListenAddr::Tcp(addr) => write!(f, "Tcp({})", addr),
-            #[cfg(feature = "tls")]
-            ListenAddr::Tls(addr, _) => write!(f, "Tls({})", addr),
-        }
-    }
-}
-
-impl FromStr for ListenAddr {
-    type Err = String;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let (protocol, addr) = match value.split_once(':') {
-            Some(stuff) => stuff,
-            None => return Err("expected string '<protocol>:<addr>'".into()),
-        };
-        let addr = match SocketAddr::from_str(addr) {
-            Ok(addr) => addr,
-            Err(_) => return Err(format!("invalid listen address '{}'", addr)),
-        };
-        match protocol {
-            "udp" => Ok(ListenAddr::Udp(addr)),
-            "tcp" => Ok(ListenAddr::Tcp(addr)),
-            other => Err(format!("unknown protocol '{}'", other)),
-        }
-    }
-}
-
-//------------ LogTarget -----------------------------------------------------
-
-/// The target to log to.
-#[derive(Clone, Debug)]
-pub enum LogTarget {
-    /// Default.
-    ///
-    /// Logs to `Syslog(facility)` in daemon mode and `Stderr` otherwise.
-    #[cfg(unix)]
-    Default(Facility),
-
-    /// Syslog.
-    ///
-    /// The argument is the syslog facility to use.
-    #[cfg(unix)]
-    Syslog(Facility),
-
-    /// Stderr.
-    Stderr,
-
-    /// A file.
-    ///
-    /// The argument is the file name.
-    File(PathBuf),
-}
-
-//--- Default
-
-#[cfg(unix)]
-impl Default for LogTarget {
-    fn default() -> Self {
-        LogTarget::Default(Facility::LOG_DAEMON)
-    }
-}
-
-#[cfg(not(unix))]
-impl Default for LogTarget {
-    fn default() -> Self {
-        LogTarget::Stderr
-    }
-}
-
-//--- PartialEq and Eq
-
-impl PartialEq for LogTarget {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            #[cfg(unix)]
-            (LogTarget::Default(s), LogTarget::Default(o)) => (*s as usize) == (*o as usize),
-            #[cfg(unix)]
-            (LogTarget::Syslog(s), LogTarget::Syslog(o)) => (*s as usize) == (*o as usize),
-            (LogTarget::Stderr, LogTarget::Stderr) => true,
-            (LogTarget::File(s), LogTarget::File(o)) => s == o,
-            _ => false,
-        }
-    }
-}
-
-impl Eq for LogTarget {}
+impl<T: error::Error> error::Error for Marked<T> {}
 
 //------------ ConfigFile ----------------------------------------------------
 
-/// The content of a config file.
-///
-/// This is a thin wrapper around `toml::Table` to make dealing with it more
-/// convenient.
+/// A config file.
 #[derive(Clone, Debug)]
-struct ConfigFile {
-    /// The content of the file.
-    content: toml::value::Table,
+#[cfg_attr(test, derive(Default))]
+pub struct ConfigFile {
+    /// The source for this file.
+    source: Source,
 
-    /// The path to the config file.
-    path: PathBuf,
+    /// The data of this file.
+    bytes: Vec<u8>,
 
-    /// The directory we found the file in.
+    /// The start indexes of lines.
     ///
-    /// This is used in relative paths.
-    dir: PathBuf,
+    /// The start index of the first line is in `line_start[0]` and so on.
+    line_starts: Vec<usize>,
 }
 
 impl ConfigFile {
-    /// Reads the config file at the given path.
-    ///
-    /// If there is no such file, returns `None`. If there is a file but it
-    /// is broken, aborts.
-    #[allow(clippy::verbose_file_reads)]
-    fn read(path: &Path) -> Result<Option<Self>, Failed> {
-        let mut file = match fs::File::open(path) {
-            Ok(file) => file,
-            Err(_) => return Ok(None),
-        };
-        let mut config = String::new();
-        if let Err(err) = file.read_to_string(&mut config) {
-            error!("Failed to read config file {}: {}", path.display(), err);
-            return Err(Failed);
+    /// Load a config file from disk.
+    pub fn load(path: &impl AsRef<Path>) -> Result<Self, io::Error> {
+        match fs::read(path) {
+            Ok(bytes) => Self::new(bytes, path.into()),
+            Err(e) => Err(e),
         }
-        Self::parse(&config, path).map(Some)
     }
 
-    /// Parses the content of the file from a string.
-    fn parse(content: &str, path: &Path) -> Result<Self, Failed> {
-        let content = match toml::from_str(content) {
-            Ok(toml::Value::Table(content)) => content,
-            Ok(_) => {
-                error!(
-                    "Failed to parse config file {}: Not a mapping.",
-                    path.display()
-                );
-                return Err(Failed);
-            }
-            Err(err) => {
-                error!("Failed to parse config file {}: {}", path.display(), err);
-                return Err(Failed);
-            }
-        };
-        let dir = if path.is_relative() {
-            path.join(match env::current_dir() {
-                Ok(dir) => dir,
-                Err(err) => {
-                    error!("Fatal: Can't determine current directory: {}.", err);
-                    return Err(Failed);
-                }
-            })
-            .parent()
-            .unwrap()
-            .into() // a file always has a parent
+    pub fn new(bytes: Vec<u8>, source: Source) -> Result<Self, io::Error> {
+        // Handle the special case of a rib unit that is actually a physical
+        // rib unit and one or more virtual rib units. Rather than have the
+        // user manually configure these separate rib units by hand in the
+        // config file, we expand any units with unit `type = "rib"` and
+        // `filter_name = [a, b, c, ...]` into multiple chained units each
+        // with a single roto script path.
+        //
+        // Why don't we do this as part of the normal config deserialization
+        // then unit/target/gate creation and linking? A single unit can't
+        // currently during deserialization cause the creation of additional
+        // units.
+        //
+        // One downside of the approach used here is it will cause line
+        // numbers for config file syntax error reports to be confusing as we
+        // are changing the users provided config file without them knowing.
+        //
+        // Another downside is that we have to lookup TOML fields by string
+        // name and if the actual field names are later changed in the actual
+        // unit and target config definitions those changes won't break
+        // anything here at compile time, it will just cease to work as
+        // expected at runtime. The "integration test" in main.rs exercises
+        // this expansion capability to give at least some verification that
+        // it is not obviously broken, but it's not enough.
+        let config_str = String::from_utf8_lossy(&bytes);
+        let mut toml: Value = if let Ok(toml) = toml::de::from_str(&config_str) {
+            toml
         } else {
-            path.parent().unwrap().into()
+            return Err(io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Cannot parse config file",
+            ));
         };
+        let mut source_remappings = None;
+
+        if let Some(Value::Table(units)) = toml.get_mut(CFG_UNITS) {
+            source_remappings = Some(Self::expand_shorthand_vribs(units))
+        }
+
+        if let Some(source_remappings) = source_remappings {
+            if let Some(Value::Table(targets)) = toml.get_mut(CFG_TARGETS) {
+                Self::remap_sources(targets, &source_remappings);
+            }
+        }
+
+        let config_str = toml::to_string(&toml).unwrap();
+
         Ok(ConfigFile {
-            content,
-            path: path.into(),
-            dir,
+            source,
+            line_starts: config_str.as_bytes().split(|ch| *ch == b'\n').fold(
+                vec![0],
+                |mut starts, slice| {
+                    starts.push(starts.last().unwrap() + slice.len());
+                    starts
+                },
+            ),
+            bytes: config_str.as_bytes().to_vec(),
         })
     }
 
-    /*
-    /// Takes a boolean value from the config file.
-    ///
-    /// The value is taken from the given `key`. Returns `Ok(None)` if there
-    /// is no such key. Returns an error if the key exists but the value
-    /// isn’t a booelan.
-    fn take_bool(&mut self, key: &str) -> Result<Option<bool>, Failed> {
-        match self.content.remove(key) {
-            Some(value) => {
-                if let toml::Value::Boolean(res) = value {
-                    Ok(Some(res))
-                }
-                else {
-                    error!(
-                        "Failed in config file {}: \
-                         '{}' expected to be a boolean.",
-                        self.path.display(), key
-                    );
-                    Err(Failed)
-                }
-            }
-            None => Ok(None)
-        }
+    pub fn path(&self) -> Option<&Path> {
+        self.source.path.as_ref().map(|path| path.as_ref())
     }
 
-    /// Takes an unsigned integer value from the config file.
-    ///
-    /// The value is taken from the given `key`. Returns `Ok(None)` if there
-    /// is no such key. Returns an error if the key exists but the value
-    /// isn’t an integer or if it is negative.
-    fn take_u64(&mut self, key: &str) -> Result<Option<u64>, Failed> {
-        match self.content.remove(key) {
-            Some(value) => {
-                if let toml::Value::Integer(res) = value {
-                    if res < 0 {
-                        error!(
-                            "Failed in config file {}: \
-                            '{}' expected to be a positive integer.",
-                            self.path.display(), key
-                        );
-                        Err(Failed)
-                    }
-                    else {
-                        Ok(Some(res as u64))
-                    }
-                }
-                else {
-                    error!(
-                        "Failed in config file {}: \
-                         '{}' expected to be an integer.",
-                        self.path.display(), key
-                    );
-                    Err(Failed)
-                }
-            }
-            None => Ok(None)
-        }
+    pub fn dir(&self) -> Option<&Path> {
+        self.source.path.as_ref().and_then(|path| path.parent())
     }
 
-    /// Takes an unsigned integer value from the config file.
-    ///
-    /// The value is taken from the given `key`. Returns `Ok(None)` if there
-    /// is no such key. Returns an error if the key exists but the value
-    /// isn’t an integer or if it is negative.
-    fn take_usize(&mut self, key: &str) -> Result<Option<usize>, Failed> {
-        match self.content.remove(key) {
-            Some(value) => {
-                if let toml::Value::Integer(res) = value {
-                    usize::try_from(res).map(Some).map_err(|_| {
-                        error!(
-                            "Failed in config file {}: \
-                            '{}' expected to be a positive integer.",
-                            self.path.display(), key
-                        );
-                        Failed
-                    })
-                }
-                else {
-                    error!(
-                        "Failed in config file {}: \
-                         '{}' expected to be an integer.",
-                        self.path.display(), key
-                    );
-                    Err(Failed)
-                }
-            }
-            None => Ok(None)
-        }
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
     }
 
-    /// Takes a small unsigned integer value from the config file.
-    ///
-    /// While the result is returned as an `usize`, it must be in the
-    /// range of a `u16`.
-    ///
-    /// The value is taken from the given `key`. Returns `Ok(None)` if there
-    /// is no such key. Returns an error if the key exists but the value
-    /// isn’t an integer or if it is out of bounds.
-    fn take_small_usize(&mut self, key: &str) -> Result<Option<usize>, Failed> {
-        match self.content.remove(key) {
-            Some(value) => {
-                if let toml::Value::Integer(res) = value {
-                    if res < 0 {
-                        error!(
-                            "Failed in config file {}: \
-                            '{}' expected to be a positive integer.",
-                            self.path.display(), key
-                        );
-                        Err(Failed)
-                    }
-                    else if res > ::std::u16::MAX.into() {
-                        error!(
-                            "Failed in config file {}: \
-                            value for '{}' is too large.",
-                            self.path.display(), key
-                        );
-                        Err(Failed)
-                    }
-                    else {
-                        Ok(Some(res as usize))
-                    }
-                }
-                else {
-                    error!(
-                        "Failed in config file {}: \
-                         '{}' expected to be a integer.",
-                        self.path.display(), key
-                    );
-                    Err(Failed)
-                }
-            }
-            None => Ok(None)
-        }
-    }
-    */
-
-    /// Takes a string value from the config file.
-    ///
-    /// The value is taken from the given `key`. Returns `Ok(None)` if there
-    /// is no such key. Returns an error if the key exists but the value
-    /// isn’t a string.
-    fn take_string(&mut self, key: &str) -> Result<Option<String>, Failed> {
-        match self.content.remove(key) {
-            Some(value) => {
-                if let toml::Value::String(res) = value {
-                    Ok(Some(res))
-                } else {
-                    error!(
-                        "Failed in config file {}: \
-                         '{}' expected to be a string.",
-                        self.path.display(),
-                        key
-                    );
-                    Err(Failed)
-                }
-            }
-            None => Ok(None),
-        }
+    pub fn to_string(&self) -> borrow::Cow<'_, str> {
+        String::from_utf8_lossy(&self.bytes)
     }
 
-    /// Takes a string encoded value from the config file.
-    ///
-    /// The value is taken from the given `key`. It is expected to be a
-    /// string and will be converted to the final type via `FromStr::from_str`.
-    ///
-    /// Returns `Ok(None)` if the key doesn’t exist. Returns an error if the
-    /// key exists but the value isn’t a string or conversion fails.
-    fn take_from_str<T>(&mut self, key: &str) -> Result<Option<T>, Failed>
-    where
-        T: FromStr,
-        T::Err: fmt::Display,
-    {
-        match self.take_string(key)? {
-            Some(value) => match T::from_str(&value) {
-                Ok(some) => Ok(Some(some)),
-                Err(err) => {
-                    error!(
-                        "Failed in config file {}: \
-                             illegal value in '{}': {}.",
-                        self.path.display(),
-                        key,
-                        err
-                    );
-                    Err(Failed)
-                }
-            },
-            None => Ok(None),
-        }
+    fn resolve_pos(&self, pos: usize) -> LineCol {
+        let line = self
+            .line_starts
+            .iter()
+            .find(|&&start| start < pos)
+            .copied()
+            .unwrap_or(self.line_starts.len());
+        let line = line - 1;
+        let col = self.line_starts[line] - pos;
+        LineCol { line, col }
     }
 
-    /// Takes a path value from the config file.
-    ///
-    /// The path is taken from the given `key`. It must be a string value.
-    /// It is treated as relative to the directory of the config file. If it
-    /// is indeed a relative path, it is expanded accordingly and an absolute
-    /// path is returned.
-    ///
-    /// Returns `Ok(None)` if the key does not exist. Returns an error if the
-    /// key exists but the value isn’t a string.
-    fn take_path(&mut self, key: &str) -> Result<Option<PathBuf>, Failed> {
-        self.take_string(key)
-            .map(|opt| opt.map(|path| self.dir.join(path)))
-    }
+    fn expand_shorthand_vribs(units: &mut toml::Table) -> HashMap<String, String> {
+        let mut extra_units = HashMap::<String, Value>::new();
+        let mut source_remappings = HashMap::<String, String>::new();
 
-    /*
-    /// Takes a mandatory path value from the config file.
-    ///
-    /// This is the pretty much the same as [`take_path`] but also returns
-    /// an error if the key does not exist.
-    ///
-    /// [`take_path`]: #method.take_path
-    fn take_mandatory_path(&mut self, key: &str) -> Result<PathBuf, Failed> {
-        match self.take_path(key)? {
-            Some(res) => Ok(res),
-            None => {
-                error!(
-                    "Failed in config file {}: missing required '{}'.",
-                    self.path.display(),
-                    key
-                );
-                Err(Failed)
-            }
-        }
-    }
+        for (unit_name, unit_table_value) in units.iter_mut() {
+            if let Value::Table(unit_table) = unit_table_value {
+                let unit_type = unit_table.get("type");
+                let rib_type = unit_table.get("rib_type");
+                #[allow(clippy::collapsible_if)]
+                if unit_type == Some(&Value::String("rib".to_string())) {
+                    if Option::is_none(&rib_type)
+                        || rib_type == Some(&Value::String("Physical".to_string()))
+                    {
+                        if let Some(Value::Array(filter_names)) = unit_table.remove("filter_names")
+                        {
+                            if filter_names.len() > 1 {
+                                // This is a shorthand definition of a physical RIB with one or more virtual RIBs.
+                                // Split them out, e.g.:
+                                //
+                                //     [unit.shorthand_unit]
+                                //     sources = ["a"]
+                                //     type = "rib"
+                                //     filter_names = ["pRib.roto", "vRib1.roto", "vRib2.roto"]
+                                //
+                                //     [unit.some_other_unit]
+                                //     sources = ["shorthand_unit"]
+                                //
+                                // Expands to:
+                                //
+                                //     [unit.shorthand_unit]
+                                //     sources = ["a"]
+                                //     type = "rib"
+                                //     filter_name = "pRib.roto"             # <-- changed
+                                //     rib_type = "Physical"                 # <-- new
+                                //
+                                //     [unit.some_other_unit]
+                                //     sources = ["shorthand_unit"]          # <-- no longer correct, see *1 below
+                                //
+                                //     [unit.shorthand_unit-vRIB-0]          # new
+                                //     sources = ["shorthand_unit"]
+                                //     type = "rib"
+                                //     filter_name = "vRib1.roto"
+                                //     vrib_upstream = "shorthand_unit"
+                                //
+                                //     [unit.shorthand_unit-vRIB-0.rib_type] # new
+                                //     GeneratedVirtual = 0
+                                //
+                                //     [unit.shorthand_unit-vRIB-1]
+                                //     sources = ["shorthand_unit-vRIB-0"]   # new
+                                //     type = "rib"
+                                //     filter_name = "vRib2.roto"
+                                //     vrib_upstream = "shorthand_unit"
+                                //
+                                //     [unit.shorthand_unit-vRIB-1.rib_type] # new
+                                //     GeneratedVirtual = 1
+                                let mut source = unit_name.clone();
+                                for (n, filter_name) in filter_names[1..].iter().enumerate() {
+                                    let mut new_unit_table = unit_table.clone();
+                                    let new_unit_name = format!("{unit_name}-vRIB-{n}");
+                                    new_unit_table.insert(
+                                        "sources".to_string(),
+                                        Value::Array(vec![Value::String(source.clone())]),
+                                    );
+                                    new_unit_table
+                                        .insert("filter_name".to_string(), filter_name.clone());
+                                    let mut rib_type_table = toml::map::Map::new();
+                                    rib_type_table.insert(
+                                        "GeneratedVirtual".to_string(),
+                                        Value::Integer(n.try_into().unwrap()),
+                                    );
+                                    new_unit_table.insert(
+                                        "rib_type".to_string(),
+                                        Value::Table(rib_type_table),
+                                    );
+                                    new_unit_table.insert(
+                                        "vrib_upstream".to_string(),
+                                        Value::String(unit_name.clone()),
+                                    );
+                                    extra_units.insert(
+                                        new_unit_name.clone(),
+                                        Value::Table(new_unit_table),
+                                    );
+                                    source = new_unit_name;
+                                }
 
-    /// Takes an array of strings from the config file.
-    ///
-    /// The value is taken from the entry with the given `key` and, if
-    /// present, the entry is removed. The value must be an array of strings.
-    /// If the key is not present, returns `Ok(None)`. If the entry is present
-    /// but not an array of strings, returns an error.
-    fn take_string_array(
-        &mut self,
-        key: &str
-    ) -> Result<Option<Vec<String>>, Failed> {
-        match self.content.remove(key) {
-            Some(toml::Value::Array(vec)) => {
-                let mut res = Vec::new();
-                for value in vec.into_iter() {
-                    if let toml::Value::String(value) = value {
-                        res.push(value)
-                    }
-                    else {
-                        error!(
-                            "Failed in config file {}: \
-                            '{}' expected to be a array of strings.",
-                            self.path.display(),
-                            key
-                        );
-                        return Err(Failed);
-                    }
-                }
-                Ok(Some(res))
-            }
-            Some(_) => {
-                error!(
-                    "Failed in config file {}: \
-                     '{}' expected to be a array of strings.",
-                    self.path.display(), key
-                );
-                Err(Failed)
-            }
-            None => Ok(None)
-        }
-    }
-    */
+                                // Replace the multiple roto script paths used
+                                // by the physical rib unit with just the
+                                // first roto script path.
+                                unit_table
+                                    .insert("filter_name".to_string(), filter_names[0].clone());
 
-    /// Takes an array of string encoded values from the config file.
-    ///
-    /// The value is taken from the entry with the given `key` and, if
-    /// present, the entry is removed. The value must be an array of strings.
-    /// Each string is converted to the output type via `FromStr::from_str`.
-    ///
-    /// If the key is not present, returns `Ok(None)`. If the entry is present
-    /// but not an array of strings or if converting any of the strings fails,
-    /// returns an error.
-    fn take_from_str_array<T>(&mut self, key: &str) -> Result<Option<Vec<T>>, Failed>
-    where
-        T: FromStr,
-        T::Err: fmt::Display,
-    {
-        match self.content.remove(key) {
-            Some(toml::Value::Array(vec)) => {
-                let mut res = Vec::new();
-                for value in vec.into_iter() {
-                    if let toml::Value::String(value) = value {
-                        match T::from_str(&value) {
-                            Ok(value) => res.push(value),
-                            Err(err) => {
-                                error!(
-                                    "Failed in config file {}: \
-                                     Invalid value in '{}': {}",
-                                    self.path.display(),
-                                    key,
-                                    err
-                                );
-                                return Err(Failed);
+                                // This unit should no longer be the source of
+                                // another unit, rather the last vRIB that we
+                                // added should replace it as source in all
+                                // places it was used before. See *1 below.
+                                source_remappings.insert(unit_name.clone(), source);
                             }
                         }
-                    } else {
-                        error!(
-                            "Failed in config file {}: \
-                            '{}' expected to be a array of strings.",
-                            self.path.display(),
-                            key
-                        );
-                        return Err(Failed);
                     }
                 }
-                Ok(Some(res))
             }
-            Some(_) => {
-                error!(
-                    "Failed in config file {}: \
-                     '{}' expected to be a array of strings.",
-                    self.path.display(),
-                    key
-                );
-                Err(Failed)
-            }
-            None => Ok(None),
         }
+
+        Self::remap_sources(units, &source_remappings);
+
+        // Add the generated vRIB units into the unit set.
+        units.extend(extra_units);
+
+        source_remappings
     }
 
-    /*
-    /// Takes an array of paths from the config file.
-    ///
-    /// The values are taken from the given `key` which must be an array of
-    /// strings. Each path is treated as relative to the directory of the
-    /// config file. All paths are expanded if necessary and are returned as
-    /// absolute paths.
-    ///
-    /// Returns `Ok(None)` if the key does not exist. Returns an error if the
-    /// key exists but the value isn’t an array of string.
-    fn take_path_array(
-        &mut self,
-        key: &str
-    ) -> Result<Option<Vec<PathBuf>>, Failed> {
-        match self.content.remove(key) {
-            Some(toml::Value::String(value)) => {
-                Ok(Some(vec![self.dir.join(value)]))
-            }
-            Some(toml::Value::Array(vec)) => {
-                let mut res = Vec::new();
-                for value in vec.into_iter() {
-                    if let toml::Value::String(value) = value {
-                        res.push(self.dir.join(value))
-                    }
-                    else {
-                        error!(
-                            "Failed in config file {}: \
-                            '{}' expected to be a array of paths.",
-                            self.path.display(),
-                            key
-                        );
-                        return Err(Failed);
-                    }
-                }
-                Ok(Some(res))
-            }
-            Some(_) => {
-                error!(
-                    "Failed in config file {}: \
-                     '{}' expected to be a array of paths.",
-                    self.path.display(), key
-                );
-                Err(Failed)
-            }
-            None => Ok(None)
-        }
-    }*/
+    fn remap_sources(units: &mut toml::Table, source_remappings: &HashMap<String, String>) {
+        for (_unit_name, unit_table_value) in units.iter_mut() {
+            if let Value::Table(unit_table) = unit_table_value {
+                if let Some(source) = unit_table.get_mut("source") {
+                    match source {
+                        Value::String(old_source) => {
+                            if let Some(new_source) = source_remappings.get(old_source) {
+                                old_source.clone_from(new_source);
+                            }
+                        }
 
-    /// Takes a string-to-string hashmap from the config file.
-    fn take_string_map(&mut self, key: &str) -> Result<Option<HashMap<String, String>>, Failed> {
-        match self.content.remove(key) {
-            Some(toml::Value::Array(vec)) => {
-                let mut res = HashMap::new();
-                for value in vec.into_iter() {
-                    let mut pair = match value {
-                        toml::Value::Array(pair) => pair.into_iter(),
-                        _ => {
-                            error!(
-                                "Failed in config file {}: \
-                                '{}' expected to be a array of string pairs.",
-                                self.path.display(),
-                                key
-                            );
-                            return Err(Failed);
-                        }
-                    };
-                    let left = match pair.next() {
-                        Some(toml::Value::String(value)) => value,
-                        _ => {
-                            error!(
-                                "Failed in config file {}: \
-                                '{}' expected to be a array of string pairs.",
-                                self.path.display(),
-                                key
-                            );
-                            return Err(Failed);
-                        }
-                    };
-                    let right = match pair.next() {
-                        Some(toml::Value::String(value)) => value,
-                        _ => {
-                            error!(
-                                "Failed in config file {}: \
-                                '{}' expected to be a array of string pairs.",
-                                self.path.display(),
-                                key
-                            );
-                            return Err(Failed);
-                        }
-                    };
-                    if pair.next().is_some() {
-                        error!(
-                            "Failed in config file {}: \
-                            '{}' expected to be a array of string pairs.",
-                            self.path.display(),
-                            key
-                        );
-                        return Err(Failed);
-                    }
-                    if res.insert(left, right).is_some() {
-                        error!(
-                            "Failed in config file {}: \
-                            'duplicate item in '{}'.",
-                            self.path.display(),
-                            key
-                        );
-                        return Err(Failed);
+                        _ => unreachable!(),
                     }
                 }
-                Ok(Some(res))
-            }
-            Some(_) => {
-                error!(
-                    "Failed in config file {}: \
-                     '{}' expected to be a array of string pairs.",
-                    self.path.display(),
-                    key
-                );
-                Err(Failed)
-            }
-            None => Ok(None),
-        }
-    }
+                if let Some(sources) = unit_table.get_mut("sources") {
+                    match sources {
+                        Value::String(old_source) => {
+                            if let Some(new_source) = source_remappings.get(old_source) {
+                                old_source.clone_from(new_source);
+                            }
+                        }
 
-    /// Checks whether the config file is now empty.
-    ///
-    /// If it isn’t, logs a complaint and returns an error.
-    fn check_exhausted(&self) -> Result<(), Failed> {
-        if !self.content.is_empty() {
-            print!(
-                "Failed in config file {}: Unknown settings ",
-                self.path.display()
-            );
-            let mut first = true;
-            for key in self.content.keys() {
-                if !first {
-                    print!(",");
-                } else {
-                    first = false
+                        Value::Array(old_sources) => {
+                            for old_source in old_sources {
+                                match old_source {
+                                    Value::String(old_source) => {
+                                        if let Some(new_source) = source_remappings.get(old_source)
+                                        {
+                                            old_source.clone_from(new_source);
+                                        }
+                                    }
+
+                                    _ => unreachable!(),
+                                }
+                            }
+                        }
+
+                        _ => unreachable!(),
+                    }
                 }
-                print!("{}", key);
             }
-            error!(".");
-            Err(Failed)
-        } else {
-            Ok(())
         }
     }
 }
 
-//------------ tls -----------------------------------------------------------
+//------------ ConfigError --------------------------------------------------
 
-#[cfg(feature = "tls")]
-mod tls {
-    use rustls_pemfile::{certs, rsa_private_keys};
-    use std::{
-        fs::File,
-        io::{self, BufReader},
-        path::Path,
-    };
-    use tokio_rustls::rustls::{Certificate, PrivateKey};
+/// An error occurred during parsing of a configuration file.
+#[derive(Clone, Debug)]
+pub struct ConfigError {
+    err: toml::de::Error,
+    pos: Marked<()>,
+}
 
-    pub fn load_certs(path: &Path) -> io::Result<Vec<Certificate>> {
-        certs(&mut BufReader::new(File::open(path)?))
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid cert"))
-            .map(|mut certs| certs.drain(..).map(Certificate).collect())
+impl ConfigError {
+    pub fn new(err: toml::de::Error, file: &ConfigFile) -> Self {
+        ConfigError {
+            pos: Marked {
+                value: (),
+                index: 0,
+                source: Some(file.source.clone()),
+                pos: err.span().map(|span| file.resolve_pos(span.start)),
+            },
+            err,
+        }
+    }
+}
+
+impl fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        self.pos.format_mark(f)?;
+        write!(f, ": {}", self.err)
+    }
+}
+
+impl error::Error for ConfigError {}
+
+//------------ ConfigPath ----------------------------------------------------
+
+/// A path that encountered in a config file.
+///
+/// This is a basically a `PathBuf` that, when, deserialized resolves all
+/// relative paths from a certain base path so that all relative paths
+/// encountered in a config file are automatically resolved relative to the
+/// location of the config file.
+#[derive(Clone, Debug, Default, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[serde(from = "String")]
+pub struct ConfigPath(PathBuf);
+
+impl ConfigPath {
+    thread_local!(
+        static BASE_PATH: RefCell<Option<PathBuf>> = const { RefCell::new(None) }
+    );
+
+    fn set_base_path(path: PathBuf) {
+        Self::BASE_PATH.with(|base_path| {
+            base_path.replace(Some(path));
+        })
     }
 
-    pub fn load_keys(path: &Path) -> io::Result<Vec<PrivateKey>> {
-        rsa_private_keys(&mut BufReader::new(File::open(path)?))
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid key"))
-            .map(|mut keys| keys.drain(..).map(PrivateKey).collect())
+    fn clear_base_path() {
+        Self::BASE_PATH.with(|base_path| {
+            base_path.replace(None);
+        })
+    }
+}
+
+impl From<PathBuf> for ConfigPath {
+    fn from(path: PathBuf) -> Self {
+        Self(path)
+    }
+}
+
+impl From<ConfigPath> for PathBuf {
+    fn from(path: ConfigPath) -> Self {
+        path.0
+    }
+}
+
+impl From<String> for ConfigPath {
+    fn from(path: String) -> Self {
+        Self::BASE_PATH.with(|base_path| {
+            ConfigPath(match base_path.borrow().as_ref() {
+                Some(base_path) => base_path.join(path.as_str()),
+                None => path.into(),
+            })
+        })
+    }
+}
+
+impl ops::Deref for ConfigPath {
+    type Target = Path;
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref()
+    }
+}
+
+impl AsRef<Path> for ConfigPath {
+    fn as_ref(&self) -> &Path {
+        self.0.as_ref()
     }
 }
