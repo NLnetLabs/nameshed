@@ -63,7 +63,7 @@ use domain::dnssec::sign::error::SigningError;
 use domain::tsig::KeyStore;
 use domain::tsig::{Algorithm, Key, KeyName};
 use domain::utils::base64;
-use domain::zonefile::inplace;
+use domain::zonefile::inplace::{self, Entry, Zonefile};
 use domain::zonetree::types::{StoredRecordData, ZoneUpdate};
 use domain::zonetree::update::ZoneUpdater;
 use domain::zonetree::{
@@ -121,11 +121,16 @@ use crate::zonemaintenance::types::{
     CompatibilityMode, NotifyConfig, TransportStrategy, XfrConfig, XfrStrategy, ZoneConfig,
     ZoneMaintainerKeyStore,
 };
+use domain::dnssec::sign::keys::keyset::KeySet;
+use std::io::Read;
 use tokio::task::spawn_blocking;
 
 #[serde_as]
 #[derive(Clone, Debug, Deserialize)]
 pub struct ZoneSignerUnit {
+    /// The set of units to receive messages from.
+    sources: NonEmpty<DirectLink>,
+
     /// The relative path at which we should listen for HTTP query API requests
     #[serde(default = "ZoneSignerUnit::default_http_api_path")]
     http_api_path: Arc<String>,
@@ -181,7 +186,7 @@ impl ZoneSignerUnit {
         self,
         mut component: Component,
         gate: Gate,
-        mut waitpoint: WaitPoint,
+        waitpoint: WaitPoint,
     ) -> Result<(), Terminated> {
         let unit_name = component.name().clone();
 
@@ -191,94 +196,9 @@ impl ZoneSignerUnit {
 
         // Setup our status reporting
         let status_reporter = Arc::new(ZoneSignerStatusReporter::new(&unit_name, metrics.clone()));
+        let component = Arc::new(RwLock::new(component));
 
-        let mut key_path_stems = HashSet::new();
-        let mut keys = HashMap::<StoredName, Vec<SigningKey<Bytes, KeyPair>>>::new();
-
-        info!("Loading key pairs from '{}'.", self.keys_path.display());
-        for entry in std::fs::read_dir(&self.keys_path).map_err(|err| {
-            error!(
-                "Unable to load keys from '{}': {err}",
-                self.keys_path.display()
-            );
-            Terminated
-        })? {
-            match entry {
-                Ok(entry)
-                    if entry
-                        .file_type()
-                        .map(|typ| typ.is_file())
-                        .unwrap_or_default() =>
-                {
-                    let path = entry.path();
-                    match (path.file_stem(), path.extension()) {
-                        (Some(stem), Some(ext)) if ext == "key" || ext == "private" => {
-                            key_path_stems.insert(stem.to_owned());
-                        }
-                        _ => { /* Skip */ }
-                    }
-                }
-                _ => { /* Skip */ }
-            }
-        }
-
-        for stem in key_path_stems {
-            let key_path = self.keys_path.join(stem);
-            debug!("Attempting to load key pair '{}'.", key_path.display());
-
-            let priv_key_path = Self::mk_private_key_path(&key_path);
-            let private_key = Self::load_private_key(&priv_key_path).inspect_err(|_| {
-                error!(
-                    "Failed to load private key from '{}'",
-                    priv_key_path.display()
-                );
-            })?;
-
-            let pub_key_path = Self::mk_public_key_path(&key_path);
-            let public_key = Self::load_public_key(&pub_key_path).inspect_err(|_| {
-                error!(
-                    "Failed to load public key from '{}'",
-                    pub_key_path.display()
-                );
-            })?;
-
-            let key = self
-                .mk_signing_key(
-                    (*public_key.owner()).clone(),
-                    &private_key,
-                    (*public_key.data()).clone(),
-                )
-                .map_err(|err| {
-                    error!(
-                        "Failed to make key pair for '{}': {err}",
-                        key_path.display()
-                    );
-                    Terminated
-                })?;
-
-            match keys.entry(key.owner().to_owned()) {
-                Occupied(mut e) => {
-                    e.get_mut().push(key);
-                }
-                Vacant(e) => {
-                    e.insert(vec![key]);
-                }
-            }
-
-            info!("Loaded key pair from {}", key_path.display());
-        }
-
-        // Wait for other components to be, and signal to other components
-        // that we are, ready to start. All units and targets start together,
-        // otherwise data passed from one component to another may be lost if
-        // the receiving component is not yet ready to accept it.
-        gate.process_until(waitpoint.ready()).await?;
-
-        // Signal again once we are out of the process_until() so that anyone
-        // waiting to send important gate status updates won't send them while
-        // we are in process_until() which will just eat them without handling
-        // them.
-        waitpoint.running().await;
+        let gate_clone = gate.clone();
 
         ZoneSigner::new(
             component,
@@ -286,7 +206,6 @@ impl ZoneSignerUnit {
             gate,
             metrics,
             status_reporter,
-            keys,
             self.rrsig_inception_offset_secs,
             self.rrsig_expiration_offset_secs,
             self.denial_config,
@@ -294,8 +213,9 @@ impl ZoneSignerUnit {
             self.max_concurrent_operations,
             self.max_concurrent_rrsig_generation_tasks,
             self.treat_single_keys_as_csks,
+            self.keys_path,
         )
-        .run()
+        .run(self.sources, waitpoint)
         .await?;
 
         Ok(())
@@ -361,7 +281,6 @@ impl ZoneSignerUnit {
     }
 
     fn mk_signing_key(
-        &self,
         owner: Name<Bytes>,
         private_key: &SecretKeyBytes,
         public_key: Dnskey<Bytes>,
@@ -375,13 +294,12 @@ impl ZoneSignerUnit {
 //------------ ZoneSigner ----------------------------------------------------
 
 struct ZoneSigner {
-    component: Component,
+    component: Arc<RwLock<Component>>,
     #[allow(dead_code)]
     http_api_path: Arc<String>,
     gate: Gate,
     metrics: Arc<ZoneSignerMetrics>,
     status_reporter: Arc<ZoneSignerStatusReporter>,
-    signing_keys: Arc<std::sync::RwLock<HashMap<StoredName, Vec<SigningKey<Bytes, KeyPair>>>>>,
     inception_offset_secs: u32,
     expiration_offset: u32,
     denial_config: TomlDenialConfig,
@@ -390,17 +308,17 @@ struct ZoneSigner {
     max_concurrent_rrsig_generation_tasks: usize,
     signer_status: Arc<RwLock<ZoneSignerStatus>>,
     treat_single_keys_as_csks: bool,
+    keys_path: PathBuf,
 }
 
 impl ZoneSigner {
     #[allow(clippy::too_many_arguments)]
     fn new(
-        component: Component,
+        component: Arc<RwLock<Component>>,
         http_api_path: Arc<String>,
         gate: Gate,
         metrics: Arc<ZoneSignerMetrics>,
         status_reporter: Arc<ZoneSignerStatusReporter>,
-        signing_keys: HashMap<StoredName, Vec<SigningKey<Bytes, KeyPair>>>,
         inception_offset_secs: u32,
         expiration_offset: u32,
         denial_config: TomlDenialConfig,
@@ -408,6 +326,7 @@ impl ZoneSigner {
         max_concurrent_operations: usize,
         max_concurrent_rrsig_generation_tasks: usize,
         treat_single_keys_as_csks: bool,
+        keys_path: PathBuf,
     ) -> Self {
         Self {
             component,
@@ -415,7 +334,6 @@ impl ZoneSigner {
             gate,
             metrics,
             status_reporter,
-            signing_keys: Arc::new(std::sync::RwLock::new(signing_keys)),
             inception_offset_secs,
             expiration_offset,
             denial_config,
@@ -424,33 +342,63 @@ impl ZoneSigner {
             max_concurrent_rrsig_generation_tasks,
             signer_status: Default::default(),
             treat_single_keys_as_csks,
+            keys_path,
         }
     }
 
-    async fn run(mut self) -> Result<(), crate::comms::Terminated> {
-        let component_name = self.component.name().clone();
+    async fn run(
+        self,
+        mut sources: NonEmpty<DirectLink>,
+        mut waitpoint: WaitPoint,
+    ) -> Result<(), crate::comms::Terminated> {
+        let arc_self = Arc::new(self);
+
+        // Register as a direct update receiver with the linked gates.
+        for link in sources.iter_mut() {
+            link.connect(arc_self.clone(), false)
+                .await
+                .map_err(|_| Terminated)?;
+        }
+
+        // Wait for other components to be, and signal to other components
+        // that we are, ready to start. All units and targets start together,
+        // otherwise data passed from one component to another may be lost if
+        // the receiving component is not yet ready to accept it.
+        arc_self.gate.process_until(waitpoint.ready()).await?;
+
+        // Signal again once we are out of the process_until() so that anyone
+        // waiting to send important gate status updates won't send them while
+        // we are in process_until() which will just eat them without handling
+        // them.
+        waitpoint.running().await;
+
+        let component_name = arc_self.component.read().await.name().clone();
 
         // Setup REST API endpoint
         let http_processor = Arc::new(SigningHistoryApi::new(
-            self.http_api_path.clone(),
-            self.signer_status.clone(),
+            arc_self.http_api_path.clone(),
+            arc_self.signer_status.clone(),
         ));
-        self.component
-            .register_http_resource(http_processor.clone(), &self.http_api_path);
+        arc_self
+            .component
+            .write()
+            .await
+            .register_http_resource(http_processor.clone(), &arc_self.http_api_path);
 
         loop {
-            match self.gate.process().await {
+            match arc_self.gate.process().await {
                 Err(Terminated) => {
-                    self.status_reporter.terminated();
+                    arc_self.status_reporter.terminated();
                     return Ok(());
                 }
 
                 Ok(status) => {
-                    self.status_reporter.gate_status_announced(&status);
+                    arc_self.status_reporter.gate_status_announced(&status);
                     match status {
                         GateStatus::Reconfiguring {
                             new_config:
                                 Unit::ZoneSigner(ZoneSignerUnit {
+                                    sources,
                                     http_api_path,
                                     keys_path,
                                     treat_single_keys_as_csks: treat_single_key_as_csk,
@@ -463,32 +411,14 @@ impl ZoneSigner {
                                 }),
                         } => {
                             // Runtime reconfiguration of this unit has been
-                            // requested. New connections will be handled
-                            // using the new configuration, existing
-                            // connections handled by router_handler() tasks
-                            // will receive their own copy of this
-                            // Reconfiguring status update and can react to it
-                            // accordingly. let rebind = self.listen !=
-                            // new_listen;
-
-                            // self.listen = new_listen;
-                            // self.filter_name.store(new_filter_name.into());
-                            // self.router_id_template
-                            //     .store(new_router_id_template.into());
-                            // self.tracing_mode.store(new_tracing_mode.into());
-
-                            // if rebind {
-                            //     // Trigger re-binding to the new listen port.
-                            //     let err = std::io::ErrorKind::Other;
-                            //     return ControlFlow::Continue(
-                            //         Err(err.into()),
-                            //     );
-                            // }
+                            // requested.
+                            // Report that we have finished handling the reconfigure command
+                            arc_self.status_reporter.reconfigured();
                         }
 
                         GateStatus::ReportLinks { report } => {
-                            report.declare_source();
-                            report.set_graph_status(self.metrics.clone());
+                            report.set_sources(&sources);
+                            report.set_graph_status(arc_self.metrics.clone());
                         }
 
                         GateStatus::ApplicationCommand { cmd } => {
@@ -499,7 +429,7 @@ impl ZoneSigner {
                                     zone_serial,
                                 } => {
                                     if let Err(err) =
-                                        self.sign_zone(component_name.clone(), zone_name).await
+                                        arc_self.sign_zone(component_name.clone(), zone_name).await
                                     {
                                         error!("[{component_name}]: Signing of zone '{zone_name}' failed: {err}");
                                     }
@@ -533,7 +463,7 @@ impl ZoneSigner {
         // Lookup the unsigned zone.
         //
         let unsigned_zone = {
-            let unsigned_zones = self.component.unsigned_zones().load();
+            let unsigned_zones = self.component.read().await.unsigned_zones().load();
             unsigned_zones.get_zone(&zone_name, Class::IN).cloned()
         };
         let Some(unsigned_zone) = unsigned_zone else {
@@ -553,7 +483,7 @@ impl ZoneSigner {
         // Lookup the signed zone to update, or create a new empty zone to
         // sign into.
         //
-        let zone = self.get_or_insert_signed_zone(zone_name);
+        let zone = self.get_or_insert_signed_zone(zone_name).await;
 
         //
         // Create a signing configuration.
@@ -577,65 +507,77 @@ impl ZoneSigner {
             s.walk_time = Some(Duration::from_secs(walk_time));
         });
 
-        //
-        // Get the signing keys for the zone.
-        // TODO: Receive these from the key manager.
-        //
-        let no_keys = vec![];
-        let mut ksks = vec![];
+        /// Persistent state for the keyset command.
+        #[derive(Deserialize, Serialize)]
+        struct KeySetState {
+            /// Domain KeySet state.
+            keyset: KeySet,
 
-        //
-        // Generate RRSIGs for DNSKEY RRs.
-        // TODO: Receive the DNSKEY RRset and its RRSIG from the key manager.
-        //
-        {
-            let signing_keys = self.signing_keys.read().unwrap();
-            let signing_keys = signing_keys.get(zone_name).unwrap_or(&no_keys);
+            dnskey_rrset: Vec<String>,
+            ds_rrset: Vec<String>,
+            cds_rrset: Vec<String>,
+            ns_rrset: Vec<String>,
+        }
 
-            for k in signing_keys {
-                // Is KSK?
-                if k.is_secure_entry_point() {
-                    trace!("[{component_name}]: Found KSK for '{zone_name}'.");
-                    ksks.push(k);
-                }
+        // Read the DNSKEY RRs and DNSKEY RRSIG RR from the keyset state.
+        let apex_name = zone.apex_name().to_string();
+        let state_path = Path::new("/tmp/").join(format!("{apex_name}.state"));
+        let state = std::fs::read_to_string(state_path).unwrap();
+        let state: KeySetState = serde_json::from_str(&state).unwrap();
+        for dnskey_rr in state.dnskey_rrset {
+            let mut zonefile = Zonefile::new();
+            zonefile.extend_from_slice(dnskey_rr.as_bytes());
+            zonefile.extend_from_slice(b"\n");
+            if let Ok(Some(Entry::Record(rec))) = zonefile.next_entry() {
+                eprintln!("Adding RR {dnskey_rr}");
+                records.push(rec.flatten_into());
             }
+        }
 
-            // TODO: This will not be correct if there are some KSK/ZSK pairs and
-            // some lone ZSKs, the lone ZSKs will not be treated as KSKs by this
-            // simplistic approach.
-            if self.treat_single_keys_as_csks && ksks.is_empty() {
-                for k in signing_keys {
-                    trace!("[{component_name}]: Using ZSK as KSK for '{zone_name}'.");
-                    ksks.push(k);
-                }
-            }
+        // Load the signing keys indicated by the keyset state.
+        let mut signing_keys = vec![];
+        for (pub_key_name, key_info) in state.keyset.keys() {
+            if let Some(priv_key_name) = key_info.privref() {
+                let priv_key_path = self.keys_path.join(priv_key_name);
+                debug!(
+                    "Attempting to load private key '{}'.",
+                    priv_key_path.display()
+                );
 
-            // Add a DNSKEY RR to the zone for each signing key.
-            // Assumes that the incoming unsigned zone has no DNSKEY RRs.
-            let mut dnskey_rrs = vec![];
-            for k in signing_keys {
-                let pubkey: Dnskey<Bytes> = k.dnskey().convert();
-                let data: ZoneRecordData<Bytes, StoredName> = ZoneRecordData::Dnskey(pubkey);
-                let record = Record::new(zone_name.clone(), Class::IN, soa_rr.ttl(), data);
-                dnskey_rrs.push(record.clone());
-                records.push(record);
-                trace!("[{component_name}]: Generated DNSKEY RR for '{zone_name}'.");
-            }
-            let dnskey_rrset = Rrset::new(&dnskey_rrs).unwrap();
+                let private_key =
+                    ZoneSignerUnit::load_private_key(&priv_key_path).map_err(|_| {
+                        format!(
+                            "Failed to load private key from '{}'",
+                            priv_key_path.display()
+                        )
+                    })?;
 
-            // Add an RRSIG RR for the new DNSKEY RRset for each KSK that we use.
-            for k in &ksks {
-                let rrsig = sign_rrset(
-                    k,
-                    &dnskey_rrset,
-                    signing_config.inception,
-                    signing_config.expiration,
+                let pub_key_path = self.keys_path.join(pub_key_name);
+                debug!(
+                    "Attempting to load public key '{}'.",
+                    pub_key_path.display()
+                );
+
+                let public_key = ZoneSignerUnit::load_public_key(&pub_key_path).map_err(|_| {
+                    format!(
+                        "Failed to load public key from '{}'",
+                        pub_key_path.display()
+                    )
+                })?;
+
+                let key = ZoneSignerUnit::mk_signing_key(
+                    (*public_key.owner()).clone(),
+                    &private_key,
+                    (*public_key.data()).clone(),
                 )
-                .expect("should not fail");
-                let data = ZoneRecordData::Rrsig(rrsig.data().clone());
-                let record = Record::new(rrsig.owner().clone(), rrsig.class(), rrsig.ttl(), data);
-                records.push(record);
-                trace!("[{component_name}]: Generated RRSIG for DNSKEY RRset for '{zone_name}'.");
+                .map_err(|err| {
+                    format!(
+                        "Failed to make key pair for '{}': {err}",
+                        pub_key_path.display()
+                    )
+                })?;
+
+                signing_keys.push(key);
             }
         }
 
@@ -725,7 +667,7 @@ impl ZoneSigner {
 
         // Generate RRSIGs concurrently.
         trace!("SIGNER: Generating RRSIGs concurrently..");
-        let keys = self.signing_keys.clone();
+        let keys = Arc::new(signing_keys);
         let passed_zone_name = zone_name.clone();
         let treat_single_keys_as_csks = self.treat_single_keys_as_csks;
 
@@ -844,14 +786,13 @@ impl ZoneSigner {
         (parallelism, chunk_size)
     }
 
-    fn get_or_insert_signed_zone(&self, zone_name: &StoredName) -> Zone {
+    async fn get_or_insert_signed_zone(&self, zone_name: &StoredName) -> Zone {
         // Create an empty zone to sign into if no existing signed zone exists.
-        let signed_zones = self.component.signed_zones().load();
+        let signed_zones = self.component.read().await.signed_zones().load();
 
-        signed_zones
-            .get_zone(zone_name, Class::IN)
-            .cloned()
-            .unwrap_or_else(move || {
+        match signed_zones.get_zone(zone_name, Class::IN).cloned() {
+            Some(zone) => zone,
+            None => {
                 let mut new_zones = Arc::unwrap_or_clone(signed_zones.clone());
 
                 let new_zone = if self.use_lightweight_zone_tree {
@@ -861,10 +802,15 @@ impl ZoneSigner {
                 };
 
                 new_zones.insert_zone(new_zone.clone()).unwrap();
-                self.component.signed_zones().store(Arc::new(new_zones));
+                self.component
+                    .read()
+                    .await
+                    .signed_zones()
+                    .store(Arc::new(new_zones));
 
                 new_zone
-            })
+            }
+        }
     }
 
     fn signing_config(&self) -> SigningConfig<Bytes, MultiThreadedSorter> {
@@ -904,16 +850,10 @@ fn sign_rr_chunk(
     thread_idx: usize,
     rrsig_cfg: &GenerateRrsigConfig,
     tx: Sender<(Vec<Record<StoredName, Rrsig<Bytes, StoredName>>>, Duration)>,
-    keys: Arc<std::sync::RwLock<HashMap<StoredName, Vec<SigningKey<Bytes, KeyPair>>>>>,
+    keys: Arc<Vec<SigningKey<Bytes, KeyPair>>>,
     zone_name: StoredName,
     treat_single_keys_as_csks: bool,
 ) {
-    let keys = keys.read().unwrap();
-    let Some(keys) = keys.get(&zone_name) else {
-        error!("No key found for zone '{zone_name}");
-        return;
-    };
-
     let mut iter = RecordsIter::new(records);
     let mut n = 0;
     let mut m = 0;
@@ -945,16 +885,13 @@ fn sign_rr_chunk(
         // trace!("SIGNER: Thread {i}: processing owner_rrs slice of len {}.", slice.len());
         let before = Instant::now();
         // TODO: It's stupid to build this same ZSK set every time this fn is called.
-        let mut zsks = keys
-            .iter()
-            .filter(|k| !k.is_secure_entry_point())
-            .collect::<Vec<_>>();
+        let mut zsks = keys.iter().collect::<Vec<_>>();
 
         // TODO: This will not be correct if there are some KSK/ZSK pairs and
         // some lone KSKs, the lone KSKs will not be treated as ZSKs by this
         // simplistic approach.
         if treat_single_keys_as_csks && zsks.is_empty() {
-            for k in keys {
+            for k in keys.iter() {
                 zsks.push(k);
             }
         }
@@ -1080,17 +1017,17 @@ impl std::fmt::Debug for ZoneSigner {
     }
 }
 
-// #[async_trait]
-// impl DirectUpdate for ZoneSigner {
-//     async fn direct_update(&self, event: Update) {
-//         info!(
-//             "[{}]: Received event: {event:?}",
-//             self.component.read().await.name()
-//         );
-//     }
-// }
+#[async_trait]
+impl DirectUpdate for ZoneSigner {
+    async fn direct_update(&self, event: Update) {
+        info!(
+            "[{}]: Received event: {event:?}",
+            self.component.read().await.name()
+        );
+    }
+}
 
-// impl AnyDirectUpdate for ZoneSigner {}
+impl AnyDirectUpdate for ZoneSigner {}
 
 //------------ ZoneSigningStatus ---------------------------------------------
 
