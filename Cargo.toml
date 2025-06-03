@@ -9,8 +9,9 @@ bytes	       = "1.0"
 chrono         = "0.4.11"
 clap           = { version = "4.4", features = [ "cargo", "wrap_help" ] }
 dirs           = "4.0"
-domain         = { git = "https://github.com/NLnetLabs/domain", branch = "patches-for-nameshed-prototype", features = [
-#domain         = { path = "../domain4", features = [
+# domain         = { git = "https://github.com/NLnetLabs/domain", branch = "patches-for-nameshed-prototype", features = [
+# Use a branch of domain that includes branch patches-for-nameshed-prototype AND branch new-zonefile.
+domain         = { path = "../domain4", features = [
     "openssl",
     "tokio-stream",
     "tsig",
@@ -19,6 +20,7 @@ domain         = { git = "https://github.com/NLnetLabs/domain", branch = "patche
     "unstable-server-transport",
     "unstable-sign",
     "unstable-zonetree",
+    "unstable-new",
 ] }
 fern           = "0.6.0"
 futures        = "0.3.17"

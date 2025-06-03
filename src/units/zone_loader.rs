@@ -6,7 +6,7 @@ use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Display;
 use std::fs::File;
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::ops::{ControlFlow, Deref};
 use std::pin::Pin;
 use std::str::FromStr;
@@ -36,6 +36,8 @@ use domain::net::server::service::{CallResult, Service, ServiceError, ServiceRes
 use domain::net::server::stream::{self, StreamServer};
 use domain::net::server::util::{mk_error_response, service_fn};
 use domain::net::server::ConnectionConfig;
+use domain::new::base::wire::{AsBytes, BuildBytes, ParseBytes};
+use domain::rdata::rfc1035::TxtBuilder;
 use domain::rdata::ZoneRecordData;
 use domain::tsig::KeyStore;
 use domain::tsig::{Algorithm, Key, KeyName};
@@ -94,6 +96,14 @@ use crate::zonemaintenance::types::{
     CompatibilityMode, NotifyConfig, TransportStrategy, XfrConfig, XfrStrategy, ZoneConfig,
     ZoneMaintainerKeyStore, ZoneRefreshCause, ZoneRefreshStatus, ZoneReportDetails,
 };
+use core::net::Ipv4Addr;
+use domain::new::base::name::NameBuf;
+use domain::new::base::Record;
+use domain::new::rdata::BoxedRecordData;
+use domain::new::zonefile::simple::ZonefileScanner;
+use domain::zonetree::types::ZoneUpdate;
+use domain::zonetree::update::ZoneUpdater;
+use std::io::BufReader;
 
 #[serde_as]
 #[derive(Clone, Debug, Deserialize)]
@@ -182,7 +192,7 @@ impl ZoneLoaderUnit {
                     "[{}]: Loading primary zone '{zone_name}' from '{zone_path}'..",
                     component.name()
                 );
-                let mut zone_file = File::open(zone_path)
+                let /*mut*/ zone_file = File::open(zone_path)
                     .inspect_err(|err| {
                         error!(
                             "[{}]: Error: Failed to open zone file '{zone_path}': {err}",
@@ -191,52 +201,194 @@ impl ZoneLoaderUnit {
                     })
                     .map_err(|_| Terminated)?;
 
-                // Don't use Zonefile::load() as it knows nothing about the
-                // size of the original file so uses default allocation which
-                // allocates more bytes than are needed. Instead control the
-                // allocation size based on our knowledge of the file size.
-                let zone_file_len = zone_file
-                    .metadata()
+                // // Don't use Zonefile::load() as it knows nothing about the
+                // // size of the original file so uses default allocation which
+                // // allocates more bytes than are needed. Instead control the
+                // // allocation size based on our knowledge of the file size.
+                // let zone_file_len = zone_file
+                //     .metadata()
+                //     .inspect_err(|err| {
+                //         error!(
+                //             "[{}]: Error: Failed to read metadata for file '{zone_path}': {err}",
+                //             component.name()
+                //         )
+                //     })
+                //     .map_err(|_| Terminated)?
+                //     .len();
+                // let mut buf = inplace::Zonefile::with_capacity(zone_file_len as usize).writer();
+                // std::io::copy(&mut zone_file, &mut buf)
+                //     .inspect_err(|err| {
+                //         error!(
+                //             "[{}]: Error: Failed to read data from file '{zone_path}': {err}",
+                //             component.name()
+                //         )
+                //     })
+                //     .map_err(|_| Terminated)?;
+                // let reader = buf.into_inner();
+
+                // let res = Zone::try_from(reader);
+                // let Ok(zone) = res else {
+                //     let errors = res.unwrap_err();
+                //     let mut msg = format!("Failed to parse zone: {} errors", errors.len());
+                //     for (name, err) in errors.into_iter() {
+                //         msg.push_str(&format!("  {name}: {err}\n"));
+                //     }
+                //     error!(
+                //         "[{}]: Error parsing zone '{zone_name}': {}",
+                //         component.name(),
+                //         msg
+                //     );
+                //     return Err(Terminated);
+                // };
+
+                // info!(
+                //     "Loaded {zone_file_len} bytes from '{zone_path}' in {} secs",
+                //     before.elapsed().as_secs()
+                // );
+
+                let apex_name = Name::from_str(zone_name)
                     .inspect_err(|err| {
                         error!(
-                            "[{}]: Error: Failed to read metadata for file '{zone_path}': {err}",
-                            component.name()
-                        )
-                    })
-                    .map_err(|_| Terminated)?
-                    .len();
-                let mut buf = inplace::Zonefile::with_capacity(zone_file_len as usize).writer();
-                std::io::copy(&mut zone_file, &mut buf)
-                    .inspect_err(|err| {
-                        error!(
-                            "[{}]: Error: Failed to read data from file '{zone_path}': {err}",
+                            "[{}]: Error: Invalid zone name '{zone_name}': {err}",
                             component.name()
                         )
                     })
                     .map_err(|_| Terminated)?;
-                let reader = buf.into_inner();
+                info!("[{}]: Adding primary zone '{zone_name}'", component.name());
+                let zone = Zone::new(LightWeightZone::new(apex_name, true));
+                let mut updater = ZoneUpdater::<StoredName>::new(zone.clone(), false)
+                    .await
+                    .unwrap();
 
-                let res = Zone::try_from(reader);
-                let Ok(zone) = res else {
-                    let errors = res.unwrap_err();
-                    let mut msg = format!("Failed to parse zone: {} errors", errors.len());
-                    for (name, err) in errors.into_iter() {
-                        msg.push_str(&format!("  {name}: {err}\n"));
+                let file = BufReader::new(zone_file);
+                let mut scanner = ZonefileScanner::new(file, None);
+
+                while let Some(entry) = scanner.scan().transpose() {
+                    eprintln!("REC");
+                    match entry {
+                        Ok(domain::new::zonefile::simple::Entry::Record(Record {
+                            rname,
+                            rtype,
+                            rclass,
+                            ttl,
+                            rdata,
+                        })) => {
+                            // TODO: This next line doesn't work because the
+                            // bytes are in reverse order due to us being
+                            // given a NameRev.
+                            let owner = Name::from_octets(Bytes::copy_from_slice(rname.as_bytes()))
+                                .unwrap();
+                            let class = domain::base::iana::Class::IN;
+                            let ttl = domain::base::Ttl::from_secs(ttl.value.get());
+                            let data: ZoneRecordData<Bytes, Name<Bytes>> = match rdata {
+                                domain::new::rdata::RecordData::A(a) => {
+                                    ZoneRecordData::A(domain::rdata::A::new(a.into()))
+                                }
+
+                                domain::new::rdata::RecordData::Ns(ns) => {
+                                    let server = domain::rdata::Ns::new(
+                                        Name::from_octets(Bytes::copy_from_slice(
+                                            ns.server.as_bytes(),
+                                        ))
+                                        .unwrap(),
+                                    );
+                                    ZoneRecordData::Ns(server)
+                                }
+
+                                domain::new::rdata::RecordData::CName(cname) => {
+                                    let cname = domain::rdata::Cname::new(
+                                        Name::from_octets(Bytes::copy_from_slice(
+                                            cname.name.as_bytes(),
+                                        ))
+                                        .unwrap(),
+                                    );
+                                    ZoneRecordData::Cname(cname)
+                                }
+
+                                domain::new::rdata::RecordData::Soa(soa) => {
+                                    let mname = Name::from_octets(Bytes::copy_from_slice(
+                                        soa.mname.as_bytes(),
+                                    ))
+                                    .unwrap();
+                                    let rname = Name::from_octets(Bytes::copy_from_slice(
+                                        soa.rname.as_bytes(),
+                                    ))
+                                    .unwrap();
+                                    let serial = domain::base::Serial(soa.serial.into());
+                                    let refresh = domain::base::Ttl::from_secs(soa.refresh.get());
+                                    let retry = domain::base::Ttl::from_secs(soa.retry.get());
+                                    let expire = domain::base::Ttl::from_secs(soa.expire.get());
+                                    let minimum = domain::base::Ttl::from_secs(soa.minimum.get());
+                                    ZoneRecordData::Soa(domain::rdata::Soa::new(
+                                        mname, rname, serial, refresh, retry, expire, minimum,
+                                    ))
+                                }
+
+                                domain::new::rdata::RecordData::Ptr(ptr) => {
+                                    let ptrdname = Name::from_octets(Bytes::copy_from_slice(
+                                        ptr.name.as_bytes(),
+                                    ))
+                                    .unwrap();
+                                    ZoneRecordData::Ptr(domain::rdata::Ptr::new(ptrdname))
+                                }
+
+                                domain::new::rdata::RecordData::HInfo(hinfo) => {
+                                    todo!()
+                                }
+
+                                domain::new::rdata::RecordData::Mx(mx) => {
+                                    let preference = mx.preference.get();
+                                    let exchange = Name::from_octets(Bytes::copy_from_slice(
+                                        mx.exchange.as_bytes(),
+                                    ))
+                                    .unwrap();
+                                    ZoneRecordData::Mx(domain::rdata::Mx::new(preference, exchange))
+                                }
+
+                                domain::new::rdata::RecordData::Txt(txt) => {
+                                    let txt = domain::rdata::Txt::from_octets(
+                                        Bytes::copy_from_slice(txt.as_bytes()),
+                                    )
+                                    .unwrap();
+                                    ZoneRecordData::Txt(txt)
+                                }
+
+                                domain::new::rdata::RecordData::Aaaa(aaaa) => {
+                                    ZoneRecordData::Aaaa(domain::rdata::Aaaa::new(aaaa.into()))
+                                }
+
+                                domain::new::rdata::RecordData::Opt(opt) => todo!(), // ??? This should never be in a zone file
+
+                                // We shouldn't see DNSSEC RRs in the incoming unsigned zone data
+                                domain::new::rdata::RecordData::Ds(_)
+                                | domain::new::rdata::RecordData::RRSig(_)
+                                | domain::new::rdata::RecordData::NSec(_)
+                                | domain::new::rdata::RecordData::DNSKey(_)
+                                | domain::new::rdata::RecordData::NSec3(_)
+                                | domain::new::rdata::RecordData::NSec3Param(_) => unreachable!(),
+
+                                domain::new::rdata::RecordData::Unknown(
+                                    rtype,
+                                    unknown_record_data,
+                                ) => todo!(),
+
+                                _ => todo!(),
+                            };
+
+                            let rec = domain::base::Record::new(owner, class, ttl, data);
+
+                            updater.apply(ZoneUpdate::AddRecord(rec)).await.unwrap();
+                        }
+                        _ => todo!(),
                     }
-                    error!(
-                        "[{}]: Error parsing zone '{zone_name}': {}",
-                        component.name(),
-                        msg
-                    );
-                    return Err(Terminated);
-                };
+                }
 
-                info!(
-                    "Loaded {zone_file_len} bytes from '{zone_path}' in {} secs",
-                    before.elapsed().as_secs()
-                );
+                // updater.apply(ZoneUpdate::Finished(()))
 
-                zone_updated_tx.send((zone.apex_name().clone(), Serial::now())).await.unwrap();
+                zone_updated_tx
+                    .send((zone.apex_name().clone(), Serial::now()))
+                    .await
+                    .unwrap();
 
                 zone
             } else {
