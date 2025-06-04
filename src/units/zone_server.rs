@@ -490,7 +490,8 @@ impl ZoneServer {
                                         info!("[{component_name}]: Adding '{zone_name}' to the set of published zones.");
                                         let mut new_published_zones =
                                             Arc::unwrap_or_clone(published_zones.clone());
-                                        let _ = new_published_zones.remove_zone(zone.apex_name(), zone.class());
+                                        let _ = new_published_zones
+                                            .remove_zone(zone.apex_name(), zone.class());
                                         new_published_zones.insert_zone(zone.clone()).unwrap();
                                         component
                                             .published_zones()
@@ -906,7 +907,6 @@ impl ProcessRequest for ZoneReviewApi {
                     } else {
                         warn!("Invalid zone name '{zone_name}' in request.");
                     }
-                } else {
                 }
             }
 

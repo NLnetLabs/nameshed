@@ -360,8 +360,8 @@ impl LogConfig {
             .level_for("rustls", LevelFilter::Error)
             // .level_for("rumqttd", LevelFilter::Warn)
             .level_for("tracing::span", LevelFilter::Off);
-            // .level_for("cranelift_codegen", LevelFilter::Warn)
-            // .level_for("cranelift_jit", LevelFilter::Warn);
+        // .level_for("cranelift_codegen", LevelFilter::Warn)
+        // .level_for("cranelift_jit", LevelFilter::Warn);
 
         // // Boost the log level of modules for which the operator has requested
         // // more diagnostics for.

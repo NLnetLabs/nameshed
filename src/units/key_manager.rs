@@ -133,9 +133,6 @@ impl KeyManager {
 
                                 GateStatus::ApplicationCommand { cmd } => {
                                     info!("[{component_name}]: Received command: {cmd:?}");
-                                    match &cmd {
-                                        _ => { /* Not for us */ }
-                                    }
                                 }
 
                                 _ => { /* Nothing to do */ }

@@ -26,5 +26,5 @@ pub enum Update {
 
     ResignZoneEvent {
         zone_name: StoredName,
-    }
+    },
 }

@@ -38,10 +38,7 @@ pub trait FileIo: Default {
 #[cfg(not(test))]
 mod fileio {
     //! Filesystem I/O.
-    use std::{
-        io::{Error, ErrorKind},
-        path::Path,
-    };
+    use std::{io::Error, path::Path};
 
     use async_trait::async_trait;
     use tokio::io::AsyncWrite;
@@ -92,10 +89,7 @@ mod fileio {
 
         fn read_to_string<P: AsRef<Path>>(&self, path: P) -> std::io::Result<String> {
             std::fs::read_to_string(path.as_ref()).map_err(|err| {
-                Error::new(
-                    ErrorKind::Other,
-                    format!("For path '{}': {err}", path.as_ref().display()),
-                )
+                Error::other(format!("For path '{}': {err}", path.as_ref().display()))
             })
         }
 
@@ -112,7 +106,7 @@ mod fileio {
     use async_trait::async_trait;
     use std::{
         collections::{HashMap, VecDeque},
-        io::{Error, ErrorKind},
+        io::Error,
         path::{Path, PathBuf},
     };
     use tokio::io::AsyncWrite;
@@ -202,10 +196,10 @@ mod fileio {
             self.readable_paths
                 .get(path.as_ref())
                 .map(|v| v.to_string())
-                .ok_or(Error::new(
-                    ErrorKind::Other,
-                    format!("Test path {} not known", path.as_ref().display()),
-                ))
+                .ok_or(Error::other(format!(
+                    "Test path {} not known",
+                    path.as_ref().display()
+                )))
         }
 
         fn read_dir<P: AsRef<Path>>(&self, path: P) -> std::io::Result<ReadDir> {

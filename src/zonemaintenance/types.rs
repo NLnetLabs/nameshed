@@ -19,13 +19,13 @@ use tokio::sync::{oneshot, Mutex};
 use tokio::time::{sleep_until, Instant, Sleep};
 use tracing::{enabled, trace, Level};
 
+use core::time::Duration;
 use domain::base::iana::Class;
 use domain::base::net::IpAddr;
 use domain::base::{CanonicalOrd, Name, Serial, Ttl};
 use domain::rdata::Soa;
 use domain::tsig::{self, Algorithm, Key, KeyName};
 use domain::zonetree::{InMemoryZoneDiff, StoredName, Zone};
-use core::time::Duration;
 
 //------------ Constants -----------------------------------------------------
 
@@ -354,7 +354,9 @@ impl Display for ZoneRefreshStatus {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             ZoneRefreshStatus::RefreshPending => f.write_str("refresh pending"),
-            ZoneRefreshStatus::RefreshInProgress(n) => f.write_fmt(format_args!("refresh in progress ({n} updates applied)")),
+            ZoneRefreshStatus::RefreshInProgress(n) => {
+                f.write_fmt(format_args!("refresh in progress ({n} updates applied)"))
+            }
             ZoneRefreshStatus::RetryPending => f.write_str("retrying"),
             ZoneRefreshStatus::RetryInProgress => f.write_str("retry in progress"),
             ZoneRefreshStatus::NotifyInProgress => f.write_str("notify in progress"),
@@ -364,10 +366,7 @@ impl Display for ZoneRefreshStatus {
 
 //------------ ZoneRefreshMetrics --------------------------------------------
 
-pub fn instant_to_duration_secs(
-    instant: Instant,
-) -> u64
-{
+pub fn instant_to_duration_secs(instant: Instant) -> u64 {
     match Instant::now().checked_duration_since(instant) {
         Some(d) => d.as_secs(),
         None => 0,
@@ -397,10 +396,7 @@ where
     }
 }
 
-pub fn serialize_duration_as_secs<S>(
-    duration: &Duration,
-    serializer: S,
-) -> Result<S::Ok, S::Error>
+pub fn serialize_duration_as_secs<S>(duration: &Duration, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
 {
@@ -419,8 +415,6 @@ where
         None => serializer.serialize_str("null"),
     }
 }
-
-
 
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct ZoneRefreshMetrics {
@@ -966,7 +960,7 @@ impl Display for ZoneReportDetails {
                 f.write_str("        type: primary\n")?;
                 f.write_str("        state: ok\n")
             }
-            ZoneReportDetails::PendingSecondary(state)|ZoneReportDetails::Secondary(state) => {
+            ZoneReportDetails::PendingSecondary(state) | ZoneReportDetails::Secondary(state) => {
                 let now = Instant::now();
                 f.write_str("        type: secondary\n")?;
                 let at = match now.checked_duration_since(state.metrics.zone_created_at) {

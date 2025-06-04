@@ -448,7 +448,7 @@ impl ZoneSigner {
         //
         // Create a signing configuration.
         //
-        let mut signing_config = self.signing_config();
+        let signing_config = self.signing_config();
         let rrsig_cfg =
             GenerateRrsigConfig::new(signing_config.inception, signing_config.expiration);
 
@@ -499,10 +499,11 @@ impl ZoneSigner {
         let mut signing_keys = vec![];
         for (pub_key_name, key_info) in state.keyset.keys() {
             // Only use active ZSKs or CSKs to sign the records in the zone.
-            if !matches!(key_info.keytype(), 
-                KeyType::Zsk(key_state)|KeyType::Csk(_, key_state) if key_state.signer()) {
-                    continue;
-                }
+            if !matches!(key_info.keytype(),
+                KeyType::Zsk(key_state)|KeyType::Csk(_, key_state) if key_state.signer())
+            {
+                continue;
+            }
 
             if let Some(priv_key_name) = key_info.privref() {
                 let priv_key_path = self.keys_path.join(priv_key_name);
@@ -583,7 +584,7 @@ impl ZoneSigner {
             // not RRSIGs. We could invoke generate_nsecs() or generate_nsec3s()
             // directly here instead.
             let no_keys: [&SigningKey<Bytes, KeyPair>; 0] = Default::default();
-            records.sign_zone(&apex_owner, &mut signing_config, &no_keys)?;
+            records.sign_zone(&apex_owner, &signing_config, &no_keys)?;
             Ok(records)
         })
         .await
@@ -812,6 +813,8 @@ impl ZoneSigner {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::type_complexity)]
 fn sign_rr_chunk(
     is_last_chunk: bool,
     chunk_size: usize,
@@ -883,6 +886,7 @@ fn sign_rr_chunk(
     trace!("SIGNER: Thread {thread_idx} finished processing {n} owners covering {m} RRs.");
 }
 
+#[allow(clippy::type_complexity)]
 async fn rrsig_inserter(
     mut updater: ZoneUpdater<StoredName>,
     mut rx: Receiver<(Vec<Record<StoredName, Rrsig<Bytes, StoredName>>>, Duration)>,
@@ -1338,6 +1342,7 @@ impl ProcessRequest for SigningHistoryApi {
         request: &hyper::Request<hyper::Body>,
     ) -> Option<hyper::Response<hyper::Body>> {
         let req_path = request.uri().decoded_path();
+        #[allow(clippy::collapsible_if)]
         if request.method() == hyper::Method::GET {
             if req_path.starts_with(&*self.http_api_path) {
                 if req_path == format!("{}status.json", *self.http_api_path) {
