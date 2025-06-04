@@ -121,7 +121,7 @@ use crate::zonemaintenance::types::{
     CompatibilityMode, NotifyConfig, TransportStrategy, XfrConfig, XfrStrategy, ZoneConfig,
     ZoneMaintainerKeyStore,
 };
-use domain::dnssec::sign::keys::keyset::KeySet;
+use domain::dnssec::sign::keys::keyset::{KeySet, KeyType};
 use std::io::Read;
 use tokio::task::spawn_blocking;
 
@@ -537,6 +537,12 @@ impl ZoneSigner {
         // Load the signing keys indicated by the keyset state.
         let mut signing_keys = vec![];
         for (pub_key_name, key_info) in state.keyset.keys() {
+            // Only use active ZSKs or CSKs to sign the records in the zone.
+            if !matches!(key_info.keytype(), 
+                KeyType::Zsk(key_state)|KeyType::Csk(_, key_state) if key_state.signer()) {
+                    continue;
+                }
+
             if let Some(priv_key_name) = key_info.privref() {
                 let priv_key_path = self.keys_path.join(priv_key_name);
                 debug!(
@@ -579,6 +585,10 @@ impl ZoneSigner {
 
                 signing_keys.push(key);
             }
+        }
+
+        if signing_keys.is_empty() {
+            return Ok(());
         }
 
         //
