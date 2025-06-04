@@ -907,7 +907,6 @@ impl ProcessRequest for ZoneReviewApi {
                     } else {
                         warn!("Invalid zone name '{zone_name}' in request.");
                     }
-                } else {
                 }
             }
 

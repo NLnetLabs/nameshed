@@ -381,6 +381,7 @@ struct ZoneSigner {
     gate: Gate,
     metrics: Arc<ZoneSignerMetrics>,
     status_reporter: Arc<ZoneSignerStatusReporter>,
+    #[allow(clippy::type_complexity)]
     signing_keys: Arc<std::sync::RwLock<HashMap<StoredName, Vec<SigningKey<Bytes, KeyPair>>>>>,
     inception_offset_secs: u32,
     expiration_offset: u32,
@@ -558,7 +559,7 @@ impl ZoneSigner {
         //
         // Create a signing configuration.
         //
-        let mut signing_config = self.signing_config();
+        let signing_config = self.signing_config();
         let rrsig_cfg =
             GenerateRrsigConfig::new(signing_config.inception, signing_config.expiration);
 
@@ -668,7 +669,7 @@ impl ZoneSigner {
             // not RRSIGs. We could invoke generate_nsecs() or generate_nsec3s()
             // directly here instead.
             let no_keys: [&SigningKey<Bytes, KeyPair>; 0] = Default::default();
-            records.sign_zone(&apex_owner, &mut signing_config, &no_keys)?;
+            records.sign_zone(&apex_owner, &signing_config, &no_keys)?;
             Ok(records)
         })
         .await
@@ -897,6 +898,8 @@ impl ZoneSigner {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::type_complexity)]
 fn sign_rr_chunk(
     is_last_chunk: bool,
     chunk_size: usize,
@@ -977,6 +980,7 @@ fn sign_rr_chunk(
     trace!("SIGNER: Thread {thread_idx} finished processing {n} owners covering {m} RRs.");
 }
 
+#[allow(clippy::type_complexity)]
 async fn rrsig_inserter(
     mut updater: ZoneUpdater<StoredName>,
     mut rx: Receiver<(Vec<Record<StoredName, Rrsig<Bytes, StoredName>>>, Duration)>,
@@ -1444,6 +1448,7 @@ impl ProcessRequest for SigningHistoryApi {
         request: &hyper::Request<hyper::Body>,
     ) -> Option<hyper::Response<hyper::Body>> {
         let req_path = request.uri().decoded_path();
+        #[allow(clippy::collapsible_if)]
         if request.method() == hyper::Method::GET {
             if req_path.starts_with(&*self.http_api_path) {
                 if req_path == format!("{}status.json", *self.http_api_path) {

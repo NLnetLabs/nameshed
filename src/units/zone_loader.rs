@@ -905,10 +905,9 @@ impl ZoneListApi {
                             let last_refresh_succeeded_secs_ago = zone_refresh_state
                                 .metrics()
                                 .last_refreshed_at
-                                .map(|earlier| {
+                                .and_then(|earlier| {
                                     now.checked_duration_since(earlier).map(|d| d.as_secs())
-                                })
-                                .flatten();
+                                });
                             let last_refresh_succeeded_serial =
                                 zone_refresh_state.metrics().last_refresh_succeeded_serial;
 
@@ -917,10 +916,9 @@ impl ZoneListApi {
                             let last_refresh_checked_secs_ago = zone_refresh_state
                                 .metrics()
                                 .last_soa_serial_check_succeeded_at
-                                .map(|earlier| {
+                                .and_then(|earlier| {
                                     now.checked_duration_since(earlier).map(|d| d.as_secs())
-                                })
-                                .flatten();
+                                });
 
                             if let Some((next_refresh_secs_from_now, next_refresh_cause)) = report
                                 .timers()

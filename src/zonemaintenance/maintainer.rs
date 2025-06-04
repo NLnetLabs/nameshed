@@ -1426,6 +1426,7 @@ where
         Err(ZoneMaintainerError::ResponseError(msg.opt_rcode()))
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn do_xfr(
         udp_client: Option<Box<dyn SendRequest<RequestMessage<Vec<u8>>> + Send + Sync>>,
         transport: TransportStrategy,
