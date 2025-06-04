@@ -128,9 +128,6 @@ use tokio::task::spawn_blocking;
 #[serde_as]
 #[derive(Clone, Debug, Deserialize)]
 pub struct ZoneSignerUnit {
-    /// The set of units to receive messages from.
-    sources: NonEmpty<DirectLink>,
-
     /// The relative path at which we should listen for HTTP query API requests
     #[serde(default = "ZoneSignerUnit::default_http_api_path")]
     http_api_path: Arc<String>,
@@ -186,7 +183,7 @@ impl ZoneSignerUnit {
         self,
         mut component: Component,
         gate: Gate,
-        waitpoint: WaitPoint,
+        mut waitpoint: WaitPoint,
     ) -> Result<(), Terminated> {
         let unit_name = component.name().clone();
 
@@ -196,9 +193,17 @@ impl ZoneSignerUnit {
 
         // Setup our status reporting
         let status_reporter = Arc::new(ZoneSignerStatusReporter::new(&unit_name, metrics.clone()));
-        let component = Arc::new(RwLock::new(component));
+        // Wait for other components to be, and signal to other components
+        // that we are, ready to start. All units and targets start together,
+        // otherwise data passed from one component to another may be lost if
+        // the receiving component is not yet ready to accept it.
+        gate.process_until(waitpoint.ready()).await?;
 
-        let gate_clone = gate.clone();
+        // Signal again once we are out of the process_until() so that anyone
+        // waiting to send important gate status updates won't send them while
+        // we are in process_until() which will just eat them without handling
+        // them.
+        waitpoint.running().await;
 
         ZoneSigner::new(
             component,
@@ -215,7 +220,7 @@ impl ZoneSignerUnit {
             self.treat_single_keys_as_csks,
             self.keys_path,
         )
-        .run(self.sources, waitpoint)
+        .run()
         .await?;
 
         Ok(())
@@ -264,22 +269,6 @@ impl ZoneSignerUnit {
         Ok(public_key_info)
     }
 
-    fn mk_public_key_path(key_path: &Path) -> PathBuf {
-        if key_path.extension().and_then(|ext| ext.to_str()) == Some("key") {
-            key_path.to_path_buf()
-        } else {
-            PathBuf::from(format!("{}.key", key_path.display()))
-        }
-    }
-
-    fn mk_private_key_path(key_path: &Path) -> PathBuf {
-        if key_path.extension().and_then(|ext| ext.to_str()) == Some("private") {
-            key_path.to_path_buf()
-        } else {
-            PathBuf::from(format!("{}.private", key_path.display()))
-        }
-    }
-
     fn mk_signing_key(
         owner: Name<Bytes>,
         private_key: &SecretKeyBytes,
@@ -294,7 +283,7 @@ impl ZoneSignerUnit {
 //------------ ZoneSigner ----------------------------------------------------
 
 struct ZoneSigner {
-    component: Arc<RwLock<Component>>,
+    component: Component,
     #[allow(dead_code)]
     http_api_path: Arc<String>,
     gate: Gate,
@@ -314,7 +303,7 @@ struct ZoneSigner {
 impl ZoneSigner {
     #[allow(clippy::too_many_arguments)]
     fn new(
-        component: Arc<RwLock<Component>>,
+        component: Component,
         http_api_path: Arc<String>,
         gate: Gate,
         metrics: Arc<ZoneSignerMetrics>,
@@ -346,59 +335,30 @@ impl ZoneSigner {
         }
     }
 
-    async fn run(
-        self,
-        mut sources: NonEmpty<DirectLink>,
-        mut waitpoint: WaitPoint,
-    ) -> Result<(), crate::comms::Terminated> {
-        let arc_self = Arc::new(self);
-
-        // Register as a direct update receiver with the linked gates.
-        for link in sources.iter_mut() {
-            link.connect(arc_self.clone(), false)
-                .await
-                .map_err(|_| Terminated)?;
-        }
-
-        // Wait for other components to be, and signal to other components
-        // that we are, ready to start. All units and targets start together,
-        // otherwise data passed from one component to another may be lost if
-        // the receiving component is not yet ready to accept it.
-        arc_self.gate.process_until(waitpoint.ready()).await?;
-
-        // Signal again once we are out of the process_until() so that anyone
-        // waiting to send important gate status updates won't send them while
-        // we are in process_until() which will just eat them without handling
-        // them.
-        waitpoint.running().await;
-
-        let component_name = arc_self.component.read().await.name().clone();
+    async fn run(mut self) -> Result<(), crate::comms::Terminated> {
+        let component_name = self.component.name().clone();
 
         // Setup REST API endpoint
         let http_processor = Arc::new(SigningHistoryApi::new(
-            arc_self.http_api_path.clone(),
-            arc_self.signer_status.clone(),
+            self.http_api_path.clone(),
+            self.signer_status.clone(),
         ));
-        arc_self
-            .component
-            .write()
-            .await
-            .register_http_resource(http_processor.clone(), &arc_self.http_api_path);
+        self.component
+            .register_http_resource(http_processor.clone(), &self.http_api_path);
 
         loop {
-            match arc_self.gate.process().await {
+            match self.gate.process().await {
                 Err(Terminated) => {
-                    arc_self.status_reporter.terminated();
+                    self.status_reporter.terminated();
                     return Ok(());
                 }
 
                 Ok(status) => {
-                    arc_self.status_reporter.gate_status_announced(&status);
+                    self.status_reporter.gate_status_announced(&status);
                     match status {
                         GateStatus::Reconfiguring {
                             new_config:
                                 Unit::ZoneSigner(ZoneSignerUnit {
-                                    sources,
                                     http_api_path,
                                     keys_path,
                                     treat_single_keys_as_csks: treat_single_key_as_csk,
@@ -413,12 +373,12 @@ impl ZoneSigner {
                             // Runtime reconfiguration of this unit has been
                             // requested.
                             // Report that we have finished handling the reconfigure command
-                            arc_self.status_reporter.reconfigured();
+                            self.status_reporter.reconfigured();
                         }
 
                         GateStatus::ReportLinks { report } => {
-                            report.set_sources(&sources);
-                            report.set_graph_status(arc_self.metrics.clone());
+                            report.declare_source();
+                            report.set_graph_status(self.metrics.clone());
                         }
 
                         GateStatus::ApplicationCommand { cmd } => {
@@ -429,7 +389,7 @@ impl ZoneSigner {
                                     zone_serial,
                                 } => {
                                     if let Err(err) =
-                                        arc_self.sign_zone(component_name.clone(), zone_name).await
+                                        self.sign_zone(component_name.clone(), zone_name).await
                                     {
                                         error!("[{component_name}]: Signing of zone '{zone_name}' failed: {err}");
                                     }
@@ -463,7 +423,7 @@ impl ZoneSigner {
         // Lookup the unsigned zone.
         //
         let unsigned_zone = {
-            let unsigned_zones = self.component.read().await.unsigned_zones().load();
+            let unsigned_zones = self.component.unsigned_zones().load();
             unsigned_zones.get_zone(&zone_name, Class::IN).cloned()
         };
         let Some(unsigned_zone) = unsigned_zone else {
@@ -483,7 +443,7 @@ impl ZoneSigner {
         // Lookup the signed zone to update, or create a new empty zone to
         // sign into.
         //
-        let zone = self.get_or_insert_signed_zone(zone_name).await;
+        let zone = self.get_or_insert_signed_zone(zone_name);
 
         //
         // Create a signing configuration.
@@ -508,6 +468,7 @@ impl ZoneSigner {
         });
 
         /// Persistent state for the keyset command.
+        /// Copied frmo the keyset branch of dnst.
         #[derive(Deserialize, Serialize)]
         struct KeySetState {
             /// Domain KeySet state.
@@ -587,6 +548,8 @@ impl ZoneSigner {
             }
         }
 
+        // TODO: If signing is disabled for a zone should we then allow the
+        // unsigned zone to propagate through the pipeline?
         if signing_keys.is_empty() {
             return Ok(());
         }
@@ -796,13 +759,14 @@ impl ZoneSigner {
         (parallelism, chunk_size)
     }
 
-    async fn get_or_insert_signed_zone(&self, zone_name: &StoredName) -> Zone {
+    fn get_or_insert_signed_zone(&self, zone_name: &StoredName) -> Zone {
         // Create an empty zone to sign into if no existing signed zone exists.
-        let signed_zones = self.component.read().await.signed_zones().load();
+        let signed_zones = self.component.signed_zones().load();
 
-        match signed_zones.get_zone(zone_name, Class::IN).cloned() {
-            Some(zone) => zone,
-            None => {
+        signed_zones
+            .get_zone(zone_name, Class::IN)
+            .cloned()
+            .unwrap_or_else(move || {
                 let mut new_zones = Arc::unwrap_or_clone(signed_zones.clone());
 
                 let new_zone = if self.use_lightweight_zone_tree {
@@ -812,15 +776,10 @@ impl ZoneSigner {
                 };
 
                 new_zones.insert_zone(new_zone.clone()).unwrap();
-                self.component
-                    .read()
-                    .await
-                    .signed_zones()
-                    .store(Arc::new(new_zones));
+                self.component.signed_zones().store(Arc::new(new_zones));
 
                 new_zone
-            }
-        }
+            })
     }
 
     fn signing_config(&self) -> SigningConfig<Bytes, MultiThreadedSorter> {
@@ -1026,18 +985,6 @@ impl std::fmt::Debug for ZoneSigner {
         f.debug_struct("ZoneSigner").finish()
     }
 }
-
-#[async_trait]
-impl DirectUpdate for ZoneSigner {
-    async fn direct_update(&self, event: Update) {
-        info!(
-            "[{}]: Received event: {event:?}",
-            self.component.read().await.name()
-        );
-    }
-}
-
-impl AnyDirectUpdate for ZoneSigner {}
 
 //------------ ZoneSigningStatus ---------------------------------------------
 

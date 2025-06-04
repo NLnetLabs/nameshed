@@ -3,6 +3,7 @@ use crate::common::status_reporter::{AnyStatusReporter, Chainable, Named, UnitSt
 use crate::comms::{Gate, GateMetrics, GateStatus, GraphStatus, Terminated};
 use crate::manager::{Component, WaitPoint};
 use crate::metrics;
+use crate::payload::Update;
 use core::fmt::Display;
 use core::time::Duration;
 use domain::zonetree::Zone;
@@ -13,7 +14,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use tokio::time::MissedTickBehavior;
-use crate::payload::Update;
 
 #[serde_as]
 #[derive(Clone, Debug, Deserialize)]
@@ -98,7 +98,7 @@ impl KeyManager {
             tokio::select! {
                 _ = interval.tick() => {
                     eprintln!("TICK");
-                    self.tick(dnst_keyset_bin_path.as_path(), dnst_keyset_data_dir.as_path());
+                    self.tick(dnst_keyset_bin_path.as_path(), dnst_keyset_data_dir.as_path()).await;
                 }
 
                 res = self.gate.process() => {
@@ -147,7 +147,7 @@ impl KeyManager {
         }
     }
 
-    fn tick(&self, dnst_keyset_bin_path: &Path, dnst_keyset_data_dir: &Path) {
+    async fn tick(&self, dnst_keyset_bin_path: &Path, dnst_keyset_data_dir: &Path) {
         let zone_tree = self.component.unsigned_zones();
         for zone in zone_tree.load().iter_zones() {
             let apex_name = zone.apex_name().to_string();
@@ -158,7 +158,10 @@ impl KeyManager {
             args.push("-s");
             args.push(state_path.to_str().unwrap());
             args.push("cron");
-            println!("Invoking keyset cron for zone {apex_name} with {}", args.join(" "));
+            println!(
+                "Invoking keyset cron for zone {apex_name} with {}",
+                args.join(" ")
+            );
             let Ok(res) = Command::new(dnst_keyset_bin_path).args(args).output() else {
                 error!(
                     "Failed to invoke keyset binary at '{}",
@@ -168,9 +171,14 @@ impl KeyManager {
             };
             if res.status.success() {
                 println!("CRON OUT: {}", String::from_utf8_lossy(&res.stdout));
-
-                // TODO: Send an event to the Zone Signer?
-                //self.gate.update_data(Update::XxxEventName).await;
+                // TOOD: Check the cron output and decide if a resign event should be sent.
+                // if ... {
+                //     self.gate
+                //         .update_data(Update::ResignZoneEvent {
+                //             zone_name: zone.apex_name().clone(),
+                //         })
+                //         .await;
+                // }
             } else {
                 println!("CRON ERR: {}", String::from_utf8_lossy(&res.stderr));
             }
