@@ -236,7 +236,10 @@ impl ZoneLoaderUnit {
                     before.elapsed().as_secs()
                 );
 
-                zone_updated_tx.send((zone.apex_name().clone(), Serial::now())).await.unwrap();
+                zone_updated_tx
+                    .send((zone.apex_name().clone(), Serial::now()))
+                    .await
+                    .unwrap();
 
                 zone
             } else {

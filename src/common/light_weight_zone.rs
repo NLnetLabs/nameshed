@@ -324,10 +324,7 @@ impl WritableZoneNode for SimpleZoneNode {
     fn remove_all(
         &self,
     ) -> Pin<Box<dyn Future<Output = Result<(), std::io::Error>> + Send + Sync>> {
-        self.tree
-            .write()
-            .unwrap()
-            .clear();
+        self.tree.write().unwrap().clear();
         Box::pin(ready(Ok(())))
     }
 }
