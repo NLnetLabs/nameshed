@@ -12,7 +12,6 @@ pub mod manager;
 pub mod metrics;
 mod payload;
 mod targets;
-mod tokio;
 mod units;
 mod zonemaintenance;
 

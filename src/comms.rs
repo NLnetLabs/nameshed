@@ -867,7 +867,7 @@ impl Clone for Gate {
         // command notifications to
         let cloned_name = self.name.clone();
         let copied_id = self.id();
-        crate::tokio::spawn("gate-attach-clone", async move {
+        tokio::spawn(async move {
             let saved_clone_id = clone_id;
             if let Err(_err) = parent_command_sender
                 .send(GateCommand::AttachClone { clone_id, tx })
@@ -1465,7 +1465,7 @@ impl Drop for Link {
             let id = self.id();
             let slot = connection.slot;
             let tx = self.commands.clone();
-            crate::tokio::spawn("drop-link", async move {
+            tokio::spawn(async move {
                 let _ = tx.send(GateCommand::Unsubscribe { slot }).await;
                 if log_enabled!(log::Level::Trace) {
                     trace!("Link[{}]: disconnected from gate slot {} on drop", id, slot);

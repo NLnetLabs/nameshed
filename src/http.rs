@@ -109,10 +109,11 @@ impl Server {
         // Now spawn the listeners onto the runtime. This way, they will start
         // doing their thing as soon as the runtime is started.
         for listener in listeners {
-            crate::tokio::spawn(
-                &format!("http-listener[{}]", listener.local_addr().unwrap()),
-                Self::single_listener(listener, metrics.clone(), resources.clone()),
-            );
+            tokio::spawn(Self::single_listener(
+                listener,
+                metrics.clone(),
+                resources.clone(),
+            ));
         }
         Ok(())
     }

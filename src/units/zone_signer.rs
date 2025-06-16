@@ -111,7 +111,6 @@ use crate::log::ExitError;
 use crate::manager::{Component, WaitPoint};
 use crate::metrics::{self, util::append_per_router_metric, Metric, MetricType, MetricUnit};
 use crate::payload::Update;
-use crate::tokio::TokioTaskMetrics;
 use crate::units::Unit;
 use crate::zonemaintenance::maintainer::{Config, ZoneLookup};
 use crate::zonemaintenance::maintainer::{DefaultConnFactory, TypedZone, ZoneMaintainer};

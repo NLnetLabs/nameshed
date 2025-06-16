@@ -1032,7 +1032,7 @@ impl Manager {
             });
         }
 
-        crate::tokio::spawn("coordinator", async move {
+        tokio::spawn(async move {
             // Wait for all running units and targets to become ready and to
             // finish supplying responses to report-link commands, then log a
             // link report at debug level, and generate an SVG representation
@@ -1100,10 +1100,7 @@ impl Manager {
 
     fn spawn_unit(component: Component, new_unit: Unit, new_gate: Gate, waitpoint: WaitPoint) {
         info!("Starting unit '{}'", component.name);
-        crate::tokio::spawn(
-            &format!("unit[{}]", component.name),
-            new_unit.run(component, new_gate, waitpoint),
-        );
+        tokio::spawn(new_unit.run(component, new_gate, waitpoint));
     }
 
     fn spawn_target(
@@ -1113,16 +1110,13 @@ impl Manager {
         waitpoint: WaitPoint,
     ) {
         info!("Starting target '{}'", component.name);
-        crate::tokio::spawn(
-            &format!("target[{}]", component.name),
-            new_target.run(component, cmd_rx, waitpoint),
-        );
+        tokio::spawn(new_target.run(component, cmd_rx, waitpoint));
     }
 
     fn reconfigure_unit(name: &str, agent: GateAgent, new_config: Unit, new_gate: Gate) {
         info!("Reconfiguring unit '{}'", name);
         let name = name.to_owned();
-        crate::tokio::spawn("unit-reconfigurer", async move {
+        tokio::spawn(async move {
             if let Err(err) = agent.reconfigure(new_config, new_gate).await {
                 error!(
                     "Internal error: reconfigure command could not be sent to unit '{}': {}",
@@ -1135,7 +1129,7 @@ impl Manager {
     fn reconfigure_target(name: &str, sender: Sender<TargetCommand>, new_config: Target) {
         info!("Reconfiguring target '{}'", name);
         let name = name.to_owned();
-        crate::tokio::spawn("target-reconfigurer", async move {
+        tokio::spawn(async move {
             if let Err(err) = sender.send(TargetCommand::Reconfigure { new_config }).await {
                 error!(
                     "Internal error: reconfigure command could not be sent to target '{}': {}",
@@ -1147,14 +1141,14 @@ impl Manager {
 
     fn terminate_unit(name: &str, agent: Arc<GateAgent>) {
         info!("Stopping unit '{}'", name);
-        crate::tokio::spawn("unit-terminator", async move {
+        tokio::spawn(async move {
             agent.terminate().await;
         });
     }
 
     fn terminate_target(name: &str, sender: Arc<Sender<TargetCommand>>) {
         info!("Stopping target '{}'", name);
-        crate::tokio::spawn("target-terminator", async move {
+        tokio::spawn(async move {
             let _ = sender.send(TargetCommand::Terminate).await;
         });
     }
