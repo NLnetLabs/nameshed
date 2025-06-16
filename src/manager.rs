@@ -6,12 +6,12 @@ use log::{debug, error, info, log_enabled, trace, warn};
 use non_empty_vec::NonEmpty;
 use reqwest::Client as HttpClient;
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Display;
 use std::ops::Deref;
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
-use std::{collections::HashMap, mem::Discriminant};
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::sync::Barrier;
 use uuid::Uuid;
@@ -386,14 +386,23 @@ impl Display for TargetCommand {
 /// Requires a running Tokio reactor that has been "entered" (see Tokio
 /// `Handle::enter()`).
 pub struct Manager {
-    /// The currently active units represented by agents to their gates.
-    running_units: HashMap<String, (Discriminant<Unit>, GateAgent)>,
+    /// The gate agent for the zone loader.
+    loader_agent: Option<GateAgent>,
 
-    /// The currently active targets represented by their command senders.
-    running_targets: HashMap<String, (Discriminant<Target>, mpsc::Sender<TargetCommand>)>,
+    /// The gate agent for the review server.
+    review_agent: Option<GateAgent>,
 
-    /// Gates for newly loaded, not yet spawned units.
-    pending_gates: HashMap<String, (Gate, GateAgent)>,
+    /// The gate agent for the zone signer.
+    signer_agent: Option<GateAgent>,
+
+    /// The gate agent for the secondary review server.
+    review2_agent: Option<GateAgent>,
+
+    /// The gate agent for the publish server.
+    publish_agent: Option<GateAgent>,
+
+    /// Commands for the central command.
+    center_tx: Option<mpsc::Sender<TargetCommand>>,
 
     /// An HTTP client.
     http_client: HttpClient,
@@ -440,9 +449,12 @@ impl Manager {
 
         #[allow(clippy::let_and_return, clippy::default_constructed_unit_structs)]
         let manager = Manager {
-            running_units: Default::default(),
-            running_targets: Default::default(),
-            pending_gates: Default::default(),
+            loader_agent: None,
+            review_agent: None,
+            signer_agent: None,
+            review2_agent: None,
+            publish_agent: None,
+            center_tx: None,
             http_client: Default::default(),
             metrics: Default::default(),
             http_resources: Default::default(),
@@ -466,10 +478,18 @@ impl Manager {
 
     pub async fn accept_application_commands(&self) {
         while let Some((unit_name, data)) = self.app_cmd_rx.lock().await.recv().await {
-            if let Some((_, agent)) = self.running_units.get(&unit_name) {
-                debug!("Forwarding application command to unit '{unit_name}'");
-                agent.send_application_command(data).await.unwrap();
-            }
+            let Some(agent) = (match &*unit_name {
+                "ZL" => self.loader_agent.as_ref(),
+                "RS" => self.review_agent.as_ref(),
+                "ZS" => self.signer_agent.as_ref(),
+                "RS2" => self.review2_agent.as_ref(),
+                "PS" => self.publish_agent.as_ref(),
+                _ => None,
+            }) else {
+                continue;
+            };
+            debug!("Forwarding application command to unit '{unit_name}'");
+            agent.send_application_command(data).await.unwrap();
         }
     }
 
@@ -659,22 +679,9 @@ impl Manager {
         TermUnit: Fn(&str, Arc<GateAgent>),
         TermTarget: Fn(&str, Arc<Sender<TargetCommand>>),
     {
-        // We checked in load() for unresolvable links from units and targets
-        // to upstreams. Here we do the opposite, we check for created Units
-        // that are not referenced by any downstream units or targets. Any
-        // so-called "unused" unit will either be discarded, or if already
-        // running (due to a previous invocation of spawn()) will be commanded
-        // to terminate.
-        let mut new_running_units = HashMap::new();
-        let mut new_running_targets = HashMap::new();
-
         let num_targets = 1;
         let num_units = 5;
         let coordinator = Coordinator::new(num_targets + num_units);
-
-        // TODO: This stuff can't be reloaded.
-        assert!(self.running_targets.is_empty());
-        assert!(self.running_units.is_empty());
 
         // Forward-declare gates to the various components.
         let mut zl = LoadUnit::new(8);
@@ -683,9 +690,9 @@ impl Manager {
         let mut rs2 = LoadUnit::new(8);
         let mut ps = LoadUnit::new(8);
 
-        let targets = HashMap::from([(
-            String::from("CC"),
-            Target::CentraLCommand(CentralCommandTarget {
+        {
+            let name = String::from("CC");
+            let new_target = Target::CentraLCommand(CentralCommandTarget {
                 sources: vec![
                     zl.agent.create_link().into(),
                     rs.agent.create_link().into(),
@@ -696,18 +703,34 @@ impl Manager {
                 .try_into()
                 .unwrap(),
                 config: central_command::Config {},
-            }),
-        )]);
+            });
 
-        self.pending_gates = HashMap::from([
-            (String::from("ZL"), (zl.gate.unwrap(), zl.agent)),
-            (String::from("RS"), (rs.gate.unwrap(), rs.agent)),
-            (String::from("ZS"), (zs.gate.unwrap(), zs.agent)),
-            (String::from("RS2"), (rs2.gate.unwrap(), rs2.agent)),
-            (String::from("PS"), (ps.gate.unwrap(), ps.agent)),
-        ]);
+            // Spawn the new target
+            let component = Component::new(
+                name.clone(),
+                new_target.type_name(),
+                self.http_client.clone(),
+                self.metrics.clone(),
+                self.http_resources.clone(),
+                // self.roto_compiled.clone(),
+                self.unsigned_zones.clone(),
+                self.signed_zones.clone(),
+                self.published_zones.clone(),
+                self.tsig_key_store.clone(),
+                self.app_cmd_tx.clone(),
+            );
 
-        let units = HashMap::from([
+            let (cmd_tx, cmd_rx) = mpsc::channel(100);
+            spawn_target(
+                component,
+                new_target,
+                cmd_rx,
+                coordinator.clone().track(name.clone()),
+            );
+            self.center_tx = Some(cmd_tx);
+        }
+
+        let units = [
             (
                 String::from("ZL"),
                 Unit::ZoneLoader(ZoneLoaderUnit {
@@ -726,6 +749,9 @@ impl Manager {
                         "hmac-sha256:zlCZbVJPIhobIs1gJNQfrsS3xCxxsR9pMUrGwG8OgG8=".into(),
                     )]),
                 }),
+                zl.gate.unwrap(),
+                zl.agent,
+                &mut self.loader_agent,
             ),
             (
                 String::from("RS"),
@@ -743,6 +769,9 @@ impl Manager {
                     mode: zone_server::Mode::Prepublish,
                     source: zone_server::Source::UnsignedZones,
                 }),
+                rs.gate.unwrap(),
+                rs.agent,
+                &mut self.review_agent,
             ),
             (
                 String::from("ZS"),
@@ -757,6 +786,9 @@ impl Manager {
                     rrsig_inception_offset_secs: 60 * 90,
                     rrsig_expiration_offset_secs: 60 * 60 * 24 * 14,
                 }),
+                zs.gate.unwrap(),
+                zs.agent,
+                &mut self.signer_agent,
             ),
             (
                 String::from("RS2"),
@@ -774,6 +806,9 @@ impl Manager {
                     mode: zone_server::Mode::Prepublish,
                     source: zone_server::Source::SignedZones,
                 }),
+                rs2.gate.unwrap(),
+                rs2.agent,
+                &mut self.review2_agent,
             ),
             (
                 String::from("PS"),
@@ -788,90 +823,15 @@ impl Manager {
                     mode: zone_server::Mode::Publish,
                     source: zone_server::Source::PublishedZones,
                 }),
+                ps.gate.unwrap(),
+                ps.agent,
+                &mut self.publish_agent,
             ),
-        ]);
-
-        for (name, new_target) in targets {
-            if let Some(running_target) = self.running_targets.remove(&name) {
-                let (running_target_type, running_target_sender) = running_target;
-                let new_target_type = std::mem::discriminant(&new_target);
-                if new_target_type != running_target_type {
-                    // Terminate the current target. The new one replacing it
-                    // will be spawned below.
-                    terminate_target(&name, running_target_sender.into());
-                } else {
-                    reconfigure_target(&name, running_target_sender.clone(), new_target);
-                    new_running_targets.insert(name, (running_target_type, running_target_sender));
-                    // Skip spawning a new target.
-                    continue;
-                }
-            }
-
-            // Spawn the new target
-            let component = Component::new(
-                name.clone(),
-                new_target.type_name(),
-                self.http_client.clone(),
-                self.metrics.clone(),
-                self.http_resources.clone(),
-                // self.roto_compiled.clone(),
-                self.unsigned_zones.clone(),
-                self.signed_zones.clone(),
-                self.published_zones.clone(),
-                self.tsig_key_store.clone(),
-                self.app_cmd_tx.clone(),
-            );
-
-            let target_type = std::mem::discriminant(&new_target);
-            let (cmd_tx, cmd_rx) = mpsc::channel(100);
-            spawn_target(
-                component,
-                new_target,
-                cmd_rx,
-                coordinator.clone().track(name.clone()),
-            );
-            new_running_targets.insert(name, (target_type, cmd_tx));
-        }
+        ];
 
         // Spawn, reconfigure and terminate units
-        for (name, new_unit) in units {
-            let (mut new_gate, new_agent) = match self.pending_gates.remove(&name) {
-                Some((gate, agent)) => (gate, agent),
-                None => {
-                    if let Some(running_unit) = self.running_units.remove(&name) {
-                        warn!("Unit '{}' is unused and will be stopped.", name);
-                        let running_unit_agent = running_unit.1;
-                        terminate_unit(&name, running_unit_agent.into());
-                    } else {
-                        error!("Unit '{}' is unused and will not be started.", name);
-                    }
-                    continue;
-                }
-            };
-
+        for (name, new_unit, mut new_gate, new_agent, agent_out) in units {
             new_gate.set_name(&name);
-
-            // For the Unit that was created for configuration file section
-            // [units.<name>], see if we already have a GateAgent for a Unit
-            // by that name, i.e. a Unit by that name is already running.
-            if let Some(running_unit) = self.running_units.remove(&name) {
-                // Yes, a Unit by that name is already running. Is it the same
-                // type? If so, command it to reconfigure itself to match the
-                // new Unit settings (if changed). Otherwise, command it to
-                // terminate as it will be replaced by a unit of the same name
-                // but different type.
-                let (running_unit_type, running_unit_agent) = running_unit;
-                let new_unit_type = std::mem::discriminant(&new_unit);
-                if new_unit_type != running_unit_type {
-                    // Terminate the current unit. The new one replacing it
-                    // will be launched below.
-                    terminate_unit(&name, running_unit_agent.into());
-                } else {
-                    reconfigure_unit(&name, running_unit_agent, new_unit, new_gate);
-                    new_running_units.insert(name, (new_unit_type, new_agent));
-                    continue;
-                }
-            }
 
             // Spawn the new unit
             let component = Component::new(
@@ -895,23 +855,8 @@ impl Manager {
                 new_gate,
                 coordinator.clone().track(name.clone()),
             );
-            new_running_units.insert(name, (unit_type, new_agent));
+            *agent_out = Some(new_agent);
         }
-
-        // Terminate running units whose corresponding configuration file
-        // block was removed or commented out and thus not encountered above.
-        for (name, (_, agent)) in self.running_units.drain() {
-            terminate_unit(&name, agent.into());
-        }
-
-        // Terminate running targets whose corresponding configuration file
-        // block was removed or commented out and thus not encountered above.
-        for (name, (_, cmd_tx)) in self.running_targets.drain() {
-            terminate_target(&name, cmd_tx.into());
-        }
-
-        self.running_units = new_running_units;
-        self.running_targets = new_running_targets;
 
         self.coordinate_and_track_startup(coordinator);
     }
@@ -922,7 +867,15 @@ impl Manager {
         let mut target_cmd_futures = vec![];
 
         // Generate report-link commands to send to all running units.
-        for (name, (_unit_type, gate_agent)) in &self.running_units {
+        let units = [
+            ("ZL", self.loader_agent.as_ref().unwrap()),
+            ("RS", self.review_agent.as_ref().unwrap()),
+            ("ZS", self.signer_agent.as_ref().unwrap()),
+            ("RS2", self.review2_agent.as_ref().unwrap()),
+            ("PS", self.publish_agent.as_ref().unwrap()),
+        ];
+        for (name, gate_agent) in units {
+            let name = String::from(name);
             let report = UpstreamLinkReport::new();
             reports.add_gate(name.clone(), gate_agent.id());
             reports.add_link(name.clone(), report.clone());
@@ -939,7 +892,9 @@ impl Manager {
         }
 
         // Generate report-link commands to send to all running targets.
-        for (name, (_target_type, cmd_sender)) in &self.running_targets {
+        {
+            let name = String::from("CC");
+            let cmd_sender = self.center_tx.clone().unwrap();
             let report = UpstreamLinkReport::new();
             reports.add_link(name.clone(), report.clone());
 
@@ -1004,17 +959,24 @@ impl Manager {
     }
 
     pub fn terminate(&mut self) {
-        for (name, (_, agent)) in self.running_units.drain() {
+        let units = [
+            ("ZL", self.loader_agent.take().unwrap()),
+            ("RS", self.review_agent.take().unwrap()),
+            ("ZS", self.signer_agent.take().unwrap()),
+            ("RS2", self.review2_agent.take().unwrap()),
+            ("PS", self.publish_agent.take().unwrap()),
+        ];
+        for (name, agent) in units {
             let agent = Arc::new(agent);
-            Self::terminate_unit(&name, agent.clone());
+            Self::terminate_unit(name, agent.clone());
             while !agent.is_terminated() {
                 std::thread::sleep(Duration::from_millis(10));
             }
         }
 
-        for (name, (_, cmd_tx)) in self.running_targets.drain() {
-            let cmd_tx = Arc::new(cmd_tx);
-            Self::terminate_target(&name, cmd_tx.clone());
+        {
+            let cmd_tx = Arc::new(self.center_tx.take().unwrap());
+            Self::terminate_target("CC", cmd_tx.clone());
             while !cmd_tx.is_closed() {
                 std::thread::sleep(Duration::from_millis(10));
             }
