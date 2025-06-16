@@ -6,8 +6,7 @@
 
 mod common;
 mod comms;
-pub mod config;
-mod http;
+pub mod http;
 pub mod log;
 pub mod manager;
 pub mod metrics;

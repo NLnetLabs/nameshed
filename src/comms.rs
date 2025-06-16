@@ -66,16 +66,15 @@
 
 use crate::common::frim::FrimMap;
 use crate::manager::UpstreamLinkReport;
+use crate::metrics;
 use crate::metrics::{Metric, MetricType, MetricUnit};
-use crate::{config::Marked, payload::Update, units::Unit};
-use crate::{manager, metrics};
+use crate::{payload::Update, units::Unit};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use crossbeam_utils::atomic::AtomicCell;
 use futures::future::{select, Either, Future};
 use futures::pin_mut;
 use log::{error, log_enabled, trace, Level};
-use serde::Deserialize;
 use tokio::sync::mpsc::Sender;
 
 use domain::base::Serial;
@@ -1085,8 +1084,7 @@ impl metrics::Source for GateMetrics {
 /// queue based link where delays at the link owner don't immediately impact
 /// the gate owner, with a direct link any delay in the link owner will block
 /// the sending gate thread/task.
-#[derive(Clone, Debug, Deserialize)]
-#[serde(from = "String")]
+#[derive(Clone, Debug)]
 pub struct DirectLink(Link);
 
 impl DirectLink {
@@ -1146,18 +1144,6 @@ impl From<Link> for DirectLink {
     }
 }
 
-impl From<Marked<String>> for DirectLink {
-    fn from(name: Marked<String>) -> Self {
-        DirectLink(manager::load_link(name))
-    }
-}
-
-impl From<String> for DirectLink {
-    fn from(name: String) -> Self {
-        DirectLink(manager::load_link(name.into()))
-    }
-}
-
 //------------ Link ----------------------------------------------------------
 
 #[derive(Debug)]
@@ -1182,8 +1168,6 @@ struct LinkConnection {
 /// also called implicitly through the impls for `Deserialize` and `From`.
 /// Note, however, that the function only adds the link to a list of links
 /// to be properly connected by the manager later.
-#[derive(Deserialize)]
-#[serde(from = "String")]
 pub struct Link {
     id: Uuid,
 
@@ -1472,18 +1456,6 @@ impl Drop for Link {
                 }
             });
         }
-    }
-}
-
-impl From<Marked<String>> for Link {
-    fn from(name: Marked<String>) -> Self {
-        manager::load_link(name)
-    }
-}
-
-impl From<String> for Link {
-    fn from(name: String) -> Self {
-        manager::load_link(name.into())
     }
 }
 

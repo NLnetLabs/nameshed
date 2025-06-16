@@ -23,13 +23,10 @@ use tokio::sync::mpsc;
 
 use crate::manager::{TargetCommand, WaitPoint};
 use crate::{comms::Terminated, manager::Component};
-use serde::Deserialize;
 
 /// The component for outputting data.
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type")]
+#[derive(Debug)]
 pub enum Target {
-    #[serde(rename = "central-command")]
     CentraLCommand(central_command::CentralCommandTarget),
 }
 

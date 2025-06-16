@@ -17,8 +17,6 @@ use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Method, Request, Response, StatusCode, Uri};
 use log::{error, info, trace, warn};
 use percent_encoding::percent_decode;
-use serde::Deserialize;
-use serde_with::{serde_as, OneOrMany};
 use smallvec::SmallVec;
 use std::borrow::Cow;
 use std::convert::Infallible;
@@ -37,23 +35,22 @@ use url::form_urlencoded::parse;
 //------------ Server --------------------------------------------------------
 
 /// The configuration for the HTTP server.
-#[serde_as]
-#[derive(Clone, Deserialize)]
+#[derive(Clone)]
 #[cfg_attr(test, derive(Default))]
 pub struct Server {
     /// The socket addresses to listen on.
-    #[serde_as(deserialize_as = "OneOrMany<_>")]
-    #[serde(rename = "http_listen")]
     listen: Vec<SocketAddr>,
 
     /// Whether or not to support GZIP response compression
-    #[serde(default = "Server::default_compress_responses")]
     compress_responses: bool,
 }
 
 impl Server {
-    pub fn default_compress_responses() -> bool {
-        true
+    pub fn new(listen: Vec<SocketAddr>) -> Self {
+        Self {
+            listen,
+            compress_responses: true,
+        }
     }
 
     pub fn listen(&self) -> &[SocketAddr] {

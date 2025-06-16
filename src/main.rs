@@ -1,11 +1,9 @@
 use clap::{crate_authors, crate_version, error::ErrorKind, Command};
-use log::{debug, error, info, warn};
+use log::{error, info, warn};
 use nameshed::{
-    config::{Config, ConfigFile, Source},
-    log::{ExitError, Terminate},
+    log::{ExitError, LogConfig, Terminate},
     manager::Manager,
 };
-use std::env::current_dir;
 use std::process::exit;
 use tokio::{
     runtime::{self, Runtime},
@@ -13,25 +11,19 @@ use tokio::{
 };
 
 fn run_with_cmdline_args() -> Result<(), Terminate> {
-    Config::init()?;
+    LogConfig::init_logging()?;
 
     let app = Command::new("rotonda")
         .version(crate_version!())
         .author(crate_authors!())
         .next_line_help(true);
 
-    let config_args = Config::config_args(app);
-    let matches = config_args.try_get_matches().map_err(|err| {
+    let _matches = app.try_get_matches().map_err(|err| {
         let _ = err.print();
         match err.kind() {
             ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => Terminate::normal(),
             _ => Terminate::other(2),
         }
-    })?;
-
-    let cur_dir = current_dir().map_err(|err| {
-        error!("Fatal: cannot get current directory ({}). Aborting.", err);
-        ExitError
     })?;
 
     // TODO: Drop privileges, get listen fd from systemd, create PID file,
@@ -41,22 +33,15 @@ fn run_with_cmdline_args() -> Result<(), Terminate> {
     //   - https://github.com/NLnetLabs/routinator/blob/main/src/process.rs#L241
     //   - https://github.com/NLnetLabs/routinator/blob/main/src/process.rs#L363
 
+    LogConfig::default().switch_logging(true)?;
+
     let mut manager = Manager::new();
-    let (config_source, config) = Config::from_arg_matches(&matches, &cur_dir, &mut manager)?;
-    debug!("application working directory {:?}", cur_dir);
-    debug!("configuration source file {:?}", config_source);
-    debug!("roto script {:?}", &config.roto_script);
-    let roto_script = config.roto_script.clone();
-    let runtime = run_with_config(&mut manager, config)?;
-    runtime.block_on(handle_signals(config_source, roto_script, manager))?;
+    let runtime = run_with_config(&mut manager)?;
+    runtime.block_on(handle_signals(manager))?;
     Ok(())
 }
 
-async fn handle_signals(
-    config_source: Source,
-    roto_script: Option<std::path::PathBuf>,
-    mut manager: Manager,
-) -> Result<(), ExitError> {
+async fn handle_signals(mut manager: Manager) -> Result<(), ExitError> {
     let mut hup_signals = signal(SignalKind::hangup()).map_err(|err| {
         error!("Fatal: cannot listen for HUP signals ({}). Aborting.", err);
         ExitError
@@ -79,57 +64,6 @@ async fn handle_signals(
                     }
                     Some(_) => {
                         // HUP signal received
-                        match config_source.path() {
-                            Some(config_path) => {
-                                info!(
-                                    "SIGHUP signal received, re-reading configuration file '{}'",
-                                    config_path.display()
-                                );
-                                match ConfigFile::load(&config_path) {
-                                    Ok(config_file) => {
-                                        match Config::from_config_file(config_file, &mut manager) {
-                                            Err(_) => {
-                                                error!(
-                                                    "Failed to re-read config file '{}'",
-                                                    config_path.display()
-                                                );
-                                            }
-                                            Ok((_source, mut config)) => {
-                                                manager.spawn(&mut config);
-                                                info!("Configuration changes applied");
-                                            }
-                                        }
-                                    }
-                                    Err(err) => {
-                                        error!(
-                                            "Failed to re-read config file '{}': {}",
-                                            config_path.display(),
-                                            err
-                                        );
-                                    }
-                                }
-                            }
-                            None => {
-                                if let Some(ref rsp) = roto_script {
-                                    info!(
-                                        "SIGHUP signal received, re-loading roto scripts \
-                                    from location {:?}",
-                                        rsp
-                                    );
-                                } else {
-                                    error!("No location for roto scripts. Not reloading");
-                                    continue;
-                                }
-                                // match manager.compile_roto_script(&roto_script) {
-                                //     Ok(_) => {
-                                //         info!("Done reloading roto scripts");
-                                //     }
-                                //     Err(e) => {
-                                //         error!("Cannot reload roto scripts: {e}. Not reloading");
-                                //     }
-                                // };
-                            }
-                        }
                     }
                 }
             }
@@ -161,7 +95,7 @@ async fn handle_signals(
     }
 }
 
-fn run_with_config(manager: &mut Manager, mut config: Config) -> Result<Runtime, ExitError> {
+fn run_with_config(manager: &mut Manager) -> Result<Runtime, ExitError> {
     let runtime = runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -171,11 +105,10 @@ fn run_with_config(manager: &mut Manager, mut config: Config) -> Result<Runtime,
     // default runtime.
     let _guard = runtime.enter();
 
-    config
-        .http
+    nameshed::http::Server::new(vec!["0.0.0.0:8080".parse().unwrap()])
         .run(manager.metrics(), manager.http_resources())?;
 
-    manager.spawn(&mut config);
+    manager.spawn();
 
     Ok(runtime)
 }
