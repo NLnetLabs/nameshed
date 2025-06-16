@@ -21,9 +21,14 @@ use crate::common::tsig::TsigKeyStore;
 use crate::comms::{
     ApplicationCommand, DirectLink, Gate, GateAgent, GraphStatus, Link, DEF_UPDATE_QUEUE_LEN,
 };
-use crate::config::{Config, ConfigFile, Marked};
+use crate::config::ConfigFile;
+use crate::config::{Config, Marked};
 use crate::log::Terminate;
+use crate::targets::central_command::{self, CentralCommandTarget};
 use crate::targets::Target;
+use crate::units::zone_loader::ZoneLoaderUnit;
+use crate::units::zone_server::{self, ZoneServerUnit};
+use crate::units::zone_signer::{TomlDenialConfig, ZoneSignerUnit};
 use crate::units::Unit;
 use crate::{http, metrics};
 use domain::zonetree::ZoneTree;
@@ -863,12 +868,130 @@ impl Manager {
         let mut new_running_units = HashMap::new();
         let mut new_running_targets = HashMap::new();
 
-        let num_targets = config.targets.targets.len();
-        let num_units = config.units.units.len();
+        let num_targets = 1;
+        let num_units = 5;
         let coordinator = Coordinator::new(num_targets + num_units);
 
-        // Spawn, reconfigure and terminate targets according to the config
-        for (name, new_target) in config.targets.targets.drain() {
+        // TODO: This stuff can't be reloaded.
+        assert!(self.running_targets.is_empty());
+        assert!(self.running_units.is_empty());
+
+        // Forward-declare gates to the various components.
+        let mut zl = LoadUnit::new(8);
+        let mut rs = LoadUnit::new(8);
+        let mut zs = LoadUnit::new(8);
+        let mut rs2 = LoadUnit::new(8);
+        let mut ps = LoadUnit::new(8);
+
+        let targets = HashMap::from([(
+            String::from("CC"),
+            Target::CentraLCommand(CentralCommandTarget {
+                sources: vec![
+                    zl.agent.create_link().into(),
+                    rs.agent.create_link().into(),
+                    zs.agent.create_link().into(),
+                    rs2.agent.create_link().into(),
+                    ps.agent.create_link().into(),
+                ]
+                .try_into()
+                .unwrap(),
+                config: central_command::Config {},
+            }),
+        )]);
+
+        self.pending_gates = HashMap::from([
+            (String::from("ZL"), (zl.gate.unwrap(), zl.agent)),
+            (String::from("RS"), (rs.gate.unwrap(), rs.agent)),
+            (String::from("ZS"), (zs.gate.unwrap(), zs.agent)),
+            (String::from("RS2"), (rs2.gate.unwrap(), rs2.agent)),
+            (String::from("PS"), (ps.gate.unwrap(), ps.agent)),
+        ]);
+
+        let units = HashMap::from([
+            (
+                String::from("ZL"),
+                Unit::ZoneLoader(ZoneLoaderUnit {
+                    http_api_path: Arc::new(String::from("/zl/")),
+                    listen: vec![
+                        "tcp:127.0.0.1:8054".parse().unwrap(),
+                        "udp:127.0.0.1:8054".parse().unwrap(),
+                    ],
+                    zones: Arc::new(HashMap::from([("example.com".into(), "".into())])),
+                    xfr_in: Arc::new(HashMap::from([(
+                        "example.com".into(),
+                        "127.0.0.1:8055 KEY sec1-key".into(),
+                    )])),
+                    tsig_keys: HashMap::from([(
+                        "sec1-key".into(),
+                        "hmac-sha256:zlCZbVJPIhobIs1gJNQfrsS3xCxxsR9pMUrGwG8OgG8=".into(),
+                    )]),
+                }),
+            ),
+            (
+                String::from("RS"),
+                Unit::ZoneServer(ZoneServerUnit {
+                    http_api_path: Arc::new(String::from("/rs/")),
+                    listen: vec![
+                        "tcp:127.0.0.1:8056".parse().unwrap(),
+                        "udp:127.0.0.1:8056".parse().unwrap(),
+                    ],
+                    xfr_out: HashMap::from([(
+                        "example.com".into(),
+                        "127.0.0.1:8055 KEY sec1-key".into(),
+                    )]),
+                    hooks: vec![String::from("/tmp/approve_or_deny.sh")],
+                    mode: zone_server::Mode::Prepublish,
+                    source: zone_server::Source::UnsignedZones,
+                }),
+            ),
+            (
+                String::from("ZS"),
+                Unit::ZoneSigner(ZoneSignerUnit {
+                    http_api_path: Arc::new(String::from("/zs/")),
+                    keys_path: "/tmp/keys".into(),
+                    treat_single_keys_as_csks: true,
+                    max_concurrent_operations: 1,
+                    max_concurrent_rrsig_generation_tasks: 8,
+                    use_lightweight_zone_tree: false,
+                    denial_config: TomlDenialConfig::default(),
+                    rrsig_inception_offset_secs: 60 * 90,
+                    rrsig_expiration_offset_secs: 60 * 60 * 24 * 14,
+                }),
+            ),
+            (
+                String::from("RS2"),
+                Unit::ZoneServer(ZoneServerUnit {
+                    http_api_path: Arc::new(String::from("/rs2/")),
+                    listen: vec![
+                        "tcp:127.0.0.1:8057".parse().unwrap(),
+                        "udp:127.0.0.1:8057".parse().unwrap(),
+                    ],
+                    xfr_out: HashMap::from([(
+                        "example.com".into(),
+                        "127.0.0.1:8055 KEY sec1-key".into(),
+                    )]),
+                    hooks: vec![String::from("/tmp/approve_or_deny_signed.sh")],
+                    mode: zone_server::Mode::Prepublish,
+                    source: zone_server::Source::SignedZones,
+                }),
+            ),
+            (
+                String::from("PS"),
+                Unit::ZoneServer(ZoneServerUnit {
+                    http_api_path: Arc::new(String::from("/ps/")),
+                    listen: vec![
+                        "tcp:127.0.0.1:8058".parse().unwrap(),
+                        "udp:127.0.0.1:8058".parse().unwrap(),
+                    ],
+                    xfr_out: HashMap::from([("example.com".into(), "127.0.0.1:8055".into())]),
+                    hooks: vec![],
+                    mode: zone_server::Mode::Publish,
+                    source: zone_server::Source::PublishedZones,
+                }),
+            ),
+        ]);
+
+        for (name, new_target) in targets {
             if let Some(running_target) = self.running_targets.remove(&name) {
                 let (running_target_type, running_target_sender) = running_target;
                 let new_target_type = std::mem::discriminant(&new_target);
@@ -910,8 +1033,8 @@ impl Manager {
             new_running_targets.insert(name, (target_type, cmd_tx));
         }
 
-        // Spawn, reconfigure and terminate units according to the config
-        for (name, new_unit) in config.units.units.drain() {
+        // Spawn, reconfigure and terminate units
+        for (name, new_unit) in units {
             let (mut new_gate, new_agent) = match self.pending_gates.remove(&name) {
                 Some((gate, agent)) => (gate, agent),
                 None => {

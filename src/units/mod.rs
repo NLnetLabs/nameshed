@@ -19,9 +19,9 @@
 
 //------------ Sub-modules ---------------------------------------------------
 
-mod zone_loader;
-mod zone_server;
-mod zone_signer;
+pub mod zone_loader;
+pub mod zone_server;
+pub mod zone_signer;
 
 //------------ Unit ----------------------------------------------------------
 

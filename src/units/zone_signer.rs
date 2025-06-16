@@ -126,30 +126,30 @@ use tokio::task::spawn_blocking;
 pub struct ZoneSignerUnit {
     /// The relative path at which we should listen for HTTP query API requests
     #[serde(default = "ZoneSignerUnit::default_http_api_path")]
-    http_api_path: Arc<String>,
+    pub http_api_path: Arc<String>,
 
-    keys_path: PathBuf,
+    pub keys_path: PathBuf,
 
     #[serde(default = "ZoneSignerUnit::default_rrsig_inception_offset_secs")]
-    rrsig_inception_offset_secs: u32,
+    pub rrsig_inception_offset_secs: u32,
 
     #[serde(default = "ZoneSignerUnit::default_rrsig_expiration_offset_secs")]
-    rrsig_expiration_offset_secs: u32,
+    pub rrsig_expiration_offset_secs: u32,
 
     #[serde(default)]
-    denial_config: TomlDenialConfig,
+    pub denial_config: TomlDenialConfig,
 
     #[serde(default)]
-    treat_single_keys_as_csks: bool,
+    pub treat_single_keys_as_csks: bool,
 
     #[serde(default)]
-    use_lightweight_zone_tree: bool,
+    pub use_lightweight_zone_tree: bool,
 
     #[serde(default = "ZoneSignerUnit::default_max_concurrent_operations")]
-    max_concurrent_operations: usize,
+    pub max_concurrent_operations: usize,
 
     #[serde(default = "ZoneSignerUnit::default_max_concurrent_rrsig_generation_tasks")]
-    max_concurrent_rrsig_generation_tasks: usize,
+    pub max_concurrent_rrsig_generation_tasks: usize,
 }
 
 impl ZoneSignerUnit {
@@ -1501,7 +1501,7 @@ impl SigningHistoryApi {
 // See: domain::sign::denial::config::DenialConfig
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum TomlDenialConfig {
+pub enum TomlDenialConfig {
     #[default]
     Nsec,
 
@@ -1516,14 +1516,14 @@ enum TomlDenialConfig {
 // Note: We don't allow configuration of NSEC3 salt, iterations or algorithm
 // as they are fixed to best practice values.
 #[derive(Clone, Debug, Default, Deserialize)]
-struct TomlNsec3Config {
+pub struct TomlNsec3Config {
     pub opt_out: TomlNsec3OptOut,
     pub nsec3_param_ttl_mode: TomlNsec3ParamTtlMode,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum TomlNsec3OptOut {
+pub enum TomlNsec3OptOut {
     #[default]
     NoOptOut,
     OptOut,
@@ -1532,7 +1532,7 @@ enum TomlNsec3OptOut {
 
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum TomlNsec3ParamTtlMode {
+pub enum TomlNsec3ParamTtlMode {
     Fixed(Ttl),
     #[default]
     Soa,
@@ -1541,7 +1541,7 @@ enum TomlNsec3ParamTtlMode {
 
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum TomlNsecToNsec3TransitionState {
+pub enum TomlNsecToNsec3TransitionState {
     #[default]
     TransitioningDnsKeys,
     AddingNsec3Records,
@@ -1551,7 +1551,7 @@ enum TomlNsecToNsec3TransitionState {
 
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum TomlNsec3ToNsecTransitionState {
+pub enum TomlNsec3ToNsecTransitionState {
     #[default]
     AddingNsecRecords,
     RemovingNsec3ParamdRecord,

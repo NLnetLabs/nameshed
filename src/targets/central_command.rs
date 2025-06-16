@@ -23,10 +23,10 @@ use crate::targets::Target;
 #[derive(Debug, Deserialize)]
 pub struct CentralCommandTarget {
     /// The set of units to receive messages from.
-    sources: NonEmpty<DirectLink>,
+    pub sources: NonEmpty<DirectLink>,
 
     #[serde(flatten)]
-    config: Config,
+    pub config: Config,
 }
 
 #[cfg(test)]

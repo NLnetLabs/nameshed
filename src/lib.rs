@@ -3,6 +3,7 @@
 #![allow(clippy::unknown_clippy_lints)]
 #![allow(dead_code)]
 #![allow(unused_variables)]
+
 mod common;
 mod comms;
 pub mod config;

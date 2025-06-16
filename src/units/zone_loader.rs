@@ -98,7 +98,7 @@ use crate::zonemaintenance::types::{
 pub struct ZoneLoaderUnit {
     /// The relative path at which we should listen for HTTP query API requests
     #[serde(default = "ZoneLoaderUnit::default_http_api_path")]
-    http_api_path: Arc<String>,
+    pub http_api_path: Arc<String>,
 
     /// Addresses and protocols to listen on.
     pub listen: Vec<ListenAddr>,

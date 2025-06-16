@@ -15,7 +15,7 @@
 //------------ Sub-modules ---------------------------------------------------
 //
 // These contain all the actual unit types grouped by shared functionality.
-mod central_command;
+pub mod central_command;
 
 use tokio::sync::mpsc;
 
