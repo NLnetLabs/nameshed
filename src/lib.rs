@@ -13,7 +13,6 @@ pub mod metrics;
 mod payload;
 mod targets;
 mod tokio;
-mod tracing;
 mod units;
 mod zonemaintenance;
 

@@ -89,7 +89,6 @@ use crate::manager::{Component, WaitPoint};
 use crate::metrics::{self, util::append_per_router_metric, Metric, MetricType, MetricUnit};
 use crate::payload::Update;
 use crate::tokio::TokioTaskMetrics;
-use crate::tracing::Tracer;
 use crate::units::Unit;
 use crate::zonemaintenance::maintainer::{DefaultConnFactory, TypedZone, ZoneMaintainer};
 use crate::zonemaintenance::types::TsigKey;

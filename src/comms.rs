@@ -67,7 +67,6 @@
 use crate::common::frim::FrimMap;
 use crate::manager::UpstreamLinkReport;
 use crate::metrics::{Metric, MetricType, MetricUnit};
-use crate::tracing::Tracer;
 use crate::{config::Marked, payload::Update, units::Unit};
 use crate::{manager, metrics};
 use async_trait::async_trait;
@@ -178,9 +177,6 @@ pub struct Gate {
 
     /// Gate type dependent state.
     state: GateState,
-
-    /// Tracer
-    tracer: Option<Arc<Tracer>>,
 }
 
 // On drop, notify the parent of a cloned gate that this clone is detaching
@@ -235,7 +231,6 @@ impl Gate {
                 command_sender: tx.clone(),
                 clone_senders: Default::default(),
             }),
-            tracer: None,
         };
         let agent = GateAgent {
             id: gate.id.clone(),
@@ -343,10 +338,6 @@ impl Gate {
                 self.id()
             );
         }
-    }
-
-    pub fn set_tracer(&mut self, tracer: Arc<Tracer>) {
-        self.tracer = Some(tracer);
     }
 
     /// Runs the gate’s internal machine.
@@ -870,7 +861,6 @@ impl Clone for Gate {
                 clone_id,
                 parent_command_sender: parent_command_sender.clone(),
             }),
-            tracer: self.tracer.clone(),
         };
 
         // Ask the real gate to add our command sender to the set it sends

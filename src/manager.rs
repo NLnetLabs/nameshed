@@ -2,7 +2,6 @@
 
 use arc_swap::ArcSwap;
 use futures::future::{join_all, select, Either};
-use hyper::{Body, Method, Request, Response};
 use log::{debug, error, info, log_enabled, trace, warn};
 use non_empty_vec::NonEmpty;
 use reqwest::Client as HttpClient;
@@ -10,7 +9,7 @@ use serde::Deserialize;
 use std::collections::HashSet;
 use std::ops::Deref;
 use std::sync::{Arc, Mutex, RwLock, Weak};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use std::{cell::RefCell, fmt::Display};
 use std::{collections::HashMap, mem::Discriminant};
 use tokio::sync::mpsc::{self, Receiver, Sender};
@@ -23,10 +22,8 @@ use crate::comms::{
     ApplicationCommand, DirectLink, Gate, GateAgent, GraphStatus, Link, DEF_UPDATE_QUEUE_LEN,
 };
 use crate::config::{Config, ConfigFile, Marked};
-use crate::http::{PercentDecodedPath, ProcessRequest};
 use crate::log::Terminate;
 use crate::targets::Target;
-use crate::tracing::{MsgRelation, Trace, Tracer};
 use crate::units::Unit;
 use crate::{http, metrics};
 use domain::zonetree::ZoneTree;
@@ -55,9 +52,6 @@ pub struct Component {
 
     // /// A reference to the compiled Roto script.
     // roto_compiled: Option<Arc<CompiledRoto>>,
-    /// A reference to the Tracer
-    tracer: Arc<Tracer>,
-
     /// A reference to the unsigned zones.
     unsigned_zones: Arc<ArcSwap<ZoneTree>>,
 
@@ -85,7 +79,6 @@ impl Default for Component {
             metrics: Default::default(),
             http_resources: Default::default(),
             // roto_compiled: Default::default(),
-            tracer: Default::default(),
             unsigned_zones: Default::default(),
             signed_zones: Default::default(),
             published_zones: Default::default(),
@@ -105,7 +98,6 @@ impl Component {
         metrics: metrics::Collection,
         http_resources: http::Resources,
         // roto_compiled: Option<Arc<CompiledRoto>>,
-        tracer: Arc<Tracer>,
         unsigned_zones: Arc<ArcSwap<ZoneTree>>,
         signed_zones: Arc<ArcSwap<ZoneTree>>,
         published_zones: Arc<ArcSwap<ZoneTree>>,
@@ -119,7 +111,6 @@ impl Component {
             metrics: Some(metrics),
             http_resources,
             // roto_compiled,
-            tracer,
             unsigned_zones,
             signed_zones,
             published_zones,
@@ -150,10 +141,6 @@ impl Component {
     // pub fn roto_compiled(&self) -> &Option<Arc<CompiledRoto>> {
     //     &self.roto_compiled
     // }
-
-    pub fn tracer(&self) -> &Arc<Tracer> {
-        &self.tracer
-    }
 
     pub fn unsigned_zones(&self) -> &Arc<ArcSwap<ZoneTree>> {
         &self.unsigned_zones
@@ -292,200 +279,6 @@ impl LinkReport {
     fn get_gate_id(&self, name: &str) -> Option<Uuid> {
         self.gates.get(name).copied()
     }
-
-    fn get_svg(&self, tracer: Arc<Tracer>, trace_id: Option<u8>) -> String {
-        use chrono::Utc;
-        use layout::backends::svg::SVGWriter;
-        use layout::core::base::Orientation;
-        use layout::core::color::Color;
-        use layout::core::format::RenderBackend;
-        use layout::core::geometry::Point;
-        use layout::core::style::*;
-        use layout::std_shapes::shapes::*;
-        use layout::topo::layout::VisualGraph;
-
-        let mut vg = VisualGraph::new(Orientation::LeftToRight);
-        let mut nodes = HashMap::new();
-
-        let trace = trace_id.map_or_else(Trace::new, |id| tracer.get_trace(id));
-
-        // add nodes for each unit and target
-        for (unit_or_target_name, report) in &self.links {
-            let (shape_kind, style_attr) = match report
-                .graph_status()
-                .and_then(|weak_ref| weak_ref.upgrade())
-            {
-                Some(graph_status) if trace_id.is_none() => {
-                    let shape_kind = ShapeKind::new_box(&format!(
-                        "{}\n{}",
-                        &unit_or_target_name,
-                        graph_status.status_text()
-                    ));
-
-                    let line_colour = match graph_status.okay() {
-                        Some(false) => "red",
-                        Some(true) => "green",
-                        None => "black",
-                    };
-
-                    let style_attr = StyleAttr::new(Color::fast(line_colour), 2, None, 0, 15);
-
-                    (shape_kind, style_attr)
-                }
-
-                _ if trace_id.is_some() => {
-                    // TODO: Inefficient
-                    let mut box_colour = "black";
-                    let mut trace_txt = String::new();
-
-                    if let Some(gate_id) = self.get_gate_id(unit_or_target_name) {
-                        let msg_indices = trace.msg_indices(gate_id, MsgRelation::ALL);
-                        if !msg_indices.is_empty() {
-                            box_colour = "blue";
-                            trace_txt = extract_msg_indices(&trace, gate_id);
-                        }
-                    }
-
-                    (
-                        ShapeKind::new_box(&format!("{}\n{}", &unit_or_target_name, trace_txt)),
-                        StyleAttr::new(Color::fast(box_colour), 2, None, 0, 15),
-                    )
-                }
-
-                _ => (
-                    ShapeKind::new_box(unit_or_target_name),
-                    StyleAttr::new(Color::fast("black"), 2, None, 0, 15),
-                ),
-            };
-
-            let node = Element::create(
-                shape_kind,
-                style_attr,
-                Orientation::LeftToRight,
-                Point::new(100., 100.),
-            );
-            let handle = vg.add_node(node);
-            nodes.insert(unit_or_target_name.clone(), handle);
-        }
-
-        // add graph edges
-        for (unit_or_target_name, report) in &self.links {
-            let links = report.into_vec();
-            for link in links {
-                let link_type = match link.link_type {
-                    LinkType::Queued => "queued",
-                    LinkType::Direct => "direct",
-                };
-
-                let gate_name = self
-                    .gates
-                    .iter()
-                    .find(|(_, &id)| id == link.gate_id)
-                    .map_or("unknown", |(name, _id)| name);
-                debug!("Gate: id={} name={gate_name}", link.gate_id);
-
-                let mut arrow = Arrow::simple(link_type);
-                if trace_id.is_some()
-                    && !trace
-                        .msg_indices(link.gate_id, MsgRelation::GATE)
-                        .is_empty()
-                {
-                    arrow.look = StyleAttr::new(
-                        Color::fast("blue"),
-                        2,
-                        Option::Some(Color::fast("blue")),
-                        0,
-                        15,
-                    )
-                }
-
-                let to_node = nodes.get(unit_or_target_name).unwrap();
-                if let Some(from_node) = nodes.get(gate_name) {
-                    vg.add_edge(arrow, *from_node, *to_node);
-                } else {
-                    // This can happen if a unit or target didn't honor a new
-                    // set of sources announced to it via a reconfigure
-                    // message.
-                    error!("Internal error: Component '{unit_or_target_name}' has broken link {} to non-existent gate {}", link.id, link.gate_id);
-                }
-            }
-        }
-
-        let mut svg = SVGWriter::new();
-        let last_updated = Utc::now();
-        vg.do_it(false, false, false, &mut svg);
-        svg.draw_text(
-            Point::new(200., 20.),
-            &format!("Last updated: {}", last_updated.to_rfc2822()),
-            &StyleAttr::simple(),
-        );
-        svg.finalize()
-    }
-}
-
-fn extract_msg_indices(trace: &Trace, gate_id: Uuid) -> String {
-    let (mut msg_indices, first, last) = trace.msg_indices(gate_id, MsgRelation::ALL).iter().fold(
-        (String::new(), None::<usize>, None::<usize>),
-        |(mut out, mut first, mut last), idx| {
-            match (first, last) {
-                (None, None) => {
-                    first = Some(*idx);
-                }
-                (None, Some(_l)) => unreachable!(),
-                (Some(f), None) => {
-                    match *idx {
-                        idx if idx == f + 1 => {
-                            last = Some(idx);
-                        }
-                        idx if idx > f + 1 => {
-                            if !out.is_empty() {
-                                out.push_str(", ");
-                            }
-                            out.push_str(&format!("{}", f));
-                            first = Some(idx);
-                        }
-                        _ => unreachable!(),
-                    };
-                }
-                (Some(f), Some(l)) => {
-                    match *idx {
-                        idx if idx == l + 1 => {
-                            last = Some(idx);
-                        }
-                        idx if idx > l + 1 => {
-                            if !out.is_empty() {
-                                out.push_str(", ");
-                            }
-                            out.push_str(&format!("{}-{}", f, l));
-                            first = Some(idx);
-                            last = None;
-                        }
-                        _ => {}
-                    };
-                }
-            }
-            (out, first, last)
-        },
-    );
-
-    match (first, last) {
-        (None, None) => {}
-        (None, Some(_l)) => unreachable!(),
-        (Some(f), None) => {
-            if !msg_indices.is_empty() {
-                msg_indices.push_str(", ");
-            }
-            msg_indices.push_str(&format!("{}", f));
-        }
-        (Some(f), Some(l)) => {
-            if !msg_indices.is_empty() {
-                msg_indices.push_str(", ");
-            }
-            msg_indices.push_str(&format!("{}-{}", f, l));
-        }
-    }
-
-    format!("[{msg_indices}]")
 }
 
 #[derive(Clone, Default)]
@@ -613,16 +406,8 @@ pub struct Manager {
 
     // /// A reference to the compiled Roto script.
     // roto_compiled: Option<Arc<CompiledRoto>>,
-    graph_svg_processor: Arc<dyn ProcessRequest>,
-
-    graph_svg_data: Arc<ArcSwap<(Instant, LinkReport)>>,
-
     #[allow(dead_code)]
     file_io: TheFileIo,
-
-    tracer: Arc<Tracer>,
-
-    tracer_processor: Arc<dyn ProcessRequest>,
 
     tsig_key_store: TsigKeyStore,
 
@@ -648,19 +433,10 @@ impl Manager {
     pub fn new() -> Self {
         let (app_cmd_tx, app_cmd_rx) = tokio::sync::mpsc::channel(10);
 
-        let graph_svg_data = Arc::new(ArcSwap::from_pointee((Instant::now(), LinkReport::new())));
-        let tracer = Arc::new(Tracer::new());
-
-        let (graph_svg_processor, graph_svg_rel_base_url) =
-            Self::mk_svg_http_processor(graph_svg_data.clone(), tracer.clone());
-
         let tsig_key_store = Default::default();
         let unsigned_zones = Default::default();
         let signed_zones = Default::default();
         let published_zones = Default::default();
-
-        let (tracer_processor, tracer_rel_base_url) =
-            Self::mk_tracer_http_processor(tracer.clone());
 
         #[allow(clippy::let_and_return, clippy::default_constructed_unit_structs)]
         let manager = Manager {
@@ -671,11 +447,7 @@ impl Manager {
             metrics: Default::default(),
             http_resources: Default::default(),
             // roto_compiled: Default::default(),
-            graph_svg_processor,
-            graph_svg_data,
             file_io: TheFileIo::default(),
-            tracer,
-            tracer_processor,
             unsigned_zones,
             signed_zones,
             published_zones,
@@ -683,23 +455,6 @@ impl Manager {
             app_cmd_tx,
             app_cmd_rx: Arc::new(tokio::sync::Mutex::new(app_cmd_rx)),
         };
-
-        // Register the /status/graph endpoint.
-        manager.http_resources.register(
-            Arc::downgrade(&manager.graph_svg_processor),
-            "status_graph".into(),
-            "status_graph",
-            graph_svg_rel_base_url,
-            true,
-        );
-
-        manager.http_resources.register(
-            Arc::downgrade(&manager.tracer_processor),
-            "tracer".into(),
-            "tracer",
-            tracer_rel_base_url,
-            true,
-        );
 
         manager
     }
@@ -877,8 +632,7 @@ impl Manager {
         // collection to be handled later by spawn(). For unresolvable links
         // the corresponding Gate will be dropped here.
         for (name, load) in gates {
-            if let Some(mut gate) = load.gate {
-                gate.set_tracer(self.tracer.clone());
+            if let Some(gate) = load.gate {
                 if !config.units.units.contains_key(&name) {
                     for mut link in load.links {
                         link.resolve_config(file);
@@ -1138,7 +892,6 @@ impl Manager {
                 self.metrics.clone(),
                 self.http_resources.clone(),
                 // self.roto_compiled.clone(),
-                self.tracer.clone(),
                 self.unsigned_zones.clone(),
                 self.signed_zones.clone(),
                 self.published_zones.clone(),
@@ -1205,7 +958,6 @@ impl Manager {
                 self.metrics.clone(),
                 self.http_resources.clone(),
                 // self.roto_compiled.clone(),
-                self.tracer.clone(),
                 self.unsigned_zones.clone(),
                 self.signed_zones.clone(),
                 self.published_zones.clone(),
@@ -1280,7 +1032,6 @@ impl Manager {
             });
         }
 
-        let graph_svg_data = self.graph_svg_data.clone();
         crate::tokio::spawn("coordinator", async move {
             // Wait for all running units and targets to become ready and to
             // finish supplying responses to report-link commands, then log a
@@ -1326,13 +1077,7 @@ impl Manager {
                     &reports
                 );
             }
-
-            graph_svg_data.swap(Arc::new((Instant::now(), reports)));
         });
-    }
-
-    pub fn link_report_updated_at(&self) -> Instant {
-        self.graph_svg_data.load().0
     }
 
     pub fn terminate(&mut self) {
@@ -1422,116 +1167,6 @@ impl Manager {
     /// Returns a new reference the the HTTP resources collection.
     pub fn http_resources(&self) -> http::Resources {
         self.http_resources.clone()
-    }
-
-    // Create a HTTP processor that renders the SVG unit/target configuration graph.
-    fn mk_svg_http_processor(
-        graph_svg_data: Arc<arc_swap::ArcSwapAny<Arc<(Instant, LinkReport)>>>,
-        tracer: Arc<Tracer>,
-    ) -> (Arc<dyn ProcessRequest>, &'static str) {
-        const REL_BASE_URL: &str = "/status/graph";
-
-        let processor = Arc::new(move |request: &Request<_>| {
-            let req_path = request.uri().decoded_path();
-            if request.method() == Method::GET && req_path.starts_with(REL_BASE_URL) {
-                let (_base_path, restant) = req_path.split_at(REL_BASE_URL.len());
-                let trace_id = if restant.contains("/traces/") {
-                    restant.split_at("/traces/".len()).1.parse::<u8>().ok()
-                } else {
-                    None
-                };
-                let svg = graph_svg_data.load().1.get_svg(tracer.clone(), trace_id);
-                let traces = if let Some(trace_id) = trace_id {
-                    let trace = tracer.get_trace(trace_id);
-
-                    let mut traces_html = format!(
-                        r###"
-                        <p>Showing pipeline route and processing details of trace {trace_id}:</p>
-                        <table>
-                          <tr>
-                            <th>#</th>
-                            <th>When</th>
-                            <th>What</th>
-                          </tr>
-                    "###
-                    );
-
-                    for (idx, msg) in trace.msgs().iter().enumerate() {
-                        traces_html.push_str(&format!(
-                            r###"
-                        <tr>
-                          <td>{idx}</td>
-                          <td>{}</td>
-                          <td><pre>{}</pre></td>
-                        </tr>
-                        "###,
-                            msg.timestamp, msg.msg
-                        ));
-                    }
-                    traces_html.push_str("</table>\n");
-                    traces_html
-                } else {
-                    String::new()
-                };
-                let html = format!(
-                    r###"
-                    <html lang="en">
-                    <head>
-                    <meta charset="UTF-8">
-                    <style>
-                        table {{
-                        border-collapse: collapse;
-                        }}
-                        th, td {{
-                        border: 1px solid black;
-                        padding: 2px 20px 2px 20px;
-                        }}
-                    </style>
-                    </head>
-                    <body>
-                      <svg xmlns="http://www.w3.org/2000/svg" style="width: 100%; height: 100%;">
-                         {svg}
-                      </svg>
-                      {traces}
-                    </body>
-                    </html>
-                "###
-                );
-                let body = Body::from(html);
-                let response = Response::builder()
-                    .status(hyper::StatusCode::OK)
-                    .header("Content-Type", "text/html")
-                    .body(body)
-                    .unwrap();
-
-                Some(response)
-            } else {
-                None
-            }
-        });
-
-        (processor, REL_BASE_URL)
-    }
-
-    fn mk_tracer_http_processor(tracer: Arc<Tracer>) -> (Arc<dyn ProcessRequest>, &'static str) {
-        const REL_BASE_URL: &str = "/status/traces";
-
-        let processor = Arc::new(move |request: &Request<_>| {
-            let req_path = request.uri().decoded_path();
-            if request.method() == Method::GET && req_path == REL_BASE_URL {
-                let response = Response::builder()
-                    .status(hyper::StatusCode::OK)
-                    .header("Content-Type", "text/plain")
-                    .body(Body::from(format!("{tracer:#?}")))
-                    .unwrap();
-
-                Some(response)
-            } else {
-                None
-            }
-        });
-
-        (processor, REL_BASE_URL)
     }
 }
 
@@ -2353,111 +1988,6 @@ mod tests {
     //         // Which should unblock the coordinator wait
     //         join_handle.await.unwrap();
     //     }
-
-    use uuid::Uuid;
-
-    use crate::{
-        manager::extract_msg_indices,
-        tracing::{MsgRelation, Trace},
-    };
-
-    #[test]
-    fn test_empty_extract_msg_indices() {
-        let empty_trace = Trace::new();
-        let gate_id = Uuid::new_v4();
-        let trace_txt = extract_msg_indices(&empty_trace, gate_id);
-        assert_eq!("[]", trace_txt);
-    }
-
-    #[test]
-    fn test_single_extract_msg_indices() {
-        let mut empty_trace = Trace::new();
-        let gate_id = Uuid::new_v4();
-        empty_trace.append_msg(gate_id, "blah".to_owned(), MsgRelation::GATE);
-        let trace_txt = extract_msg_indices(&empty_trace, gate_id);
-        assert_eq!("[0]", trace_txt);
-    }
-
-    #[test]
-    fn test_long_range_extract_msg_indices() {
-        let mut empty_trace = Trace::new();
-        let gate_id = Uuid::new_v4();
-        empty_trace.append_msg(gate_id, "blah".to_owned(), MsgRelation::GATE);
-        empty_trace.append_msg(gate_id, "blah".to_owned(), MsgRelation::GATE);
-        empty_trace.append_msg(gate_id, "blah".to_owned(), MsgRelation::GATE);
-        let trace_txt = extract_msg_indices(&empty_trace, gate_id);
-        assert_eq!("[0-2]", trace_txt);
-    }
-
-    #[test]
-    fn test_single_range_extract_msg_indices() {
-        let mut empty_trace = Trace::new();
-        let gate_id = Uuid::new_v4();
-        empty_trace.append_msg(gate_id, "blah".to_owned(), MsgRelation::GATE);
-        empty_trace.append_msg(gate_id, "blah".to_owned(), MsgRelation::GATE);
-        let trace_txt = extract_msg_indices(&empty_trace, gate_id);
-        assert_eq!("[0-1]", trace_txt);
-    }
-
-    #[test]
-    fn test_single_then_range_extract_msg_indices() {
-        let mut empty_trace = Trace::new();
-        let gate_id1 = Uuid::new_v4();
-        let gate_id2 = Uuid::new_v4();
-        empty_trace.append_msg(gate_id2, "blah".to_owned(), MsgRelation::GATE);
-        empty_trace.append_msg(gate_id1, "blah".to_owned(), MsgRelation::GATE);
-        empty_trace.append_msg(gate_id2, "blah".to_owned(), MsgRelation::GATE);
-        empty_trace.append_msg(gate_id2, "blah".to_owned(), MsgRelation::GATE);
-        let trace_txt = extract_msg_indices(&empty_trace, gate_id2);
-        assert_eq!("[0, 2-3]", trace_txt);
-    }
-
-    #[test]
-    fn test_single_range_single_extract_msg_indices() {
-        let mut empty_trace = Trace::new();
-        let gate_id1 = Uuid::new_v4();
-        let gate_id2 = Uuid::new_v4();
-        empty_trace.append_msg(gate_id2, "blah".to_owned(), MsgRelation::GATE);
-        empty_trace.append_msg(gate_id1, "blah".to_owned(), MsgRelation::GATE);
-        empty_trace.append_msg(gate_id2, "blah".to_owned(), MsgRelation::GATE);
-        empty_trace.append_msg(gate_id2, "blah".to_owned(), MsgRelation::GATE);
-        empty_trace.append_msg(gate_id1, "blah".to_owned(), MsgRelation::GATE);
-        empty_trace.append_msg(gate_id2, "blah".to_owned(), MsgRelation::GATE);
-        let trace_txt = extract_msg_indices(&empty_trace, gate_id2);
-        assert_eq!("[0, 2-3, 5]", trace_txt);
-    }
-
-    #[test]
-    fn test_single_range_single_long_range_extract_msg_indices() {
-        let mut empty_trace = Trace::new();
-        let gate_id1 = Uuid::new_v4();
-        let gate_id2 = Uuid::new_v4();
-        empty_trace.append_msg(gate_id2, "blah".to_owned(), MsgRelation::GATE);
-        empty_trace.append_msg(gate_id1, "blah".to_owned(), MsgRelation::GATE);
-        empty_trace.append_msg(gate_id2, "blah".to_owned(), MsgRelation::GATE);
-        empty_trace.append_msg(gate_id2, "blah".to_owned(), MsgRelation::GATE);
-        empty_trace.append_msg(gate_id1, "blah".to_owned(), MsgRelation::GATE);
-        empty_trace.append_msg(gate_id2, "blah".to_owned(), MsgRelation::GATE);
-        empty_trace.append_msg(gate_id1, "blah".to_owned(), MsgRelation::GATE);
-        empty_trace.append_msg(gate_id2, "blah".to_owned(), MsgRelation::GATE);
-        empty_trace.append_msg(gate_id2, "blah".to_owned(), MsgRelation::GATE);
-        empty_trace.append_msg(gate_id2, "blah".to_owned(), MsgRelation::GATE);
-        let trace_txt = extract_msg_indices(&empty_trace, gate_id2);
-        assert_eq!("[0, 2-3, 5, 7-9]", trace_txt);
-    }
-
-    #[test]
-    fn test_range_then_single_extract_msg_indices() {
-        let mut empty_trace = Trace::new();
-        let gate_id1 = Uuid::new_v4();
-        let gate_id2 = Uuid::new_v4();
-        empty_trace.append_msg(gate_id2, "blah".to_owned(), MsgRelation::GATE);
-        empty_trace.append_msg(gate_id2, "blah".to_owned(), MsgRelation::GATE);
-        empty_trace.append_msg(gate_id1, "blah".to_owned(), MsgRelation::GATE);
-        empty_trace.append_msg(gate_id2, "blah".to_owned(), MsgRelation::GATE);
-        let trace_txt = extract_msg_indices(&empty_trace, gate_id2);
-        assert_eq!("[0-1, 3]", trace_txt);
-    }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn unused_unit_should_not_be_spawned() -> Result<(), Terminate> {
