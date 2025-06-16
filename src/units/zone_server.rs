@@ -408,11 +408,6 @@ impl ZoneServer {
                             // }
                         }
 
-                        GateStatus::ReportLinks { report } => {
-                            report.declare_source();
-                            report.set_graph_status(self.metrics.clone());
-                        }
-
                         GateStatus::ApplicationCommand { cmd } => {
                             info!("[{component_name}] Received command: {cmd:?}",);
                             match &cmd {

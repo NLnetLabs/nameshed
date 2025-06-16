@@ -65,7 +65,6 @@
 //! clones configuration in sync with that of the original Gate.
 
 use crate::common::frim::FrimMap;
-use crate::manager::UpstreamLinkReport;
 use crate::metrics;
 use crate::metrics::{Metric, MetricType, MetricUnit};
 use crate::{payload::Update, units::Unit};
@@ -499,14 +498,6 @@ impl Gate {
                     return Ok(GateStatus::Reconfiguring { new_config });
                 }
 
-                GateCommand::ReportLinks { report } => {
-                    self.notify_clones(GateCommand::ReportLinks {
-                        report: report.clone(),
-                    })
-                    .await;
-                    return Ok(GateStatus::ReportLinks { report });
-                }
-
                 GateCommand::ApplicationCommand { data } => {
                     self.notify_clones(GateCommand::ApplicationCommand { data: data.clone() })
                         .await;
@@ -922,13 +913,6 @@ impl GateAgent {
                 new_config,
                 new_gate,
             })
-            .await
-            .map_err(|err| format!("{}", err))
-    }
-
-    pub async fn report_links(&self, report: UpstreamLinkReport) -> Result<(), String> {
-        self.commands
-            .send(GateCommand::ReportLinks { report })
             .await
             .map_err(|err| format!("{}", err))
     }
@@ -1484,15 +1468,6 @@ pub enum GateStatus {
     /// links should be honored as soon as possible.
     Reconfiguring { new_config: Unit },
 
-    /// The unit owning this gate should report its upstream link
-    /// configuration.
-    ///
-    /// The payload should be populated with information about how the unit
-    /// owning this gate is linked to its upstream units. This enables the
-    /// caller (the Manager) to establish the actual current relationships
-    /// between the set of deployed units.
-    ReportLinks { report: UpstreamLinkReport },
-
     /// The unit owning this gate has received a command via the manager.
     ///
     /// The payload contents have meaning only to the sender and receiver.
@@ -1514,7 +1489,6 @@ impl Display for GateStatus {
             GateStatus::Active => f.write_str("Active"),
             GateStatus::Dormant => f.write_str("Dormant"),
             GateStatus::Reconfiguring { .. } => f.write_str("Reconfiguring"),
-            GateStatus::ReportLinks { .. } => f.write_str("ReportLinks"),
             GateStatus::ApplicationCommand { .. } => f.write_str("Triggered"),
         }
     }
@@ -1592,10 +1566,6 @@ pub enum ApplicationCommand {
 /// A command sent by a link to a gate.
 #[derive(Debug)]
 enum GateCommand {
-    ReportLinks {
-        report: UpstreamLinkReport,
-    },
-
     /// Change the suspension state of a link.
     Suspension {
         /// The slot number of the link to be manipulated.
@@ -1672,9 +1642,6 @@ impl Clone for GateCommand {
                 new_config: new_config.clone(),
             },
             Self::Terminate => Self::Terminate,
-            Self::ReportLinks { report } => Self::ReportLinks {
-                report: report.clone(),
-            },
             Self::ApplicationCommand { data } => Self::ApplicationCommand { data: data.clone() },
             _ => panic!("Internal error: Unclonable GateCommand"),
         }
@@ -1684,7 +1651,6 @@ impl Clone for GateCommand {
 impl Display for GateCommand {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            GateCommand::ReportLinks { .. } => f.write_str("ReportLinks"),
             GateCommand::Suspension { .. } => f.write_str("Suspension"),
             GateCommand::Subscribe { .. } => f.write_str("Subscribe"),
             GateCommand::Unsubscribe { .. } => f.write_str("Unsubscribe"),

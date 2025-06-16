@@ -143,15 +143,6 @@ impl CentralCommand {
                             }
                         }
 
-                        Some(TargetCommand::ReportLinks { report }) => {
-                            if let Some(sources) = sources {
-                                report.set_sources(sources);
-                            }
-                            report.set_graph_status(
-                                self.status_reporter.metrics(),
-                            );
-                        }
-
                         None | Some(TargetCommand::Terminate) => {
                             return Err(Terminated);
                         }

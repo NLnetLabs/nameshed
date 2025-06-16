@@ -2,23 +2,22 @@
 
 use arc_swap::ArcSwap;
 use futures::future::{join_all, select, Either};
-use log::{debug, error, info, log_enabled, trace, warn};
-use non_empty_vec::NonEmpty;
+use log::{debug, error, info};
 use reqwest::Client as HttpClient;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Display;
-use std::ops::Deref;
-use std::sync::{Arc, Mutex, RwLock, Weak};
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::sync::Barrier;
+use tracing::warn;
 use uuid::Uuid;
 
 use crate::common::file_io::TheFileIo;
 use crate::common::tsig::TsigKeyStore;
-use crate::comms::{ApplicationCommand, DirectLink, Gate, GateAgent, GraphStatus, Link};
+use crate::comms::{ApplicationCommand, DirectLink, Gate, GateAgent, Link};
 use crate::targets::central_command::{self, CentralCommandTarget};
 use crate::targets::Target;
 use crate::units::zone_loader::ZoneLoaderUnit;
@@ -244,129 +243,9 @@ impl From<&DirectLink> for LinkInfo {
     }
 }
 
-#[derive(Debug, Default)]
-pub struct LinkReport {
-    gates: HashMap<String, Uuid>,
-    links: HashMap<String, UpstreamLinkReport>,
-}
-
-impl LinkReport {
-    fn new() -> Self {
-        Default::default()
-    }
-
-    fn add_gate(&mut self, name: String, id: Uuid) {
-        self.gates.insert(name, id);
-    }
-
-    fn add_link(&mut self, name: String, report: UpstreamLinkReport) {
-        self.links.insert(name, report);
-    }
-
-    fn ready(&self) -> Result<(), usize> {
-        let remaining = self
-            .links
-            .iter()
-            .filter(|(_name, report)| !report.ready())
-            .count();
-        if remaining > 0 {
-            Err(remaining)
-        } else {
-            Ok(())
-        }
-    }
-
-    fn get_gate_id(&self, name: &str) -> Option<Uuid> {
-        self.gates.get(name).copied()
-    }
-}
-
-#[derive(Clone, Default)]
-pub struct UpstreamLinkReport {
-    links: Arc<Mutex<Option<Vec<LinkInfo>>>>,
-    // this is actually about downstream sending, not about upstream links ...
-    graph_status: Arc<Mutex<Option<Weak<dyn GraphStatus>>>>,
-}
-
-impl std::fmt::Debug for UpstreamLinkReport {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.links.lock().unwrap().deref() {
-            Some(links) => {
-                let graph_status = self.graph_status.lock().unwrap();
-                f.debug_struct("UpstreamLinkReport")
-                    .field("links", links)
-                    .field("graph_status", &graph_status.is_some())
-                    .finish()
-            }
-            _ => f.debug_struct("UpstreamLinkReport").finish(),
-        }
-    }
-}
-
-impl UpstreamLinkReport {
-    pub fn new() -> Self {
-        Default::default()
-    }
-
-    pub fn ready(&self) -> bool {
-        self.links.lock().unwrap().is_some()
-    }
-
-    pub fn set_sources<T>(&self, links: &NonEmpty<T>)
-    where
-        // this strange for<'a> &'a construct is a Higher-Rank Trait Bound and
-        // is needed here in order to express that a reference to T can be
-        // made into a LinkInfo, i.e. to match impl From<&Link> for LinkInfo {
-        // .. }.
-        for<'a> &'a T: Into<LinkInfo>,
-    {
-        let mut lock = self.links.lock().unwrap();
-        let typed_links = links.iter().map(|link| link.into()).collect();
-        lock.replace(typed_links);
-    }
-
-    pub fn set_source<T>(&self, link: &T)
-    where
-        // this strange for<'a> &'a construct is a Higher-Rank Trait Bound and
-        // is needed here in order to express that a reference to T can be
-        // made into a LinkInfo, i.e. to match impl From<&Link> for LinkInfo {
-        // .. }.
-        for<'a> &'a T: Into<LinkInfo>,
-    {
-        let mut lock = self.links.lock().unwrap();
-        lock.replace(vec![link.into()]);
-    }
-
-    /// Units that are themselves the source do not have upstream sources and
-    /// so should
-    /// notify via declare_source() that they have no sources.
-    pub fn declare_source(&self) {
-        let mut lock = self.links.lock().unwrap();
-        lock.replace(vec![]);
-    }
-
-    pub fn set_graph_status(&self, graph_status: Arc<dyn GraphStatus>) {
-        *self.graph_status.lock().unwrap() = Some(Arc::downgrade(&graph_status));
-    }
-
-    pub fn graph_status(&self) -> Option<Weak<dyn GraphStatus>> {
-        self.graph_status.lock().unwrap().clone()
-    }
-
-    pub fn into_vec(&self) -> Vec<LinkInfo> {
-        if let Some(v) = self.links.lock().unwrap().as_ref() {
-            v.clone()
-        } else {
-            vec![]
-        }
-    }
-}
-
 #[allow(clippy::large_enum_variant)]
 pub enum TargetCommand {
     Reconfigure { new_config: Target },
-
-    ReportLinks { report: UpstreamLinkReport },
 
     Terminate,
 }
@@ -375,7 +254,6 @@ impl Display for TargetCommand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             TargetCommand::Reconfigure { .. } => f.write_str("Reconfigure"),
-            TargetCommand::ReportLinks { .. } => f.write_str("ReportLinks"),
             TargetCommand::Terminate => f.write_str("Terminate"),
         }
     }
@@ -858,65 +736,7 @@ impl Manager {
             *agent_out = Some(new_agent);
         }
 
-        self.coordinate_and_track_startup(coordinator);
-    }
-
-    fn coordinate_and_track_startup(&mut self, coordinator: Arc<Coordinator>) {
-        let mut reports = LinkReport::new();
-        let mut agent_cmd_futures = vec![];
-        let mut target_cmd_futures = vec![];
-
-        // Generate report-link commands to send to all running units.
-        let units = [
-            ("ZL", self.loader_agent.as_ref().unwrap()),
-            ("RS", self.review_agent.as_ref().unwrap()),
-            ("ZS", self.signer_agent.as_ref().unwrap()),
-            ("RS2", self.review2_agent.as_ref().unwrap()),
-            ("PS", self.publish_agent.as_ref().unwrap()),
-        ];
-        for (name, gate_agent) in units {
-            let name = String::from(name);
-            let report = UpstreamLinkReport::new();
-            reports.add_gate(name.clone(), gate_agent.id());
-            reports.add_link(name.clone(), report.clone());
-            let agent = gate_agent.clone();
-            let name = name.clone();
-            agent_cmd_futures.push(async move {
-                if let Err(err) = agent.report_links(report).await {
-                    error!(
-                        "Internal error: Report links command could not be sent to gate of unit '{}': {}",
-                        name, err
-                    );
-                }
-            });
-        }
-
-        // Generate report-link commands to send to all running targets.
-        {
-            let name = String::from("CC");
-            let cmd_sender = self.center_tx.clone().unwrap();
-            let report = UpstreamLinkReport::new();
-            reports.add_link(name.clone(), report.clone());
-
-            let sender = cmd_sender.clone();
-            let name = name.clone();
-            target_cmd_futures.push(async move {
-                if let Err(err) = sender.send(TargetCommand::ReportLinks { report }).await {
-                    error!(
-                        "Internal error: Report links command could not be sent to target '{}': {}",
-                        name, err
-                    );
-                }
-            });
-        }
-
         tokio::spawn(async move {
-            // Wait for all running units and targets to become ready and to
-            // finish supplying responses to report-link commands, then log a
-            // link report at debug level, and generate an SVG representation
-            // of the link report for display at /status/graph.
-            debug!("Waiting for coodinator");
-
             coordinator
                 .wait(|pending_component_names, status| {
                     warn!(
@@ -926,35 +746,6 @@ impl Manager {
                     );
                 })
                 .await;
-
-            // Now it's safe to send the report link commands. Before this
-            // point they might have been ignored because one or more units
-            // were not ready to process them yet.
-            for future in agent_cmd_futures {
-                future.await;
-            }
-            for future in target_cmd_futures {
-                future.await;
-            }
-            loop {
-                match reports.ready() {
-                    Ok(()) => break,
-                    Err(remaining) => {
-                        trace!(
-                            "Waiting for {} upstream link reports to become available.",
-                            remaining
-                        );
-                        tokio::time::sleep(Duration::from_secs(1)).await;
-                    }
-                }
-            }
-
-            if log_enabled!(log::Level::Debug) {
-                debug!(
-                    "Dumping gate/link/unit/target relationships:\n{:#?}",
-                    &reports
-                );
-            }
         });
     }
 
