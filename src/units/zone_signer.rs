@@ -98,12 +98,9 @@ use crate::common::status_reporter::{
     sr_log, AnyStatusReporter, Chainable, Named, UnitStatusReporter,
 };
 use crate::common::tsig::{parse_key_strings, TsigKeyStore};
-use crate::common::unit::UnitActivity;
 use crate::common::xfr::parse_xfr_acl;
 use crate::comms::ApplicationCommand;
-use crate::comms::{
-    AnyDirectUpdate, DirectUpdate, Gate, GateMetrics, GateStatus, GraphStatus, Terminated,
-};
+use crate::comms::{AnyDirectUpdate, DirectUpdate, GraphStatus, Terminated};
 use crate::http::PercentDecodedPath;
 use crate::http::ProcessRequest;
 use crate::log::ExitError;
@@ -171,18 +168,12 @@ impl ZoneSignerUnit {
 impl ZoneSignerUnit {
     pub async fn run(
         self,
-        mut component: Component,
-        gate: Gate,
+        component: Component,
         mut waitpoint: WaitPoint,
     ) -> Result<(), Terminated> {
         let unit_name = component.name().clone();
 
-        // Setup our metrics
-        let metrics = Arc::new(ZoneSignerMetrics::new(&gate));
-        component.register_metrics(metrics.clone());
-
-        // Setup our status reporting
-        let status_reporter = Arc::new(ZoneSignerStatusReporter::new(&unit_name, metrics.clone()));
+        // TODO: metrics and status reporting
 
         let mut key_path_stems = HashSet::new();
         let mut keys = HashMap::<StoredName, Vec<SigningKey<Bytes, KeyPair>>>::new();
@@ -264,7 +255,7 @@ impl ZoneSignerUnit {
         // that we are, ready to start. All units and targets start together,
         // otherwise data passed from one component to another may be lost if
         // the receiving component is not yet ready to accept it.
-        gate.process_until(waitpoint.ready()).await?;
+        waitpoint.ready().await;
 
         // Signal again once we are out of the process_until() so that anyone
         // waiting to send important gate status updates won't send them while
@@ -275,9 +266,6 @@ impl ZoneSignerUnit {
         ZoneSigner::new(
             component,
             self.http_api_path,
-            gate,
-            metrics,
-            status_reporter,
             keys,
             self.rrsig_inception_offset_secs,
             self.rrsig_expiration_offset_secs,
@@ -371,9 +359,6 @@ struct ZoneSigner {
     component: Component,
     #[allow(dead_code)]
     http_api_path: Arc<String>,
-    gate: Gate,
-    metrics: Arc<ZoneSignerMetrics>,
-    status_reporter: Arc<ZoneSignerStatusReporter>,
     #[allow(clippy::type_complexity)]
     signing_keys: Arc<std::sync::RwLock<HashMap<StoredName, Vec<SigningKey<Bytes, KeyPair>>>>>,
     inception_offset_secs: u32,
@@ -392,9 +377,6 @@ impl ZoneSigner {
     fn new(
         component: Component,
         http_api_path: Arc<String>,
-        gate: Gate,
-        metrics: Arc<ZoneSignerMetrics>,
-        status_reporter: Arc<ZoneSignerStatusReporter>,
         signing_keys: HashMap<StoredName, Vec<SigningKey<Bytes, KeyPair>>>,
         inception_offset_secs: u32,
         expiration_offset: u32,
@@ -408,9 +390,6 @@ impl ZoneSigner {
         Self {
             component,
             http_api_path,
-            gate,
-            metrics,
-            status_reporter,
             signing_keys: Arc::new(std::sync::RwLock::new(signing_keys)),
             inception_offset_secs,
             expiration_offset,
@@ -442,7 +421,7 @@ impl ZoneSigner {
             info!("[{component_name}]: Received command: {cmd:?}");
             match &cmd {
                 ApplicationCommand::Terminate => {
-                    self.status_reporter.terminated();
+                    // self.status_reporter.terminated();
                     return Ok(());
                 }
 
@@ -459,7 +438,7 @@ impl ZoneSigner {
             }
         }
 
-        self.status_reporter.terminated();
+        // self.status_reporter.terminated();
         Ok(())
     }
 
@@ -1280,95 +1259,6 @@ impl Default for ZoneSignerStatus {
         Self {
             zones_being_signed: VecDeque::with_capacity(MAX_SIGNING_HISTORY),
         }
-    }
-}
-
-//------------ ZoneSignerMetrics ---------------------------------------------
-
-#[derive(Debug, Default)]
-pub struct ZoneSignerMetrics {
-    gate: Option<Arc<GateMetrics>>, // optional to make testing easier
-}
-
-impl GraphStatus for ZoneSignerMetrics {
-    fn status_text(&self) -> String {
-        "TODO".to_string()
-    }
-
-    fn okay(&self) -> Option<bool> {
-        Some(false)
-    }
-}
-
-impl ZoneSignerMetrics {
-    // const LISTENER_BOUND_COUNT_METRIC: Metric = Metric::new(
-    //     "bmp_tcp_in_listener_bound_count",
-    //     "the number of times the TCP listen port was bound to",
-    //     MetricType::Counter,
-    //     MetricUnit::Total,
-    // );
-}
-
-impl ZoneSignerMetrics {
-    pub fn new(gate: &Gate) -> Self {
-        Self {
-            gate: Some(gate.metrics()),
-        }
-    }
-}
-
-impl metrics::Source for ZoneSignerMetrics {
-    fn append(&self, unit_name: &str, target: &mut metrics::Target) {
-        if let Some(gate) = &self.gate {
-            gate.append(unit_name, target);
-        }
-
-        // target.append_simple(
-        //     &Self::LISTENER_BOUND_COUNT_METRIC,
-        //     Some(unit_name),
-        //     self.listener_bound_count.load(SeqCst),
-        // );
-    }
-}
-
-//------------ ZoneSignerStatusReporter --------------------------------------
-
-#[derive(Debug, Default)]
-pub struct ZoneSignerStatusReporter {
-    name: String,
-    metrics: Arc<ZoneSignerMetrics>,
-}
-
-impl ZoneSignerStatusReporter {
-    pub fn new<T: Display>(name: T, metrics: Arc<ZoneSignerMetrics>) -> Self {
-        Self {
-            name: format!("{}", name),
-            metrics,
-        }
-    }
-
-    pub fn _typed_metrics(&self) -> Arc<ZoneSignerMetrics> {
-        self.metrics.clone()
-    }
-}
-
-impl UnitStatusReporter for ZoneSignerStatusReporter {}
-
-impl AnyStatusReporter for ZoneSignerStatusReporter {
-    fn metrics(&self) -> Option<Arc<dyn crate::metrics::Source>> {
-        Some(self.metrics.clone())
-    }
-}
-
-impl Chainable for ZoneSignerStatusReporter {
-    fn add_child<T: Display>(&self, child_name: T) -> Self {
-        Self::new(self.link_names(child_name), self.metrics.clone())
-    }
-}
-
-impl Named for ZoneSignerStatusReporter {
-    fn name(&self) -> &str {
-        &self.name
     }
 }
 

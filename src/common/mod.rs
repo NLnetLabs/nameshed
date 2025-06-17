@@ -6,5 +6,4 @@ pub(crate) mod memory;
 pub(crate) mod net;
 pub(crate) mod status_reporter;
 pub(crate) mod tsig;
-pub(crate) mod unit;
 pub(crate) mod xfr;

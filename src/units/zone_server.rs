@@ -77,12 +77,9 @@ use crate::common::status_reporter::{
     sr_log, AnyStatusReporter, Chainable, Named, UnitStatusReporter,
 };
 use crate::common::tsig::{parse_key_strings, TsigKeyStore};
-use crate::common::unit::UnitActivity;
 use crate::common::xfr::parse_xfr_acl;
 use crate::comms::ApplicationCommand;
-use crate::comms::{
-    AnyDirectUpdate, DirectUpdate, Gate, GateMetrics, GateStatus, GraphStatus, Terminated,
-};
+use crate::comms::{AnyDirectUpdate, DirectUpdate, GraphStatus, Terminated};
 use crate::http::{PercentDecodedPath, ProcessRequest};
 use crate::log::ExitError;
 use crate::manager::{Component, WaitPoint};
@@ -145,18 +142,12 @@ pub struct ZoneServerUnit {
 impl ZoneServerUnit {
     pub async fn run(
         self,
-        mut component: Component,
-        gate: Gate,
+        component: Component,
         mut waitpoint: WaitPoint,
     ) -> Result<(), Terminated> {
         let unit_name = component.name().clone();
 
-        // Setup our metrics
-        let metrics = Arc::new(ZoneLoaderMetrics::new(&gate));
-        component.register_metrics(metrics.clone());
-
-        // Setup our status reporting
-        let status_reporter = Arc::new(ZoneLoaderStatusReporter::new(&unit_name, metrics.clone()));
+        // TODO: metrics and status reporting
 
         // TODO: This will just choose all current zones to be served. For signed and published
         // zones this doesn't matter so much as they only exist while being and once approved.
@@ -201,7 +192,7 @@ impl ZoneServerUnit {
         // that we are, ready to start. All units and targets start together,
         // otherwise data passed from one component to another may be lost if
         // the receiving component is not yet ready to accept it.
-        gate.process_until(waitpoint.ready()).await?;
+        waitpoint.ready().await;
 
         // Signal again once we are out of the process_until() so that anyone
         // waiting to send important gate status updates won't send them while
@@ -214,9 +205,6 @@ impl ZoneServerUnit {
         ZoneServer::new(
             component,
             self.http_api_path,
-            gate,
-            metrics,
-            status_reporter,
             self.mode,
             self.source,
             self.hooks,
@@ -279,9 +267,6 @@ struct ZoneServer {
     component: Arc<RwLock<Component>>,
     #[allow(dead_code)]
     http_api_path: Arc<String>,
-    gate: Gate,
-    metrics: Arc<ZoneLoaderMetrics>,
-    status_reporter: Arc<ZoneLoaderStatusReporter>,
     #[allow(dead_code)]
     mode: Mode,
     source: Source,
@@ -297,9 +282,6 @@ impl ZoneServer {
     fn new(
         component: Arc<RwLock<Component>>,
         http_api_path: Arc<String>,
-        gate: Gate,
-        metrics: Arc<ZoneLoaderMetrics>,
-        status_reporter: Arc<ZoneLoaderStatusReporter>,
         mode: Mode,
         source: Source,
         hooks: Vec<String>,
@@ -309,9 +291,6 @@ impl ZoneServer {
         Self {
             component,
             http_api_path,
-            gate,
-            metrics,
-            status_reporter,
             mode,
             source,
             hooks,
@@ -326,7 +305,7 @@ impl ZoneServer {
         update_tx: mpsc::Sender<Update>,
         mut cmd_rx: mpsc::Receiver<ApplicationCommand>,
     ) -> Result<(), crate::comms::Terminated> {
-        let status_reporter = self.status_reporter.clone();
+        // let status_reporter = self.status_reporter.clone();
 
         // Setup REST API endpoint
         let http_processor = Arc::new(ZoneReviewApi::new(
@@ -352,14 +331,14 @@ impl ZoneServer {
             tokio::select! {
                 cmd = cmd_rx.recv() => {
                     let Some(cmd) = cmd else {
-                        arc_self.status_reporter.terminated();
+                        // arc_self.status_reporter.terminated();
                         return Err(Terminated);
                     };
 
                     info!("[{component_name}] Received command: {cmd:?}",);
                     match &cmd {
                         ApplicationCommand::Terminate => {
-                            arc_self.status_reporter.terminated();
+                            // arc_self.status_reporter.terminated();
                             return Err(Terminated);
                         }
 
@@ -480,95 +459,6 @@ impl DirectUpdate for ZoneServer {
 }
 
 impl AnyDirectUpdate for ZoneServer {}
-
-//------------ ZoneLoaderMetrics ---------------------------------------------
-
-#[derive(Debug, Default)]
-pub struct ZoneLoaderMetrics {
-    gate: Option<Arc<GateMetrics>>, // optional to make testing easier
-}
-
-impl GraphStatus for ZoneLoaderMetrics {
-    fn status_text(&self) -> String {
-        "TODO".to_string()
-    }
-
-    fn okay(&self) -> Option<bool> {
-        Some(false)
-    }
-}
-
-impl ZoneLoaderMetrics {
-    // const LISTENER_BOUND_COUNT_METRIC: Metric = Metric::new(
-    //     "bmp_tcp_in_listener_bound_count",
-    //     "the number of times the TCP listen port was bound to",
-    //     MetricType::Counter,
-    //     MetricUnit::Total,
-    // );
-}
-
-impl ZoneLoaderMetrics {
-    pub fn new(gate: &Gate) -> Self {
-        Self {
-            gate: Some(gate.metrics()),
-        }
-    }
-}
-
-impl metrics::Source for ZoneLoaderMetrics {
-    fn append(&self, unit_name: &str, target: &mut metrics::Target) {
-        if let Some(gate) = &self.gate {
-            gate.append(unit_name, target);
-        }
-
-        // target.append_simple(
-        //     &Self::LISTENER_BOUND_COUNT_METRIC,
-        //     Some(unit_name),
-        //     self.listener_bound_count.load(SeqCst),
-        // );
-    }
-}
-
-//------------ ZoneLoaderStatusReporter --------------------------------------
-
-#[derive(Debug, Default)]
-pub struct ZoneLoaderStatusReporter {
-    name: String,
-    metrics: Arc<ZoneLoaderMetrics>,
-}
-
-impl ZoneLoaderStatusReporter {
-    pub fn new<T: Display>(name: T, metrics: Arc<ZoneLoaderMetrics>) -> Self {
-        Self {
-            name: format!("{}", name),
-            metrics,
-        }
-    }
-
-    pub fn _typed_metrics(&self) -> Arc<ZoneLoaderMetrics> {
-        self.metrics.clone()
-    }
-}
-
-impl UnitStatusReporter for ZoneLoaderStatusReporter {}
-
-impl AnyStatusReporter for ZoneLoaderStatusReporter {
-    fn metrics(&self) -> Option<Arc<dyn crate::metrics::Source>> {
-        Some(self.metrics.clone())
-    }
-}
-
-impl Chainable for ZoneLoaderStatusReporter {
-    fn add_child<T: Display>(&self, child_name: T) -> Self {
-        Self::new(self.link_names(child_name), self.metrics.clone())
-    }
-}
-
-impl Named for ZoneLoaderStatusReporter {
-    fn name(&self) -> &str {
-        &self.name
-    }
-}
 
 #[derive(Clone, Default)]
 struct XfrDataProvidingZonesWrapper {

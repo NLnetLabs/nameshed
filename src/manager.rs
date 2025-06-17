@@ -15,7 +15,7 @@ use tracing::warn;
 
 use crate::common::file_io::TheFileIo;
 use crate::common::tsig::TsigKeyStore;
-use crate::comms::{ApplicationCommand, Gate, GateAgent};
+use crate::comms::ApplicationCommand;
 use crate::targets::central_command::{self, CentralCommandTarget};
 use crate::targets::Target;
 use crate::units::zone_loader::ZoneLoaderUnit;
@@ -497,19 +497,12 @@ impl Manager {
         spawn_unit: SpawnUnit,
         spawn_target: SpawnTarget,
     ) where
-        SpawnUnit: Fn(Component, Unit, Gate, WaitPoint),
+        SpawnUnit: Fn(Component, Unit, WaitPoint),
         SpawnTarget: Fn(Component, Target, Receiver<TargetCommand>, WaitPoint),
     {
         let num_targets = 1;
         let num_units = 5;
         let coordinator = Coordinator::new(num_targets + num_units);
-
-        // Forward-declare gates to the various components.
-        let zl = LoadUnit::new(8);
-        let rs = LoadUnit::new(8);
-        let zs = LoadUnit::new(8);
-        let rs2 = LoadUnit::new(8);
-        let ps = LoadUnit::new(8);
 
         let (zl_tx, zl_rx) = mpsc::channel(10);
         let (rs_tx, rs_rx) = mpsc::channel(10);
@@ -578,8 +571,6 @@ impl Manager {
                     update_tx: update_tx.clone(),
                     cmd_rx: zl_rx,
                 }),
-                zl.gate.unwrap(),
-                zl.agent,
             ),
             (
                 String::from("RS"),
@@ -599,8 +590,6 @@ impl Manager {
                     update_tx: update_tx.clone(),
                     cmd_rx: rs_rx,
                 }),
-                rs.gate.unwrap(),
-                rs.agent,
             ),
             (
                 String::from("ZS"),
@@ -617,8 +606,6 @@ impl Manager {
                     update_tx: update_tx.clone(),
                     cmd_rx: zs_rx,
                 }),
-                zs.gate.unwrap(),
-                zs.agent,
             ),
             (
                 String::from("RS2"),
@@ -638,8 +625,6 @@ impl Manager {
                     update_tx: update_tx.clone(),
                     cmd_rx: rs2_rx,
                 }),
-                rs2.gate.unwrap(),
-                rs2.agent,
             ),
             (
                 String::from("PS"),
@@ -656,15 +641,11 @@ impl Manager {
                     update_tx: update_tx.clone(),
                     cmd_rx: ps_rx,
                 }),
-                ps.gate.unwrap(),
-                ps.agent,
             ),
         ];
 
         // Spawn and terminate units
-        for (name, new_unit, mut new_gate, new_agent) in units {
-            new_gate.set_name(&name);
-
+        for (name, new_unit) in units {
             // Spawn the new unit
             let component = Component::new(
                 name.clone(),
@@ -681,12 +662,7 @@ impl Manager {
             );
 
             let unit_type = std::mem::discriminant(&new_unit);
-            spawn_unit(
-                component,
-                new_unit,
-                new_gate,
-                coordinator.clone().track(name.clone()),
-            );
+            spawn_unit(component, new_unit, coordinator.clone().track(name.clone()));
         }
 
         tokio::spawn(async move {
@@ -727,9 +703,9 @@ impl Manager {
         }
     }
 
-    fn spawn_unit(component: Component, new_unit: Unit, new_gate: Gate, waitpoint: WaitPoint) {
+    fn spawn_unit(component: Component, new_unit: Unit, waitpoint: WaitPoint) {
         info!("Starting unit '{}'", component.name);
-        tokio::spawn(new_unit.run(component, new_gate, waitpoint));
+        tokio::spawn(new_unit.run(component, waitpoint));
     }
 
     fn spawn_target(
@@ -926,36 +902,6 @@ impl TargetSet {
 impl From<HashMap<String, Target>> for TargetSet {
     fn from(v: HashMap<String, Target>) -> Self {
         Self { targets: v }
-    }
-}
-
-//------------ LoadUnit ------------------------------------------------------
-
-/// A unit referenced during loading.
-struct LoadUnit {
-    /// The gate of the unit.
-    ///
-    /// This is some only if the unit is newly created and has not yet been
-    /// spawned onto a runtime.
-    gate: Option<Gate>,
-
-    /// A gate agent for the unit.
-    agent: GateAgent,
-}
-
-impl LoadUnit {
-    fn new(queue_size: usize) -> Self {
-        let (gate, agent) = Gate::new(queue_size);
-        LoadUnit {
-            gate: Some(gate),
-            agent,
-        }
-    }
-}
-
-impl From<GateAgent> for LoadUnit {
-    fn from(agent: GateAgent) -> Self {
-        LoadUnit { gate: None, agent }
     }
 }
 

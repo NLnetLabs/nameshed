@@ -25,7 +25,6 @@ pub mod zone_signer;
 
 //------------ Unit ----------------------------------------------------------
 
-use crate::comms::Gate;
 use crate::manager::{Component, WaitPoint};
 use serde::Deserialize;
 
@@ -41,11 +40,11 @@ pub enum Unit {
 }
 
 impl Unit {
-    pub async fn run(self, component: Component, gate: Gate, waitpoint: WaitPoint) {
+    pub async fn run(self, component: Component, waitpoint: WaitPoint) {
         let _ = match self {
-            Unit::ZoneLoader(unit) => unit.run(component, gate, waitpoint).await,
-            Unit::ZoneServer(unit) => unit.run(component, gate, waitpoint).await,
-            Unit::ZoneSigner(unit) => unit.run(component, gate, waitpoint).await,
+            Unit::ZoneLoader(unit) => unit.run(component, waitpoint).await,
+            Unit::ZoneServer(unit) => unit.run(component, waitpoint).await,
+            Unit::ZoneSigner(unit) => unit.run(component, waitpoint).await,
         };
     }
 

@@ -6,7 +6,7 @@ use std::{
 
 use log::{debug, error, trace};
 
-use crate::{comms::GateStatus, manager::TargetCommand, metrics};
+use crate::{manager::TargetCommand, metrics};
 
 macro_rules! sr_log {
     ($log_fn:ident: $self:ident, $msg:expr) => (
@@ -63,10 +63,6 @@ pub trait AnyStatusReporter: Chainable {
 }
 
 pub trait UnitStatusReporter: AnyStatusReporter {
-    fn gate_status_announced(&self, status: &GateStatus) {
-        sr_log!(trace: self, "Gate status announced: {}", status);
-    }
-
     fn terminated(&self) {
         sr_log!(trace: self, "Unit terminated");
     }
