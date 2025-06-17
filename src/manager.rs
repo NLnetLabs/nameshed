@@ -12,11 +12,10 @@ use std::time::Duration;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::sync::Barrier;
 use tracing::warn;
-use uuid::Uuid;
 
 use crate::common::file_io::TheFileIo;
 use crate::common::tsig::TsigKeyStore;
-use crate::comms::{ApplicationCommand, DirectLink, Gate, GateAgent, Link};
+use crate::comms::{ApplicationCommand, Gate, GateAgent};
 use crate::targets::central_command::{self, CentralCommandTarget};
 use crate::targets::Target;
 use crate::units::zone_loader::ZoneLoaderUnit;
@@ -204,43 +203,6 @@ impl Component {
 }
 
 //------------ Manager -------------------------------------------------------
-
-#[derive(Clone, Copy, Debug)]
-pub enum LinkType {
-    Queued,
-    Direct,
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug)]
-pub struct LinkInfo {
-    link_type: LinkType,
-    id: Uuid,
-    gate_id: Uuid,
-    connected_gate_slot: Option<Uuid>,
-}
-
-impl From<&Link> for LinkInfo {
-    fn from(link: &Link) -> Self {
-        Self {
-            link_type: LinkType::Queued,
-            id: link.id(),
-            gate_id: link.gate_id(),
-            connected_gate_slot: link.connected_gate_slot(),
-        }
-    }
-}
-
-impl From<&DirectLink> for LinkInfo {
-    fn from(link: &DirectLink) -> Self {
-        Self {
-            link_type: LinkType::Direct,
-            id: link.id(),
-            gate_id: link.gate_id(),
-            connected_gate_slot: link.connected_gate_slot(),
-        }
-    }
-}
 
 #[allow(clippy::large_enum_variant)]
 pub enum TargetCommand {
@@ -552,26 +514,17 @@ impl Manager {
         let coordinator = Coordinator::new(num_targets + num_units);
 
         // Forward-declare gates to the various components.
-        let mut zl = LoadUnit::new(8);
-        let mut rs = LoadUnit::new(8);
-        let mut zs = LoadUnit::new(8);
-        let mut rs2 = LoadUnit::new(8);
-        let mut ps = LoadUnit::new(8);
+        let zl = LoadUnit::new(8);
+        let rs = LoadUnit::new(8);
+        let zs = LoadUnit::new(8);
+        let rs2 = LoadUnit::new(8);
+        let ps = LoadUnit::new(8);
 
         let (update_tx, update_rx) = mpsc::channel(10);
 
         {
             let name = String::from("CC");
             let new_target = Target::CentraLCommand(CentralCommandTarget {
-                sources: vec![
-                    zl.agent.create_link().into(),
-                    rs.agent.create_link().into(),
-                    zs.agent.create_link().into(),
-                    rs2.agent.create_link().into(),
-                    ps.agent.create_link().into(),
-                ]
-                .try_into()
-                .unwrap(),
                 config: central_command::Config {},
                 update_rx,
             });

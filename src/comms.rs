@@ -77,6 +77,7 @@ use log::{log_enabled, trace, Level};
 
 use domain::base::Serial;
 use domain::zonetree::StoredName;
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::SeqCst;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
@@ -84,8 +85,7 @@ use std::{
     any::Any,
     fmt::{self, Debug, Display},
 };
-use std::{future::pending, sync::atomic::AtomicUsize};
-use tokio::sync::{mpsc, oneshot, RwLock};
+use tokio::sync::{mpsc, RwLock};
 use tokio::time::{timeout_at, Instant};
 use uuid::Uuid;
 
@@ -254,57 +254,38 @@ impl Gate {
     /// non-cloned gate receives `GateCommand::FollowSubscribe`.
     pub async fn process(&self) -> Result<GateStatus, Terminated> {
         let status = self.get_gate_status();
-        loop {
-            let command = {
-                let mut lock = self.commands.write().await;
-                match lock.recv().await {
-                    Some(command) => command,
-                    None => {
-                        if log_enabled!(Level::Trace) {
-                            trace!(
-                                "Gate[{} ({})]: Command channel has been closed",
-                                self.name,
-                                self.id()
-                            );
-                        }
-                        return Err(Terminated);
+        let command = {
+            let mut lock = self.commands.write().await;
+            match lock.recv().await {
+                Some(command) => command,
+                None => {
+                    if log_enabled!(Level::Trace) {
+                        trace!(
+                            "Gate[{} ({})]: Command channel has been closed",
+                            self.name,
+                            self.id()
+                        );
                     }
-                }
-            };
-
-            if log_enabled!(Level::Trace) {
-                trace!(
-                    "Gate[{} ({})]: Received command '{}'",
-                    self.name,
-                    self.id(),
-                    command
-                );
-            }
-
-            match command {
-                GateCommand::Suspension { slot, suspend } => self.suspension(slot, suspend),
-
-                GateCommand::Subscribe {
-                    suspended,
-                    response,
-                    direct_update,
-                } => self.subscribe(suspended, response, direct_update).await,
-
-                GateCommand::Unsubscribe { slot } => self.unsubscribe(slot).await,
-
-                GateCommand::ApplicationCommand { data } => {
-                    return Ok(GateStatus::ApplicationCommand { cmd: data });
-                }
-
-                GateCommand::Terminate => {
                     return Err(Terminated);
                 }
             }
+        };
 
-            let new_status = self.get_gate_status();
-            if new_status != status {
-                return Ok(new_status);
+        if log_enabled!(Level::Trace) {
+            trace!(
+                "Gate[{} ({})]: Received command '{}'",
+                self.name,
+                self.id(),
+                command
+            );
+        }
+
+        match command {
+            GateCommand::ApplicationCommand { data } => {
+                Ok(GateStatus::ApplicationCommand { cmd: data })
             }
+
+            GateCommand::Terminate => Err(Terminated),
         }
     }
 
@@ -360,84 +341,6 @@ impl Gate {
         Ok(())
     }
 
-    /// Updates the data set of the unit.
-    ///
-    /// This method will send out the update to all active links. It will
-    /// also update the gate metrics based on the update.
-    ///
-    /// Returns true if the update was sent to a downstream unit, false
-    /// otherwise.
-    pub async fn update_data(&self, update: Update) {
-        // let mut sender_lost = false;
-        let mut sent_at_least_once = false;
-
-        if log_enabled!(Level::Trace) {
-            trace!("Gate[{} ({})]: Starting update", self.name, self.id());
-        }
-        for (uuid, item) in self.updates.guard().iter() {
-            match (&item.queue, &item.direct) {
-                (Some(sender), None) => {
-                    // if let Some(tracer) = &self.tracer {
-                    // for payload in update.trace_ids() {
-                    //     tracer.note_gate_event(
-                    //             payload.trace_id().unwrap(),
-                    //             self.id(),
-                    //             format!("Sent by queue from gate {} to slot {uuid}: {payload:#?}", self.id()),
-                    //         );
-                    // }
-                    // }
-                    if sender.send(Ok(update.clone())).await.is_ok() {
-                        sent_at_least_once = true;
-                        continue;
-                    }
-                }
-                (None, Some(direct)) => {
-                    if log_enabled!(log::Level::Trace) {
-                        trace!(
-                            "Gate[{} ({})]: Sending direct update for slot {}",
-                            self.name,
-                            self.id(),
-                            uuid
-                        );
-                    }
-                    // if let Some(tracer) = &self.tracer {
-                    //     for payload in update.trace_ids() {
-                    //         tracer.note_gate_event(
-                    //                 payload.trace_id().unwrap(),
-                    //                 self.id(),
-                    //                 format!(
-                    //                     "Sent by direct update from gate {} to slot {uuid}: {payload:#?}",
-                    //                     self.id()
-                    //                 ),
-                    //             );
-                    //     }
-                    // }
-                    if let Some(direct) = direct.upgrade() {
-                        direct.direct_update(update.clone()).await;
-                        sent_at_least_once = true;
-                    }
-                    continue;
-                }
-                _ => {}
-            }
-            // We don't actually have any usage of queue based sending at
-            // present so we can skip doing this for now. item.queue = None;
-            // sender_lost = true;
-        }
-        if log_enabled!(Level::Trace) {
-            trace!("Gate[{} ({})]: Finished update", self.name, self.id());
-        }
-
-        // if sender_lost {
-        //     let updates = self.updates.load();
-        //     updates.retain(|_, item| item.queue.is_some());
-        //     self.updates_len.store(updates.len(), SeqCst);
-        // }
-
-        self.metrics
-            .update(&update, self.updates.clone(), sent_at_least_once);
-    }
-
     /// Returns the current gate status.
     pub fn get_gate_status(&self) -> GateStatus {
         if self.suspended.len() == self.updates.len() {
@@ -445,62 +348,6 @@ impl Gate {
         } else {
             GateStatus::Active
         }
-    }
-
-    /// Processes a suspension command.
-    fn suspension(&self, slot: Uuid, suspend: bool) {
-        if suspend {
-            if let Some(removed) = self.updates.remove(&slot) {
-                self.suspended.insert(slot, removed);
-            }
-        } else if let Some(removed) = self.suspended.remove(&slot) {
-            self.updates.insert(slot, removed);
-        }
-    }
-
-    /// Processes a subscribe command.
-    async fn subscribe(
-        &self,
-        suspended: bool,
-        response: oneshot::Sender<SubscribeResponse>,
-        direct_update: Option<Weak<dyn AnyDirectUpdate>>,
-    ) {
-        let (update_sender, receiver) = if let Some(direct_update) = direct_update {
-            let update_sender = UpdateSender {
-                queue: None,
-                direct: Some(direct_update),
-            };
-            (update_sender, None)
-        } else {
-            let (tx, receiver) = mpsc::channel(self.queue_size);
-            let update_sender = UpdateSender {
-                queue: Some(tx),
-                direct: None,
-            };
-            (update_sender, Some(receiver))
-        };
-
-        let slot = Uuid::new_v4();
-        if suspended {
-            self.suspended.insert(slot, update_sender.clone());
-        } else {
-            self.updates.insert(slot, update_sender.clone());
-        }
-
-        let subscription = SubscribeResponse { slot, receiver };
-
-        if let Err(subscription) = response.send(subscription) {
-            if suspended {
-                self.suspended.remove(&subscription.slot);
-            } else {
-                self.updates.remove(&subscription.slot);
-            }
-        }
-    }
-
-    async fn unsubscribe(&self, slot: Uuid) {
-        self.suspended.remove(&slot);
-        self.updates.remove(&slot);
     }
 
     pub(crate) fn set_name(&mut self, name: &str) {
@@ -529,11 +376,6 @@ pub struct GateAgent {
 impl GateAgent {
     pub fn id(&self) -> Uuid {
         *self.id.lock().unwrap()
-    }
-
-    /// Creates a new link to the gate.
-    pub fn create_link(&mut self) -> Link {
-        Link::new(self.id(), self.commands.clone())
     }
 
     pub async fn terminate(&self) {
@@ -684,392 +526,6 @@ impl metrics::Source for GateMetrics {
     }
 }
 
-//------------ DirectLink ----------------------------------------------------
-
-/// A direct link to a unit.
-///
-/// Like [Link] but data updates are sent directly from the linked gate to the
-/// fn registered when `connect()` is invoked. Direct updates can be orders of
-/// magnitude faster than normal queue based links, especially when multiple
-/// concurrent writers to the gate are possible. However, unlike a normal
-/// queue based link where delays at the link owner don't immediately impact
-/// the gate owner, with a direct link any delay in the link owner will block
-/// the sending gate thread/task.
-#[derive(Clone, Debug)]
-pub struct DirectLink(Link);
-
-impl DirectLink {
-    pub fn id(&self) -> Uuid {
-        self.0.id()
-    }
-
-    pub fn gate_id(&self) -> Uuid {
-        self.0.gate_id()
-    }
-
-    pub fn connected_gate_slot(&self) -> Option<Uuid> {
-        self.0.connection.as_ref().map(|connection| connection.slot)
-    }
-
-    /// Suspends the link.
-    ///
-    /// A suspended link will not receive any payload updates from the
-    /// connected unit. It will, however, still receive status updates.
-    ///
-    /// The suspension is lifted automatically the next time `query` is
-    /// called.
-    ///
-    /// Note that this is an async method that needs to be awaited in order
-    /// to do anything.
-    pub async fn suspend(&mut self) {
-        self.0.suspend().await
-    }
-
-    /// Returns the current status of the connected unit.
-    pub fn get_status(&self) -> UnitStatus {
-        self.0.get_status()
-    }
-
-    /// Connects the link to the gate.
-    ///
-    /// MUST be invoked before the link can receive data updates from the
-    /// gate.
-    pub async fn connect(
-        &mut self,
-        direct_update_target: Arc<dyn AnyDirectUpdate>,
-        suspended: bool,
-    ) -> Result<(), UnitStatus> {
-        self.0.set_direct_update_target(direct_update_target);
-        self.0.connect(suspended).await
-    }
-
-    pub async fn disconnect(&mut self) {
-        self.0.direct_update_target = None;
-        self.0.disconnect().await;
-    }
-}
-
-impl From<Link> for DirectLink {
-    fn from(link: Link) -> Self {
-        DirectLink(link)
-    }
-}
-
-//------------ Link ----------------------------------------------------------
-
-#[derive(Debug)]
-struct LinkConnection {
-    /// The slot number at the gate.
-    slot: Uuid,
-
-    /// The update receiver.
-    updates: Option<UpdateReceiver>,
-}
-
-/// A queued link to a unit.
-///
-/// The link allows tracking of updates of that other unit. This happens via
-/// the [`query`](Self::query) method. A link’s owner can signal that they
-/// are currently not interested in receiving updates via the
-/// [`suspend`](Self::suspend) method. This suspension will automatically be
-/// lifted the next time `query` is called.
-///
-/// Links can be created from the name of the unit they should be linking to
-/// via [manager::load_link](crate::manager::load_link). This function is
-/// also called implicitly through the impls for `Deserialize` and `From`.
-/// Note, however, that the function only adds the link to a list of links
-/// to be properly connected by the manager later.
-pub struct Link {
-    id: Uuid,
-
-    gate_id: Uuid,
-
-    /// A sender of commands to the gate.
-    commands: mpsc::Sender<GateCommand>,
-
-    /// The connection to the unit.
-    ///
-    /// If this is `None`, the link has not been connected yet.
-    connection: Option<LinkConnection>,
-
-    /// The current unit status.
-    unit_status: UnitStatus,
-
-    /// Are we currently suspended?
-    suspended: bool,
-
-    direct_update_target: Option<Weak<dyn AnyDirectUpdate>>,
-}
-
-impl PartialEq for Link {
-    fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
-    }
-}
-
-impl Eq for Link {}
-
-impl std::fmt::Debug for Link {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Link")
-            .field("id", &self.id)
-            .field("gate_id", &self.gate_id)
-            .field("connection", &self.connected_gate_slot())
-            .field("unit_status", &self.unit_status)
-            .field("suspended", &self.suspended)
-            .field("direct_update_target", &self.direct_update_target.is_some())
-            .finish()
-    }
-}
-
-impl Clone for Link {
-    fn clone(&self) -> Self {
-        Self {
-            id: self.id,
-            gate_id: self.gate_id,
-            commands: self.commands.clone(),
-            connection: None,
-            unit_status: self.unit_status,
-            suspended: self.suspended,
-            direct_update_target: self.direct_update_target.clone(),
-        }
-    }
-}
-
-impl Link {
-    /// Creates a new, unconnected link.
-    fn new(gate_id: Uuid, commands: mpsc::Sender<GateCommand>) -> Self {
-        Link {
-            id: Uuid::new_v4(),
-            gate_id,
-            commands,
-            connection: None,
-            unit_status: UnitStatus::Healthy,
-            suspended: false,
-            direct_update_target: None,
-        }
-    }
-
-    pub fn id(&self) -> Uuid {
-        self.id
-    }
-
-    pub fn gate_id(&self) -> Uuid {
-        self.gate_id
-    }
-
-    pub fn connected_gate_slot(&self) -> Option<Uuid> {
-        self.connection.as_ref().map(|connection| connection.slot)
-    }
-
-    pub fn close(&mut self) {
-        if let Some(conn) = self.connection.as_mut() {
-            if let Some(updates) = &mut conn.updates {
-                updates.close();
-            }
-        }
-    }
-
-    /// Query for the next update.
-    ///
-    /// The method returns a future that resolves into the next update. The
-    /// future can be dropped safely at any time.
-    ///
-    /// The future either resolves into a payload update or the connected
-    /// unit’s new status as the error variant. The current status is also
-    /// available via the `get_status` method.
-    ///
-    /// If the link is currently suspended, calling this method will lift the
-    /// suspension.
-    pub async fn query(&mut self) -> Result<Update, UnitStatus> {
-        self.connect(false).await?;
-        let conn = self.connection.as_mut().unwrap();
-
-        if let Some(updates) = &mut conn.updates {
-            match updates.recv().await {
-                Some(Ok(update)) => Ok(update),
-                Some(Err(status)) => {
-                    self.unit_status = status;
-                    Err(status)
-                }
-                None => {
-                    self.unit_status = UnitStatus::Gone;
-                    Err(UnitStatus::Gone)
-                }
-            }
-        } else {
-            pending().await
-        }
-    }
-
-    /// Query a suspended link.
-    ///
-    /// When a link is suspended, it still received updates to the unit’s
-    /// status. These updates can also be queried for explicitly via this
-    /// method.
-    ///
-    /// Much like `query`, the future returned by this method can safely be
-    /// dropped at any time.
-    pub async fn query_suspended(&mut self) -> UnitStatus {
-        if let Err(err) = self.connect(true).await {
-            return err;
-        }
-        let conn = self.connection.as_mut().unwrap();
-
-        if let Some(updates) = &mut conn.updates {
-            loop {
-                match updates.recv().await {
-                    Some(Ok(_)) => continue,
-                    Some(Err(status)) => return status,
-                    None => {
-                        self.unit_status = UnitStatus::Gone;
-                        return UnitStatus::Gone;
-                    }
-                }
-            }
-        } else {
-            pending().await
-        }
-    }
-
-    /// Suspends the link.
-    ///
-    /// A suspended link will not receive any payload updates from the
-    /// connected unit. It will, however, still receive status updates.
-    ///
-    /// The suspension is lifted automatically the next time `query` is
-    /// called.
-    ///
-    /// Note that this is an async method that needs to be awaited in order
-    /// to do anything.
-    pub async fn suspend(&mut self) {
-        if !self.suspended {
-            self.request_suspend(true).await
-        }
-    }
-
-    /// Request suspension from the gate.
-    async fn request_suspend(&mut self, suspend: bool) {
-        if self.connection.is_none() {
-            return;
-        }
-
-        let conn = self.connection.as_mut().unwrap();
-        if self
-            .commands
-            .send(GateCommand::Suspension {
-                slot: conn.slot,
-                suspend,
-            })
-            .await
-            .is_err()
-        {
-            self.unit_status = UnitStatus::Gone
-        } else {
-            self.suspended = suspend
-        }
-    }
-
-    /// Returns the current status of the connected unit.
-    pub fn get_status(&self) -> UnitStatus {
-        self.unit_status
-    }
-
-    /// Connects the link to the gate.
-    pub async fn connect(&mut self, suspended: bool) -> Result<(), UnitStatus> {
-        if self.connection.is_some() {
-            return Ok(());
-        }
-        if let UnitStatus::Gone = self.unit_status {
-            return Err(UnitStatus::Gone);
-        }
-
-        let (tx, rx) = oneshot::channel();
-        if self
-            .commands
-            .send(GateCommand::Subscribe {
-                suspended,
-                response: tx,
-                direct_update: self.direct_update_target.clone(),
-            })
-            .await
-            .is_err()
-        {
-            self.unit_status = UnitStatus::Gone;
-            return Err(UnitStatus::Gone);
-        }
-        let sub = match rx.await {
-            Ok(sub) => sub,
-            Err(_) => {
-                self.unit_status = UnitStatus::Gone;
-                return Err(UnitStatus::Gone);
-            }
-        };
-        self.connection = Some(LinkConnection {
-            slot: sub.slot,
-            updates: sub.receiver,
-        });
-        if log_enabled!(log::Level::Trace) {
-            trace!("Link[{}]: connected to gate slot {}", self.id(), sub.slot);
-        }
-        self.unit_status = UnitStatus::Healthy;
-        self.suspended = suspended;
-        Ok(())
-    }
-
-    /// Disconnects the link to the gate
-    pub async fn disconnect(&mut self) {
-        if let Some(connection) = &self.connection {
-            let _ = self
-                .commands
-                .send(GateCommand::Unsubscribe {
-                    slot: connection.slot,
-                })
-                .await;
-            if log_enabled!(log::Level::Trace) {
-                trace!(
-                    "Link[{}]: disconnected from gate slot {}",
-                    self.id(),
-                    connection.slot
-                );
-            }
-        }
-        self.connection = None;
-    }
-
-    /// Trigger an upstream unit to do something.
-    pub async fn send_application_command(&self, data: ApplicationCommand) {
-        let _ = self
-            .commands
-            .send(GateCommand::ApplicationCommand { data })
-            .await;
-        if log_enabled!(log::Level::Trace) {
-            trace!("Link[{}]: sent application command to gate slot", self.id(),);
-        }
-    }
-
-    /// See [DirectLink].
-    pub fn set_direct_update_target(&mut self, direct_update_target: Arc<dyn AnyDirectUpdate>) {
-        self.direct_update_target = Some(Arc::downgrade(&direct_update_target));
-    }
-}
-
-impl Drop for Link {
-    fn drop(&mut self) {
-        if let Some(connection) = &self.connection {
-            let id = self.id();
-            let slot = connection.slot;
-            let tx = self.commands.clone();
-            tokio::spawn(async move {
-                let _ = tx.send(GateCommand::Unsubscribe { slot }).await;
-                if log_enabled!(log::Level::Trace) {
-                    trace!("Link[{}]: disconnected from gate slot {} on drop", id, slot);
-                }
-            });
-        }
-    }
-}
-
 //------------ GateStatus ----------------------------------------------------
 
 /// The status of a gate.
@@ -1185,35 +641,7 @@ pub enum ApplicationCommand {
 /// A command sent by a link to a gate.
 #[derive(Debug)]
 enum GateCommand {
-    /// Change the suspension state of a link.
-    Suspension {
-        /// The slot number of the link to be manipulated.
-        slot: Uuid,
-
-        /// Suspend the link?
-        suspend: bool,
-    },
-
-    /// Subscribe to the gate.
-    Subscribe {
-        /// Should the subscription start in suspended state?
-        suspended: bool,
-
-        /// The sender for the response.
-        ///
-        /// The response payload is the slot number of the subscription.
-        response: oneshot::Sender<SubscribeResponse>,
-
-        direct_update: Option<Weak<dyn AnyDirectUpdate>>,
-    },
-
-    Unsubscribe {
-        slot: Uuid,
-    },
-
-    ApplicationCommand {
-        data: ApplicationCommand,
-    },
+    ApplicationCommand { data: ApplicationCommand },
 
     Terminate,
 }
@@ -1223,7 +651,6 @@ impl Clone for GateCommand {
         match self {
             Self::Terminate => Self::Terminate,
             Self::ApplicationCommand { data } => Self::ApplicationCommand { data: data.clone() },
-            _ => panic!("Internal error: Unclonable GateCommand"),
         }
     }
 }
@@ -1231,9 +658,6 @@ impl Clone for GateCommand {
 impl Display for GateCommand {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            GateCommand::Suspension { .. } => f.write_str("Suspension"),
-            GateCommand::Subscribe { .. } => f.write_str("Subscribe"),
-            GateCommand::Unsubscribe { .. } => f.write_str("Unsubscribe"),
             GateCommand::ApplicationCommand { .. } => f.write_str("ApplicationCommand"),
             GateCommand::Terminate => f.write_str("Terminate"),
         }
@@ -1271,191 +695,4 @@ struct SubscribeResponse {
 
     /// The update receiver for this subscription.
     receiver: Option<UpdateReceiver>,
-}
-
-//------------ Tests ---------------------------------------------------------
-
-/// With the RTRTR design units and targets are connected together by MPSC
-/// pipelines each with their own internal queue. What is the performance
-/// and resource overhead of these queues vs direct invocation of functions
-/// from one component to another? This test is intended to give some insight
-/// into these topics.
-#[cfg(test)]
-mod tests {
-    use chrono::SubsecRound;
-    use tokio::sync::Notify;
-
-    use crate::tests::util::internal::get_testable_metrics_snapshot;
-
-    use super::*;
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn gate_link_lifecycle_test() {
-        // Lifecycle of a connected gate and link:
-        //
-        //   Client    Unit       Gate    Gate Agent    Link
-        //   ───────────────────────────────────────────────
-        //     │
-        //     │              new()
-        //     │╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌▶│╌╌╌╌╌╌╌▶│
-        //            (gate, agent) │◀╌╌╌╌╌╌╌│
-        //     │◀╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌│        :
-        //     │   gate             :        :
-        //     │╌╌╌╌╌╌╌▶│           :
-        //     │
-        //     │  get_gate_status() │
-        //     │╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌▶│
-        //     │            Dormant │
-        //     │◀╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌│
-        //     │
-        //     │  create_link()
-        //     │╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌▶│╌╌╌╌╌╌╌╌╌╌╌▶│
-        //     │◀╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌│◀╌╌╌╌╌╌╌╌╌╌╌│
-        //     │
-        //     │  query()
-        //     │╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌▶│╌╌ connect() ╌┐
-        //     │                               SUBSCRIBE  │◀╌╌╌╌╌╌╌╌╌╌╌╌╌┘
-        //     │                    │◀╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌│
-        //     │                    │╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌▶│
-        //     │                                          │╌╌╌ recv() ╌╌╌┐
-        //     :                                          :              :
-        //     :                                          : WAITING...   :
-        //     │  get_gate_status() │
-        //     │╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌▶│
-        //     │            Active  │
-        //     │◀╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌│
-        //     :
-        //     :
-        //              │ update_data()
-        //              │╌╌╌╌╌╌╌╌╌╌▶│
-        //              :           │ . . . . . . . . . . . . . . . . . ▶│
-        //                                                               │
-        //     │                                   UPDATE │              │
-        //     │◀╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌│◀╌╌╌╌╌╌╌╌╌╌╌╌╌┘
-        //     :
-        //     :
-        //
-        //                                                │ drop()
-        //                                                x
-        //
-        //     Then some time later either the link goes away which will be
-        //     noticed by the gate:
-        //
-        //     │  get_gate_status() │
-        //     │╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌▶│
-        //     │            Dormant │
-        //     │◀╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌│
-        //
-        //
-        //     Or the gate goes away which will be noticed by the link:
-        //
-        //                          │ drop()
-        //                          x
-        //     │  query()
-        //     │╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌▶│╌╌ recv() ╌┐
-        //     │                    Err(UnitStatus::Gone) │      None │
-        //     │◀╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌│◀╌╌╌╌╌╌╌╌╌╌┘
-        // fn mk_test_payload() -> Payload {
-        //     Payload::new(18_u8, RouteContext::for_reprocessing(), None)
-        // }
-
-        eprintln!("STARTING");
-        // Create a gate. Updates sent via the gate will be received by links.
-        // the minimum allowed queue capacity is 1
-        let (gate, mut agent) = Gate::new(1);
-
-        // Create a link from the gate agent to receive updates from the gate.
-        let mut link = agent.create_link();
-
-        #[derive(Debug)]
-        struct TestDirectUpdateTarget(Arc<Notify>);
-
-        #[async_trait]
-        impl DirectUpdate for TestDirectUpdateTarget {
-            async fn direct_update(&self, update: Update) {
-                // assert!(matches!(update, Update::Bulk(_)));
-                // if let Update::Bulk(payload) = update {
-                //     assert_eq!(payload.len(), 2);
-                //     assert_eq!(payload[0], mk_test_payload());
-                //     assert_eq!(payload[1], mk_test_payload());
-                //     self.0.notify_one();
-                // }
-            }
-        }
-
-        impl AnyDirectUpdate for TestDirectUpdateTarget {}
-
-        let notify = Arc::new(Notify::default());
-        let test_target = Arc::new(TestDirectUpdateTarget(notify.clone()));
-
-        eprintln!("SETTING LINK TO DIRECT UPDATE MODE");
-        link.set_direct_update_target(test_target.clone());
-
-        let gate = Arc::new(gate);
-        let gate_clone = gate.clone();
-
-        // "Run" the gate like a unit does.
-        tokio::spawn(async move {
-            loop {
-                gate.process().await.unwrap();
-            }
-        });
-
-        let metrics = get_testable_metrics_snapshot(&gate_clone.metrics());
-        assert_eq!(metrics.with_name::<usize>("num_updates"), 0);
-        assert_eq!(metrics.with_name::<String>("last_update"), "N/A");
-        assert_eq!(metrics.with_name::<String>("since_last_update"), "-1");
-
-        eprintln!("TESTING THAT UPDATES ARE DROPPED WHEN THERE IS NO DOWNSTREAM");
-
-        // Build an update to send
-        // let update = Update::Single(mk_test_payload());
-        // gate_clone.update_data(update).await;
-
-        let metrics = get_testable_metrics_snapshot(&gate_clone.metrics());
-        assert_eq!(metrics.with_name::<usize>("num_updates"), 1);
-        assert_eq!(metrics.with_name::<usize>("num_dropped_updates"), 1);
-        assert_eq!(
-            metrics
-                .with_name::<DateTime<Utc>>("last_update")
-                .round_subsecs(0),
-            Utc::now().round_subsecs(0)
-        );
-        assert!(metrics.with_name::<i64>("since_last_update") >= 0);
-
-        eprintln!("CONNECTING LINK TO GATE");
-        link.connect(false).await.unwrap();
-
-        // Build an update to send
-        // let update =
-        //     Update::Bulk(smallvec![mk_test_payload(), mk_test_payload()]);
-
-        // Send the update through the gate
-        // eprintln!("SENDING PAYLOAD");
-        // gate_clone.update_data(update).await;
-
-        eprintln!("WAITING FOR PAYLOAD TO BE RECEIVED BY THE TEST TARGET");
-        let timeout = Box::pin(tokio::time::sleep(Duration::from_secs(3)));
-        let notified = Box::pin(notify.notified());
-        assert!(matches!(select(timeout, notified).await, Either::Right(..)));
-
-        let metrics = get_testable_metrics_snapshot(&gate_clone.metrics());
-        assert_eq!(metrics.with_name::<usize>("num_updates"), 2);
-        assert_eq!(metrics.with_name::<usize>("num_dropped_updates"), 1);
-        assert_eq!(
-            metrics
-                .with_name::<DateTime<Utc>>("last_update")
-                .round_subsecs(0),
-            Utc::now().round_subsecs(0)
-        );
-        let since_last_update = metrics.with_name::<i64>("since_last_update");
-        assert_eq!(metrics.with_name::<usize>("update_set_size"), 2);
-
-        eprintln!("WAITING TO CHECK THAT SINCE_LAST_UPDATE METRIC UPDATES");
-        tokio::time::sleep(Duration::from_secs(2)).await;
-        let metrics = get_testable_metrics_snapshot(&gate_clone.metrics());
-        let new_since_last_update = metrics.with_name::<i64>("since_last_update");
-
-        assert!(new_since_last_update > since_last_update);
-    }
 }

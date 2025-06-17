@@ -5,15 +5,12 @@ use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use indoc::formatdoc;
 use log::info;
-use non_empty_vec::NonEmpty;
 use serde::Deserialize;
 use serde_with::serde_as;
 use tokio::sync::mpsc;
 
 use crate::common::status_reporter::{AnyStatusReporter, Chainable, Named, TargetStatusReporter};
-use crate::comms::{
-    AnyDirectUpdate, ApplicationCommand, DirectLink, DirectUpdate, GraphStatus, Terminated,
-};
+use crate::comms::{AnyDirectUpdate, ApplicationCommand, DirectUpdate, GraphStatus, Terminated};
 use crate::http::{PercentDecodedPath, ProcessRequest};
 use crate::manager::{Component, TargetCommand, WaitPoint};
 use crate::metrics;
@@ -21,9 +18,6 @@ use crate::payload::Update;
 
 #[derive(Debug)]
 pub struct CentralCommandTarget {
-    /// The set of units to receive messages from.
-    pub sources: NonEmpty<DirectLink>,
-
     /// A receiver for updates.
     pub update_rx: mpsc::Receiver<Update>,
 
@@ -38,7 +32,7 @@ impl CentralCommandTarget {
         waitpoint: WaitPoint,
     ) -> Result<(), Terminated> {
         CentralCommand::new(self.config, component)
-            .run(self.sources, cmd, waitpoint, self.update_rx)
+            .run(cmd, waitpoint, self.update_rx)
             .await
     }
 }
@@ -73,7 +67,6 @@ impl CentralCommand {
 
     pub async fn run(
         mut self,
-        mut sources: NonEmpty<DirectLink>,
         cmd_rx: mpsc::Receiver<TargetCommand>,
         waitpoint: WaitPoint,
         update_rx: mpsc::Receiver<Update>,
@@ -83,33 +76,22 @@ impl CentralCommand {
 
         let arc_self = Arc::new(self);
 
-        // Register as a direct update receiver with the linked gates.
-        for link in sources.iter_mut() {
-            link.connect(arc_self.clone(), false)
-                .await
-                .map_err(|_| Terminated)?;
-        }
-
         // Wait for other components to be, and signal to other components
         // that we are, ready to start. All units and targets start together,
         // otherwise data passed from one component to another may be lost if
         // the receiving component is not yet ready to accept it.
         waitpoint.running().await;
 
-        arc_self.do_run(Some(sources), cmd_rx, update_rx).await
+        arc_self.do_run(cmd_rx, update_rx).await
     }
 
     pub async fn do_run(
         self: &Arc<Self>,
-        mut sources: Option<NonEmpty<DirectLink>>,
         mut cmd_rx: mpsc::Receiver<TargetCommand>,
         mut update_rx: mpsc::Receiver<Update>,
     ) -> Result<(), Terminated> {
         loop {
-            if let Err(Terminated) = self
-                .process_events(&mut sources, &mut cmd_rx, &mut update_rx)
-                .await
-            {
+            if let Err(Terminated) = self.process_events(&mut cmd_rx, &mut update_rx).await {
                 self.status_reporter.terminated();
                 return Err(Terminated);
             }
@@ -118,7 +100,6 @@ impl CentralCommand {
 
     pub async fn process_events(
         self: &Arc<Self>,
-        sources: &mut Option<NonEmpty<DirectLink>>,
         cmd_rx: &mut mpsc::Receiver<TargetCommand>,
         update_rx: &mut mpsc::Receiver<Update>,
     ) -> Result<(), Terminated> {

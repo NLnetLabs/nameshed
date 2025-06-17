@@ -102,8 +102,7 @@ use crate::common::unit::UnitActivity;
 use crate::common::xfr::parse_xfr_acl;
 use crate::comms::ApplicationCommand;
 use crate::comms::{
-    AnyDirectUpdate, DirectLink, DirectUpdate, Gate, GateMetrics, GateStatus, GraphStatus,
-    Terminated,
+    AnyDirectUpdate, DirectUpdate, Gate, GateMetrics, GateStatus, GraphStatus, Terminated,
 };
 use crate::http::PercentDecodedPath;
 use crate::http::ProcessRequest;
