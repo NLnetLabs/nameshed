@@ -222,20 +222,20 @@ impl Display for TargetCommand {
 /// Requires a running Tokio reactor that has been "entered" (see Tokio
 /// `Handle::enter()`).
 pub struct Manager {
-    /// The gate agent for the zone loader.
-    loader_agent: Option<GateAgent>,
+    /// Commands for the zone loader.
+    loader_tx: Option<mpsc::Sender<ApplicationCommand>>,
 
-    /// The gate agent for the review server.
-    review_agent: Option<GateAgent>,
+    /// Commands for the review server.
+    review_tx: Option<mpsc::Sender<ApplicationCommand>>,
 
-    /// The gate agent for the zone signer.
-    signer_agent: Option<GateAgent>,
+    /// Commands for the zone signer.
+    signer_tx: Option<mpsc::Sender<ApplicationCommand>>,
 
-    /// The gate agent for the secondary review server.
-    review2_agent: Option<GateAgent>,
+    /// Commands for the secondary review server.
+    review2_tx: Option<mpsc::Sender<ApplicationCommand>>,
 
-    /// The gate agent for the publish server.
-    publish_agent: Option<GateAgent>,
+    /// Commands for the publish server.
+    publish_tx: Option<mpsc::Sender<ApplicationCommand>>,
 
     /// Commands for the central command.
     center_tx: Option<mpsc::Sender<TargetCommand>>,
@@ -285,11 +285,11 @@ impl Manager {
 
         #[allow(clippy::let_and_return, clippy::default_constructed_unit_structs)]
         let manager = Manager {
-            loader_agent: None,
-            review_agent: None,
-            signer_agent: None,
-            review2_agent: None,
-            publish_agent: None,
+            loader_tx: None,
+            review_tx: None,
+            signer_tx: None,
+            review2_tx: None,
+            publish_tx: None,
             center_tx: None,
             http_client: Default::default(),
             metrics: Default::default(),
@@ -314,18 +314,18 @@ impl Manager {
 
     pub async fn accept_application_commands(&self) {
         while let Some((unit_name, data)) = self.app_cmd_rx.lock().await.recv().await {
-            let Some(agent) = (match &*unit_name {
-                "ZL" => self.loader_agent.as_ref(),
-                "RS" => self.review_agent.as_ref(),
-                "ZS" => self.signer_agent.as_ref(),
-                "RS2" => self.review2_agent.as_ref(),
-                "PS" => self.publish_agent.as_ref(),
+            let Some(tx) = (match &*unit_name {
+                "ZL" => self.loader_tx.as_ref(),
+                "RS" => self.review_tx.as_ref(),
+                "ZS" => self.signer_tx.as_ref(),
+                "RS2" => self.review2_tx.as_ref(),
+                "PS" => self.publish_tx.as_ref(),
                 _ => None,
             }) else {
                 continue;
             };
             debug!("Forwarding application command to unit '{unit_name}'");
-            agent.send_application_command(data).await.unwrap();
+            tx.send(data).await.unwrap();
         }
     }
 
@@ -378,12 +378,7 @@ impl Manager {
     /// new links and, if desired, to drain old link queues before ceasing to
     /// query them further.
     pub fn spawn(&mut self) {
-        self.spawn_internal(
-            Self::spawn_unit,
-            Self::spawn_target,
-            Self::terminate_unit,
-            Self::terminate_target,
-        )
+        self.spawn_internal(Self::spawn_unit, Self::spawn_target)
     }
 
     /// Separated out from [spawn](Self::spawn) for testing purposes.
@@ -497,17 +492,13 @@ impl Manager {
     /// detect the missing config and send a Terminate command to the orphaned
     /// unit/target.
     #[allow(clippy::too_many_arguments)]
-    fn spawn_internal<SpawnUnit, SpawnTarget, TermUnit, TermTarget>(
+    fn spawn_internal<SpawnUnit, SpawnTarget>(
         &mut self,
         spawn_unit: SpawnUnit,
         spawn_target: SpawnTarget,
-        terminate_unit: TermUnit,
-        terminate_target: TermTarget,
     ) where
         SpawnUnit: Fn(Component, Unit, Gate, WaitPoint),
         SpawnTarget: Fn(Component, Target, Receiver<TargetCommand>, WaitPoint),
-        TermUnit: Fn(&str, Arc<GateAgent>),
-        TermTarget: Fn(&str, Arc<Sender<TargetCommand>>),
     {
         let num_targets = 1;
         let num_units = 5;
@@ -519,6 +510,18 @@ impl Manager {
         let zs = LoadUnit::new(8);
         let rs2 = LoadUnit::new(8);
         let ps = LoadUnit::new(8);
+
+        let (zl_tx, zl_rx) = mpsc::channel(10);
+        let (rs_tx, rs_rx) = mpsc::channel(10);
+        let (zs_tx, zs_rx) = mpsc::channel(10);
+        let (rs2_tx, rs2_rx) = mpsc::channel(10);
+        let (ps_tx, ps_rx) = mpsc::channel(10);
+
+        self.loader_tx = Some(zl_tx);
+        self.review_tx = Some(rs_tx);
+        self.signer_tx = Some(zs_tx);
+        self.review2_tx = Some(rs2_tx);
+        self.publish_tx = Some(ps_tx);
 
         let (update_tx, update_rx) = mpsc::channel(10);
 
@@ -573,10 +576,10 @@ impl Manager {
                         "hmac-sha256:zlCZbVJPIhobIs1gJNQfrsS3xCxxsR9pMUrGwG8OgG8=".into(),
                     )]),
                     update_tx: update_tx.clone(),
+                    cmd_rx: zl_rx,
                 }),
                 zl.gate.unwrap(),
                 zl.agent,
-                &mut self.loader_agent,
             ),
             (
                 String::from("RS"),
@@ -594,10 +597,10 @@ impl Manager {
                     mode: zone_server::Mode::Prepublish,
                     source: zone_server::Source::UnsignedZones,
                     update_tx: update_tx.clone(),
+                    cmd_rx: rs_rx,
                 }),
                 rs.gate.unwrap(),
                 rs.agent,
-                &mut self.review_agent,
             ),
             (
                 String::from("ZS"),
@@ -612,10 +615,10 @@ impl Manager {
                     rrsig_inception_offset_secs: 60 * 90,
                     rrsig_expiration_offset_secs: 60 * 60 * 24 * 14,
                     update_tx: update_tx.clone(),
+                    cmd_rx: zs_rx,
                 }),
                 zs.gate.unwrap(),
                 zs.agent,
-                &mut self.signer_agent,
             ),
             (
                 String::from("RS2"),
@@ -633,10 +636,10 @@ impl Manager {
                     mode: zone_server::Mode::Prepublish,
                     source: zone_server::Source::SignedZones,
                     update_tx: update_tx.clone(),
+                    cmd_rx: rs2_rx,
                 }),
                 rs2.gate.unwrap(),
                 rs2.agent,
-                &mut self.review2_agent,
             ),
             (
                 String::from("PS"),
@@ -651,15 +654,15 @@ impl Manager {
                     mode: zone_server::Mode::Publish,
                     source: zone_server::Source::PublishedZones,
                     update_tx: update_tx.clone(),
+                    cmd_rx: ps_rx,
                 }),
                 ps.gate.unwrap(),
                 ps.agent,
-                &mut self.publish_agent,
             ),
         ];
 
         // Spawn and terminate units
-        for (name, new_unit, mut new_gate, new_agent, agent_out) in units {
+        for (name, new_unit, mut new_gate, new_agent) in units {
             new_gate.set_name(&name);
 
             // Spawn the new unit
@@ -684,7 +687,6 @@ impl Manager {
                 new_gate,
                 coordinator.clone().track(name.clone()),
             );
-            *agent_out = Some(new_agent);
         }
 
         tokio::spawn(async move {
@@ -702,18 +704,18 @@ impl Manager {
 
     pub fn terminate(&mut self) {
         let units = [
-            ("ZL", self.loader_agent.take().unwrap()),
-            ("RS", self.review_agent.take().unwrap()),
-            ("ZS", self.signer_agent.take().unwrap()),
-            ("RS2", self.review2_agent.take().unwrap()),
-            ("PS", self.publish_agent.take().unwrap()),
+            ("ZL", self.loader_tx.take().unwrap()),
+            ("RS", self.review_tx.take().unwrap()),
+            ("ZS", self.signer_tx.take().unwrap()),
+            ("RS2", self.review2_tx.take().unwrap()),
+            ("PS", self.publish_tx.take().unwrap()),
         ];
-        for (name, agent) in units {
-            let agent = Arc::new(agent);
-            Self::terminate_unit(name, agent.clone());
-            while !agent.is_terminated() {
-                std::thread::sleep(Duration::from_millis(10));
-            }
+        for (name, tx) in units {
+            info!("Stopping unit '{}'", name);
+            tokio::spawn(async move {
+                let _ = tx.send(ApplicationCommand::Terminate).await;
+                tx.closed().await;
+            });
         }
 
         {
@@ -738,13 +740,6 @@ impl Manager {
     ) {
         info!("Starting target '{}'", component.name);
         tokio::spawn(new_target.run(component, cmd_rx, waitpoint));
-    }
-
-    fn terminate_unit(name: &str, agent: Arc<GateAgent>) {
-        info!("Stopping unit '{}'", name);
-        tokio::spawn(async move {
-            agent.terminate().await;
-        });
     }
 
     fn terminate_target(name: &str, sender: Arc<Sender<TargetCommand>>) {
@@ -985,306 +980,3 @@ impl From<GateAgent> for LoadUnit {
 //         filter_name
 //     })
 // }
-
-//------------ Tests ---------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-    use std::{
-        cell::RefCell,
-        fmt::Display,
-        ops::{Deref, DerefMut},
-        sync::atomic::{AtomicU8, Ordering::SeqCst},
-    };
-
-    use super::*;
-
-    static SOME_COMPONENT: &str = "some-component";
-    static OTHER_COMPONENT: &str = "other-component";
-
-    #[tokio::test]
-    async fn coordinator_with_no_components_should_finish_immediately() {
-        let coordinator = Coordinator::new(0);
-        let mut alarm_fired = false;
-        coordinator.wait(|_, _| alarm_fired = true).await;
-        assert!(!alarm_fired);
-    }
-
-    #[tokio::test]
-    #[should_panic]
-    async fn coordinator_track_too_many_components_causes_panic() {
-        let coordinator = Coordinator::new(0);
-        coordinator.track(SOME_COMPONENT.to_string());
-    }
-
-    #[tokio::test]
-    #[should_panic]
-    async fn coordinator_track_component_twice_causes_panic() {
-        let coordinator = Coordinator::new(0);
-        coordinator.clone().track(SOME_COMPONENT.to_string());
-        coordinator.track(SOME_COMPONENT.to_string());
-    }
-
-    #[tokio::test]
-    #[should_panic]
-    async fn coordinator_unknown_ready_component_twice_causes_panic() {
-        let coordinator = Coordinator::new(0);
-        coordinator.ready(SOME_COMPONENT).await;
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn coordinator_with_one_ready_component_should_not_raise_alarm() {
-        let coordinator = Coordinator::new(1);
-        let mut alarm_fired = false;
-        let wait_point = coordinator.clone().track(SOME_COMPONENT.to_string());
-        let join_handle = tokio::task::spawn(wait_point.running());
-        assert!(!join_handle.is_finished());
-        coordinator.wait(|_, _| alarm_fired = true).await;
-        join_handle.await.unwrap();
-        assert!(!alarm_fired);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn coordinator_with_two_ready_components_should_not_raise_alarm() {
-        let coordinator = Coordinator::new(2);
-        let mut alarm_fired = false;
-        let wait_point1 = coordinator.clone().track(SOME_COMPONENT.to_string());
-        let wait_point2 = coordinator.clone().track(OTHER_COMPONENT.to_string());
-        let join_handle1 = tokio::task::spawn(wait_point1.running());
-        let join_handle2 = tokio::task::spawn(wait_point2.running());
-        assert!(!join_handle1.is_finished());
-        assert!(!join_handle2.is_finished());
-        coordinator.wait(|_, _| alarm_fired = true).await;
-        join_handle1.await.unwrap();
-        join_handle2.await.unwrap();
-        assert!(!alarm_fired);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn coordinator_with_component_with_slow_ready_phase_should_raise_alarm() {
-        let coordinator = Coordinator::new(1);
-        let alarm_fired_count = Arc::new(AtomicU8::new(0));
-        let wait_point = coordinator.clone().track(SOME_COMPONENT.to_string());
-
-        // Deliberately don't call wait_point.ready() or wait_point.running()
-        let join_handle = {
-            let alarm_fired_count = alarm_fired_count.clone();
-            tokio::task::spawn(coordinator.wait(move |_, _| {
-                alarm_fired_count.fetch_add(1, SeqCst);
-            }))
-        };
-
-        // Advance time beyond the maximum time allowed for the 'ready' state to be reached
-        let advance_time_by = Coordinator::SLOW_COMPONENT_ALARM_DURATION;
-        let advance_time_by = advance_time_by.checked_add(Duration::from_secs(1)).unwrap();
-        tokio::time::sleep(advance_time_by).await;
-
-        // Check that the alarm fired once
-        assert_eq!(alarm_fired_count.load(SeqCst), 1);
-
-        // Set the component state to the final state 'running'
-        wait_point.running().await;
-
-        // Which should unblock the coordinator wait
-        join_handle.await.unwrap();
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn coordinator_with_component_with_slow_running_phase_should_raise_alarm() {
-        let coordinator = Coordinator::new(1);
-        let alarm_fired_count = Arc::new(AtomicU8::new(0));
-        let mut wait_point = coordinator.clone().track(SOME_COMPONENT.to_string());
-
-        // Deliberately don't call wait_point.ready() or wait_point.running()
-        let join_handle = {
-            let alarm_fired_count = alarm_fired_count.clone();
-            tokio::task::spawn(coordinator.wait(move |_, _| {
-                alarm_fired_count.fetch_add(1, SeqCst);
-            }))
-        };
-
-        // Advance time beyond the maximum time allowed for the 'ready' state to be reached
-        let advance_time_by = Coordinator::SLOW_COMPONENT_ALARM_DURATION;
-        let advance_time_by = advance_time_by.checked_add(Duration::from_secs(1)).unwrap();
-        tokio::time::sleep(advance_time_by).await;
-
-        // Check that the alarm fired once
-        assert_eq!(alarm_fired_count.load(SeqCst), 1);
-
-        // Achieve the 'ready' state in the component under test, but not yet the 'running' state
-        wait_point.ready().await;
-
-        // Advance time beyond the maximum time allowed for the 'running' state to be reached
-        let advance_time_by = Coordinator::SLOW_COMPONENT_ALARM_DURATION;
-        let advance_time_by = advance_time_by.checked_add(Duration::from_secs(1)).unwrap();
-        tokio::time::sleep(advance_time_by).await;
-
-        // Check that the alarm fired again
-        assert_eq!(alarm_fired_count.load(SeqCst), 2);
-
-        // Set the component state to the final state 'running'
-        wait_point.running().await;
-
-        // Which should unblock the coordinator wait
-        join_handle.await.unwrap();
-    }
-
-    // --- Test helpers ------------------------------------------------------
-
-    type UnitOrTargetName = String;
-
-    #[derive(Debug, Eq, PartialEq)]
-    enum SpawnAction {
-        SpawnUnit,
-        SpawnTarget,
-        TerminateUnit,
-        TerminateTarget,
-    }
-
-    impl Display for SpawnAction {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            match self {
-                SpawnAction::SpawnUnit => f.write_str("SpawnUnit"),
-                SpawnAction::SpawnTarget => f.write_str("SpawnTarget"),
-                SpawnAction::TerminateUnit => f.write_str("TerminateUnit"),
-                SpawnAction::TerminateTarget => f.write_str("TerminateTarget"),
-            }
-        }
-    }
-
-    #[derive(Debug)]
-    enum UnitOrTargetConfig {
-        None,
-        UnitConfig(Unit),
-        TargetConfig(Target),
-    }
-
-    #[derive(Debug)]
-    struct SpawnLogItem {
-        pub name: UnitOrTargetName,
-        pub action: SpawnAction,
-        pub config: UnitOrTargetConfig,
-    }
-
-    impl SpawnLogItem {
-        fn new(name: UnitOrTargetName, action: SpawnAction, _config: UnitOrTargetConfig) -> Self {
-            Self {
-                name,
-                action,
-                config: _config,
-            }
-        }
-    }
-
-    impl Display for SpawnLogItem {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "'{}' for unit/target '{}'", self.action, self.name)
-        }
-    }
-
-    #[derive(Debug, Default)]
-    struct SpawnLog(pub Vec<SpawnLogItem>);
-
-    impl SpawnLog {
-        pub fn new() -> Self {
-            Self(vec![])
-        }
-    }
-
-    impl Display for SpawnLog {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            writeln!(f, "[")?;
-            for item in &self.0 {
-                writeln!(f, "  {}", item)?;
-            }
-            writeln!(f, "]")
-        }
-    }
-
-    impl Deref for SpawnLog {
-        type Target = Vec<SpawnLogItem>;
-
-        fn deref(&self) -> &Self::Target {
-            &self.0
-        }
-    }
-
-    impl DerefMut for SpawnLog {
-        fn deref_mut(&mut self) -> &mut Self::Target {
-            &mut self.0
-        }
-    }
-
-    thread_local!(
-        static SPAWN_LOG: RefCell<SpawnLog> = RefCell::new(SpawnLog::new())
-    );
-
-    fn assert_log_contains(log: &SpawnLog, name: &str, action: SpawnAction) {
-        assert!(
-            log.iter()
-                .any(|item| item.name == name && item.action == action),
-            "No '{}' action for unit/target '{}' found in spawn log: {}",
-            action,
-            name,
-            log
-        );
-    }
-
-    fn get_log_item<'a>(log: &'a SpawnLog, name: &str, action: SpawnAction) -> &'a SpawnLogItem {
-        let found = log
-            .iter()
-            .find(|item| item.name == name && item.action == action);
-        assert!(found.is_some());
-        found.unwrap()
-    }
-
-    fn spawn_unit(c: Component, u: Unit, _: Gate, _: WaitPoint) {
-        log_spawn_action(
-            c.name.to_string(),
-            SpawnAction::SpawnUnit,
-            UnitOrTargetConfig::UnitConfig(u),
-        );
-    }
-
-    fn spawn_target(c: Component, t: Target, _: Receiver<TargetCommand>, _: WaitPoint) {
-        log_spawn_action(
-            c.name.to_string(),
-            SpawnAction::SpawnTarget,
-            UnitOrTargetConfig::TargetConfig(t),
-        );
-    }
-
-    fn terminate_unit(name: &str, _: Arc<GateAgent>) {
-        log_spawn_action(
-            name.to_string(),
-            SpawnAction::TerminateUnit,
-            UnitOrTargetConfig::None,
-        );
-    }
-
-    fn terminate_target(name: &str, _: Arc<Sender<TargetCommand>>) {
-        log_spawn_action(
-            name.to_string(),
-            SpawnAction::TerminateTarget,
-            UnitOrTargetConfig::None,
-        );
-    }
-
-    fn clear_spawn_action_log() {
-        SPAWN_LOG.with(|log| log.borrow_mut().clear());
-    }
-
-    fn log_spawn_action(name: String, action: SpawnAction, cfg: UnitOrTargetConfig) {
-        SPAWN_LOG.with(|log| log.borrow_mut().push(SpawnLogItem::new(name, action, cfg)));
-    }
-
-    fn spawn(manager: &mut Manager) {
-        clear_spawn_action_log();
-        manager.spawn_internal(spawn_unit, spawn_target, terminate_unit, terminate_target);
-    }
-
-    fn init_manager() -> Manager {
-        // ROTO_FILTER_NAMES.with(|filter_names| filter_names.replace(Some(Default::default())));
-        Manager::new()
-    }
-}

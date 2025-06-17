@@ -75,7 +75,8 @@ use crate::common::tsig::{parse_key_strings, TsigKeyStore};
 use crate::common::unit::UnitActivity;
 use crate::common::xfr::parse_xfr_acl;
 use crate::comms::{
-    AnyDirectUpdate, DirectUpdate, Gate, GateMetrics, GateStatus, GraphStatus, Terminated,
+    AnyDirectUpdate, ApplicationCommand, DirectUpdate, Gate, GateMetrics, GateStatus, GraphStatus,
+    Terminated,
 };
 use crate::http::PercentDecodedPath;
 use crate::http::ProcessRequest;
@@ -92,7 +93,7 @@ use crate::zonemaintenance::types::{
     ZoneMaintainerKeyStore, ZoneRefreshCause, ZoneRefreshStatus, ZoneReportDetails,
 };
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct ZoneLoaderUnit {
     /// The relative path at which we should listen for HTTP query API requests
     pub http_api_path: Arc<String>,
@@ -111,6 +112,8 @@ pub struct ZoneLoaderUnit {
 
     /// Updates for the central command.
     pub update_tx: mpsc::Sender<Update>,
+
+    pub cmd_rx: mpsc::Receiver<ApplicationCommand>,
 }
 
 impl ZoneLoaderUnit {
@@ -339,7 +342,7 @@ impl ZoneLoaderUnit {
             http_processor,
             zone_maintainer,
         )
-        .run(zone_updated_rx, self.update_tx)
+        .run(zone_updated_rx, self.update_tx, self.cmd_rx)
         .await?;
 
         Ok(())
@@ -538,16 +541,17 @@ impl ZoneLoader {
         self,
         mut zone_updated_rx: Receiver<(StoredName, Serial)>,
         update_tx: mpsc::Sender<Update>,
+        mut cmd_rx: mpsc::Receiver<ApplicationCommand>,
     ) -> Result<(), crate::comms::Terminated> {
         let status_reporter = self.status_reporter.clone();
 
         let arc_self = Arc::new(self);
 
         loop {
-            //     status_reporter.listener_listening(&listen_addr.to_string());
+            tokio::select! {
+                zone_updated = zone_updated_rx.recv() => {
+                    let (zone_name, zone_serial) = zone_updated.unwrap();
 
-            match arc_self.clone().process_until(zone_updated_rx.recv()).await {
-                ControlFlow::Continue(Some((zone_name, zone_serial))) => {
                     // status_reporter
                     //     .listener_connection_accepted(client_addr);
 
@@ -564,48 +568,26 @@ impl ZoneLoader {
                         .await
                         .unwrap();
                 }
-                ControlFlow::Continue(None) | ControlFlow::Break(Terminated) => {
-                    return Err(Terminated)
-                }
-            }
-        }
-    }
 
-    async fn process_until<T, U>(
-        self: Arc<Self>,
-        until_fut: T,
-    ) -> ControlFlow<Terminated, Option<U>>
-    where
-        T: Future<Output = Option<U>>,
-    {
-        let mut until_fut = Box::pin(until_fut);
-
-        loop {
-            let process_fut = self.gate.process();
-            pin_mut!(process_fut);
-
-            match select(process_fut, until_fut).await {
-                Either::Left((Err(Terminated), _)) => {
-                    self.status_reporter.terminated();
-                    return ControlFlow::Break(Terminated);
-                }
-                Either::Left((Ok(status), next_fut)) => {
-                    self.status_reporter.gate_status_announced(&status);
-                    match status {
-                        GateStatus::ApplicationCommand { cmd } => {
+                cmd = cmd_rx.recv() => {
+                    match cmd {
+                        Some(cmd) => {
                             info!(
                                 "[{}] Received command: {cmd:?}",
-                                self.component.read().await.name()
+                                arc_self.component.read().await.name()
                             );
+
+                            if matches!(cmd, ApplicationCommand::Terminate) {
+                                arc_self.status_reporter.terminated();
+                                return Err(Terminated);
+                            }
                         }
 
-                        _ => { /* Nothing to do */ }
+                        None => {
+                            arc_self.status_reporter.terminated();
+                            return Err(Terminated);
+                        }
                     }
-
-                    until_fut = next_fut;
-                }
-                Either::Right((updated_zone_name, _)) => {
-                    return ControlFlow::Continue(updated_zone_name);
                 }
             }
         }

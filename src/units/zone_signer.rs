@@ -120,7 +120,7 @@ use crate::zonemaintenance::types::{
 };
 use tokio::task::spawn_blocking;
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct ZoneSignerUnit {
     /// The relative path at which we should listen for HTTP query API requests
     pub http_api_path: Arc<String>,
@@ -142,6 +142,8 @@ pub struct ZoneSignerUnit {
     pub max_concurrent_rrsig_generation_tasks: usize,
 
     pub update_tx: mpsc::Sender<Update>,
+
+    pub cmd_rx: mpsc::Receiver<ApplicationCommand>,
 }
 
 impl ZoneSignerUnit {
@@ -286,7 +288,7 @@ impl ZoneSignerUnit {
             self.treat_single_keys_as_csks,
             self.update_tx,
         )
-        .run()
+        .run(self.cmd_rx)
         .await?;
 
         Ok(())
@@ -422,7 +424,10 @@ impl ZoneSigner {
         }
     }
 
-    async fn run(mut self) -> Result<(), crate::comms::Terminated> {
+    async fn run(
+        mut self,
+        mut cmd_rx: mpsc::Receiver<ApplicationCommand>,
+    ) -> Result<(), crate::comms::Terminated> {
         let component_name = self.component.name().clone();
 
         // Setup REST API endpoint
@@ -433,39 +438,29 @@ impl ZoneSigner {
         self.component
             .register_http_resource(http_processor.clone(), &self.http_api_path);
 
-        loop {
-            match self.gate.process().await {
-                Err(Terminated) => {
+        while let Some(cmd) = cmd_rx.recv().await {
+            info!("[{component_name}]: Received command: {cmd:?}");
+            match &cmd {
+                ApplicationCommand::Terminate => {
                     self.status_reporter.terminated();
                     return Ok(());
                 }
 
-                Ok(status) => {
-                    self.status_reporter.gate_status_announced(&status);
-                    match status {
-                        GateStatus::ApplicationCommand { cmd } => {
-                            info!("[{component_name}]: Received command: {cmd:?}");
-                            match &cmd {
-                                ApplicationCommand::SignZone {
-                                    zone_name,
-                                    zone_serial,
-                                } => {
-                                    if let Err(err) =
-                                        self.sign_zone(component_name.clone(), zone_name).await
-                                    {
-                                        error!("[{component_name}]: Signing of zone '{zone_name}' failed: {err}");
-                                    }
-                                }
-
-                                _ => { /* Not for us */ }
-                            }
-                        }
-
-                        _ => { /* Nothing to do */ }
+                ApplicationCommand::SignZone {
+                    zone_name,
+                    zone_serial,
+                } => {
+                    if let Err(err) = self.sign_zone(component_name.clone(), zone_name).await {
+                        error!("[{component_name}]: Signing of zone '{zone_name}' failed: {err}");
                     }
                 }
+
+                _ => { /* Not for us */ }
             }
         }
+
+        self.status_reporter.terminated();
+        Ok(())
     }
 
     async fn sign_zone(

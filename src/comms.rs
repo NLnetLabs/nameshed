@@ -618,6 +618,7 @@ pub struct Terminated;
 #[allow(clippy::enum_variant_names)]
 #[derive(Clone, Debug)]
 pub enum ApplicationCommand {
+    Terminate,
     SeekApprovalForUnsignedZone {
         zone_name: StoredName,
         zone_serial: Serial,
