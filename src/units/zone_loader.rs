@@ -55,7 +55,7 @@ use non_empty_vec::NonEmpty;
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, DeserializeFromStr, DisplayFromStr};
 use tokio::net::UdpSocket;
-use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::{sleep, Instant};
 
@@ -93,11 +93,9 @@ use crate::zonemaintenance::types::{
     ZoneMaintainerKeyStore, ZoneRefreshCause, ZoneRefreshStatus, ZoneReportDetails,
 };
 
-#[serde_as]
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct ZoneLoaderUnit {
     /// The relative path at which we should listen for HTTP query API requests
-    #[serde(default = "ZoneLoaderUnit::default_http_api_path")]
     pub http_api_path: Arc<String>,
 
     /// Addresses and protocols to listen on.
@@ -107,12 +105,13 @@ pub struct ZoneLoaderUnit {
     pub zones: Arc<HashMap<String, String>>,
 
     /// XFR in per zone: Allow NOTIFY from, and when with a port also request XFR from.
-    #[serde(default)]
     pub xfr_in: Arc<HashMap<String, String>>,
 
     /// TSIG keys.
-    #[serde(default)]
     pub tsig_keys: HashMap<String, String>,
+
+    /// Updates for the central command.
+    pub update_tx: mpsc::Sender<Update>,
 }
 
 impl ZoneLoaderUnit {
@@ -341,7 +340,7 @@ impl ZoneLoaderUnit {
             http_processor,
             zone_maintainer,
         )
-        .run(zone_updated_rx)
+        .run(zone_updated_rx, self.update_tx)
         .await?;
 
         Ok(())
@@ -539,6 +538,7 @@ impl ZoneLoader {
     async fn run(
         self,
         mut zone_updated_rx: Receiver<(StoredName, Serial)>,
+        update_tx: mpsc::Sender<Update>,
     ) -> Result<(), crate::comms::Terminated> {
         let status_reporter = self.status_reporter.clone();
 
@@ -557,13 +557,13 @@ impl ZoneLoader {
                         arc_self.component.read().await.name(),
                     );
 
-                    arc_self
-                        .gate
-                        .update_data(Update::UnsignedZoneUpdatedEvent {
+                    update_tx
+                        .send(Update::UnsignedZoneUpdatedEvent {
                             zone_name,
                             zone_serial,
                         })
-                        .await;
+                        .await
+                        .unwrap();
                 }
                 ControlFlow::Continue(None) | ControlFlow::Break(Terminated) => {
                     return Err(Terminated)

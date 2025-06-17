@@ -121,35 +121,28 @@ use crate::zonemaintenance::types::{
 };
 use tokio::task::spawn_blocking;
 
-#[serde_as]
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct ZoneSignerUnit {
     /// The relative path at which we should listen for HTTP query API requests
-    #[serde(default = "ZoneSignerUnit::default_http_api_path")]
     pub http_api_path: Arc<String>,
 
     pub keys_path: PathBuf,
 
-    #[serde(default = "ZoneSignerUnit::default_rrsig_inception_offset_secs")]
     pub rrsig_inception_offset_secs: u32,
 
-    #[serde(default = "ZoneSignerUnit::default_rrsig_expiration_offset_secs")]
     pub rrsig_expiration_offset_secs: u32,
 
-    #[serde(default)]
     pub denial_config: TomlDenialConfig,
 
-    #[serde(default)]
     pub treat_single_keys_as_csks: bool,
 
-    #[serde(default)]
     pub use_lightweight_zone_tree: bool,
 
-    #[serde(default = "ZoneSignerUnit::default_max_concurrent_operations")]
     pub max_concurrent_operations: usize,
 
-    #[serde(default = "ZoneSignerUnit::default_max_concurrent_rrsig_generation_tasks")]
     pub max_concurrent_rrsig_generation_tasks: usize,
+
+    pub update_tx: mpsc::Sender<Update>,
 }
 
 impl ZoneSignerUnit {
@@ -292,6 +285,7 @@ impl ZoneSignerUnit {
             self.max_concurrent_operations,
             self.max_concurrent_rrsig_generation_tasks,
             self.treat_single_keys_as_csks,
+            self.update_tx,
         )
         .run()
         .await?;
@@ -389,6 +383,7 @@ struct ZoneSigner {
     max_concurrent_rrsig_generation_tasks: usize,
     signer_status: Arc<RwLock<ZoneSignerStatus>>,
     treat_single_keys_as_csks: bool,
+    update_tx: mpsc::Sender<Update>,
 }
 
 impl ZoneSigner {
@@ -407,6 +402,7 @@ impl ZoneSigner {
         max_concurrent_operations: usize,
         max_concurrent_rrsig_generation_tasks: usize,
         treat_single_keys_as_csks: bool,
+        update_tx: mpsc::Sender<Update>,
     ) -> Self {
         Self {
             component,
@@ -423,6 +419,7 @@ impl ZoneSigner {
             max_concurrent_rrsig_generation_tasks,
             signer_status: Default::default(),
             treat_single_keys_as_csks,
+            update_tx,
         }
     }
 
@@ -771,12 +768,13 @@ impl ZoneSigner {
         info!("[STATS] {zone_name} {zone_serial} RR[count={unsigned_rr_count} walk_time={walk_time}(sec) sort_time={sort_time}(sec)] DENIAL[count={denial_rr_count} time={denial_time}(sec)] RRSIG[new={rrsig_count} reused=0 time={rrsig_time}(sec) avg={rrsig_avg}(sig/sec)] INSERTION[time={insertion_time}(sec)] TOTAL[time={total_time}(sec)] with {parallelism} threads");
 
         // Notify Central Command that we have finished.
-        self.gate
-            .update_data(Update::ZoneSignedEvent {
+        self.update_tx
+            .send(Update::ZoneSignedEvent {
                 zone_name: zone_name.clone(),
                 zone_serial,
             })
-            .await;
+            .await
+            .unwrap();
 
         Ok(())
     }

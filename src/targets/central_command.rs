@@ -24,17 +24,10 @@ pub struct CentralCommandTarget {
     /// The set of units to receive messages from.
     pub sources: NonEmpty<DirectLink>,
 
-    pub config: Config,
-}
+    /// A receiver for updates.
+    pub update_rx: mpsc::Receiver<Update>,
 
-#[cfg(test)]
-impl From<Config> for CentralCommandTarget {
-    fn from(config: Config) -> Self {
-        let (_gate, mut gate_agent) = crate::comms::Gate::new(0);
-        let link = gate_agent.create_link();
-        let sources = NonEmpty::new(link.into());
-        Self { sources, config }
-    }
+    pub config: Config,
 }
 
 impl CentralCommandTarget {
@@ -45,7 +38,7 @@ impl CentralCommandTarget {
         waitpoint: WaitPoint,
     ) -> Result<(), Terminated> {
         CentralCommand::new(self.config, component)
-            .run(self.sources, cmd, waitpoint)
+            .run(self.sources, cmd, waitpoint, self.update_rx)
             .await
     }
 }
@@ -83,6 +76,7 @@ impl CentralCommand {
         mut sources: NonEmpty<DirectLink>,
         cmd_rx: mpsc::Receiver<TargetCommand>,
         waitpoint: WaitPoint,
+        update_rx: mpsc::Receiver<Update>,
     ) -> Result<(), Terminated> {
         let component = &mut self.component;
         let _unit_name = component.name().clone();
@@ -102,16 +96,20 @@ impl CentralCommand {
         // the receiving component is not yet ready to accept it.
         waitpoint.running().await;
 
-        arc_self.do_run(Some(sources), cmd_rx).await
+        arc_self.do_run(Some(sources), cmd_rx, update_rx).await
     }
 
     pub async fn do_run(
         self: &Arc<Self>,
         mut sources: Option<NonEmpty<DirectLink>>,
         mut cmd_rx: mpsc::Receiver<TargetCommand>,
+        mut update_rx: mpsc::Receiver<Update>,
     ) -> Result<(), Terminated> {
         loop {
-            if let Err(Terminated) = self.process_events(&mut sources, &mut cmd_rx).await {
+            if let Err(Terminated) = self
+                .process_events(&mut sources, &mut cmd_rx, &mut update_rx)
+                .await
+            {
                 self.status_reporter.terminated();
                 return Err(Terminated);
             }
@@ -122,6 +120,7 @@ impl CentralCommand {
         self: &Arc<Self>,
         sources: &mut Option<NonEmpty<DirectLink>>,
         cmd_rx: &mut mpsc::Receiver<TargetCommand>,
+        update_rx: &mut mpsc::Receiver<Update>,
     ) -> Result<(), Terminated> {
         loop {
             tokio::select! {
@@ -140,6 +139,10 @@ impl CentralCommand {
                             return Err(Terminated);
                         }
                     }
+                }
+
+                Some(update) = update_rx.recv() => {
+                    self.direct_update(update).await;
                 }
             }
         }

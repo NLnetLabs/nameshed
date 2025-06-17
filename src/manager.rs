@@ -4,7 +4,6 @@ use arc_swap::ArcSwap;
 use futures::future::{join_all, select, Either};
 use log::{debug, info};
 use reqwest::Client as HttpClient;
-use serde::Deserialize;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Display;
@@ -559,6 +558,8 @@ impl Manager {
         let mut rs2 = LoadUnit::new(8);
         let mut ps = LoadUnit::new(8);
 
+        let (update_tx, update_rx) = mpsc::channel(10);
+
         {
             let name = String::from("CC");
             let new_target = Target::CentraLCommand(CentralCommandTarget {
@@ -572,6 +573,7 @@ impl Manager {
                 .try_into()
                 .unwrap(),
                 config: central_command::Config {},
+                update_rx,
             });
 
             // Spawn the new target
@@ -617,6 +619,7 @@ impl Manager {
                         "sec1-key".into(),
                         "hmac-sha256:zlCZbVJPIhobIs1gJNQfrsS3xCxxsR9pMUrGwG8OgG8=".into(),
                     )]),
+                    update_tx: update_tx.clone(),
                 }),
                 zl.gate.unwrap(),
                 zl.agent,
@@ -637,6 +640,7 @@ impl Manager {
                     hooks: vec![String::from("/tmp/approve_or_deny.sh")],
                     mode: zone_server::Mode::Prepublish,
                     source: zone_server::Source::UnsignedZones,
+                    update_tx: update_tx.clone(),
                 }),
                 rs.gate.unwrap(),
                 rs.agent,
@@ -654,6 +658,7 @@ impl Manager {
                     denial_config: TomlDenialConfig::default(),
                     rrsig_inception_offset_secs: 60 * 90,
                     rrsig_expiration_offset_secs: 60 * 60 * 24 * 14,
+                    update_tx: update_tx.clone(),
                 }),
                 zs.gate.unwrap(),
                 zs.agent,
@@ -674,6 +679,7 @@ impl Manager {
                     hooks: vec![String::from("/tmp/approve_or_deny_signed.sh")],
                     mode: zone_server::Mode::Prepublish,
                     source: zone_server::Source::SignedZones,
+                    update_tx: update_tx.clone(),
                 }),
                 rs2.gate.unwrap(),
                 rs2.agent,
@@ -691,6 +697,7 @@ impl Manager {
                     hooks: vec![],
                     mode: zone_server::Mode::Publish,
                     source: zone_server::Source::PublishedZones,
+                    update_tx: update_tx.clone(),
                 }),
                 ps.gate.unwrap(),
                 ps.agent,
@@ -934,8 +941,6 @@ impl Coordinator {
 //------------ UnitSet -------------------------------------------------------
 
 /// A set of units to be started.
-#[derive(Deserialize)]
-#[serde(transparent)]
 pub struct UnitSet {
     units: HashMap<String, Unit>,
 }

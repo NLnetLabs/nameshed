@@ -31,16 +31,12 @@ use serde::Deserialize;
 
 /// The fundamental entity for data processing.
 #[allow(clippy::enum_variant_names)]
-#[derive(Clone, Debug, Deserialize)]
-#[serde(tag = "type")]
+#[derive(Clone, Debug)]
 pub enum Unit {
-    #[serde(rename = "zone-loader")]
     ZoneLoader(zone_loader::ZoneLoaderUnit),
 
-    #[serde(rename = "zone-server")]
     ZoneServer(zone_server::ZoneServerUnit),
 
-    #[serde(rename = "zone-signer")]
     ZoneSigner(zone_signer::ZoneSignerUnit),
 }
 

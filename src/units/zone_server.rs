@@ -3,6 +3,7 @@ use core::future::{ready, Ready};
 
 use std::any::Any;
 use std::collections::HashMap;
+use std::convert::Infallible;
 use std::fmt::Display;
 use std::fs::File;
 use std::marker::Sync;
@@ -120,10 +121,9 @@ pub enum Source {
     PublishedZones,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct ZoneServerUnit {
     /// The relative path at which we should listen for HTTP query API requests
-    #[serde(default = "ZoneServerUnit::default_http_api_path")]
     pub http_api_path: Arc<String>,
 
     /// Addresses and protocols to listen on.
@@ -137,6 +137,8 @@ pub struct ZoneServerUnit {
     pub mode: Mode,
 
     pub source: Source,
+
+    pub update_tx: mpsc::Sender<Update>,
 }
 
 impl ZoneServerUnit {
@@ -220,7 +222,7 @@ impl ZoneServerUnit {
             self.listen,
             zones,
         )
-        .run()
+        .run(self.update_tx)
         .await?;
 
         Ok(())
@@ -318,15 +320,13 @@ impl ZoneServer {
         }
     }
 
-    async fn run(self) -> Result<(), crate::comms::Terminated> {
+    async fn run(self, update_tx: mpsc::Sender<Update>) -> Result<(), crate::comms::Terminated> {
         let status_reporter = self.status_reporter.clone();
-
-        let (approval_tx, mut approval_rx) = mpsc::channel(10);
 
         // Setup REST API endpoint
         let http_processor = Arc::new(ZoneReviewApi::new(
             self.http_api_path.clone(),
-            approval_tx,
+            update_tx.clone(),
             self.pending_approvals.clone(),
             self.zones.clone(),
             self.mode,
@@ -340,15 +340,14 @@ impl ZoneServer {
 
         let arc_self = Arc::new(self);
 
-        loop {
-            //     status_reporter.listener_listening(&listen_addr.to_string());
+        // status_reporter.listener_listening(&listen_addr.to_string());
 
-            match arc_self.clone().process_until(approval_rx.recv()).await {
-                ControlFlow::Continue(event) => {
-                    arc_self.gate.update_data(event.unwrap()).await;
-                }
-                ControlFlow::Break(Terminated) => return Err(Terminated),
-            }
+        match arc_self
+            .clone()
+            .process_until(core::future::pending::<Infallible>())
+            .await
+        {
+            ControlFlow::Break(Terminated) => Err(Terminated),
         }
     }
 
@@ -702,7 +701,7 @@ fn zone_server_service(
 
 struct ZoneReviewApi {
     http_api_path: Arc<String>,
-    approval_tx: mpsc::Sender<Update>,
+    update_tx: mpsc::Sender<Update>,
     #[allow(clippy::type_complexity)]
     pending_approvals: Arc<RwLock<HashMap<(Name<Bytes>, Serial), Vec<Uuid>>>>,
     zones: XfrDataProvidingZonesWrapper,
@@ -715,7 +714,7 @@ impl ZoneReviewApi {
     #[allow(clippy::type_complexity)]
     fn new(
         http_api_path: Arc<String>,
-        approval_tx: mpsc::Sender<Update>,
+        update_tx: mpsc::Sender<Update>,
         pending_approvals: Arc<RwLock<HashMap<(Name<Bytes>, Serial), Vec<Uuid>>>>,
         zones: XfrDataProvidingZonesWrapper,
         mode: Mode,
@@ -724,7 +723,7 @@ impl ZoneReviewApi {
     ) -> Self {
         Self {
             http_api_path,
-            approval_tx,
+            update_tx,
             pending_approvals,
             zones,
             mode,
@@ -828,7 +827,7 @@ impl ProcessRequest for ZoneReviewApi {
                                                         Source::PublishedZones => unreachable!(),
                                                     };
                                                     info!("Pending {zone_type} zone '{zone_name}' approved at serial {zone_serial}.");
-                                                    self.approval_tx.send(event).await.unwrap();
+                                                    self.update_tx.send(event).await.unwrap();
                                                     remove_approvals = true;
                                                 }
                                             }
