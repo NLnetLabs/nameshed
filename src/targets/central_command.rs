@@ -9,7 +9,7 @@ use serde::Deserialize;
 use serde_with::serde_as;
 use tokio::sync::mpsc;
 
-use crate::comms::{AnyDirectUpdate, ApplicationCommand, DirectUpdate, Terminated};
+use crate::comms::{ApplicationCommand, Terminated};
 use crate::http::{PercentDecodedPath, ProcessRequest};
 use crate::manager::{Component, TargetCommand};
 use crate::payload::Update;
@@ -113,8 +113,7 @@ impl CentralCommand {
     }
 }
 
-#[async_trait]
-impl DirectUpdate for CentralCommand {
+impl CentralCommand {
     async fn direct_update(&self, event: Update) {
         info!("[CC]: Event received: {event:?}");
         let (msg, target, cmd) = match event {
@@ -171,8 +170,6 @@ impl DirectUpdate for CentralCommand {
         self.component.send_command(target, cmd).await;
     }
 }
-
-impl AnyDirectUpdate for CentralCommand {}
 
 impl std::fmt::Debug for CentralCommand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

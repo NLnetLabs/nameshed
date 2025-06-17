@@ -69,7 +69,7 @@ use crate::common::net::{
 };
 use crate::common::tsig::{parse_key_strings, TsigKeyStore};
 use crate::common::xfr::parse_xfr_acl;
-use crate::comms::{AnyDirectUpdate, ApplicationCommand, DirectUpdate, GraphStatus, Terminated};
+use crate::comms::{ApplicationCommand, GraphStatus, Terminated};
 use crate::http::PercentDecodedPath;
 use crate::http::ProcessRequest;
 use crate::log::ExitError;

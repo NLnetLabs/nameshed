@@ -75,7 +75,7 @@ use crate::common::net::{
 use crate::common::tsig::{parse_key_strings, TsigKeyStore};
 use crate::common::xfr::parse_xfr_acl;
 use crate::comms::ApplicationCommand;
-use crate::comms::{AnyDirectUpdate, DirectUpdate, GraphStatus, Terminated};
+use crate::comms::{GraphStatus, Terminated};
 use crate::http::{PercentDecodedPath, ProcessRequest};
 use crate::log::ExitError;
 use crate::manager::Component;
@@ -432,15 +432,6 @@ impl std::fmt::Debug for ZoneServer {
         f.debug_struct("ZoneLoader").finish()
     }
 }
-
-#[async_trait]
-impl DirectUpdate for ZoneServer {
-    async fn direct_update(&self, event: Update) {
-        info!("[S??]: Received event: {event:?}",);
-    }
-}
-
-impl AnyDirectUpdate for ZoneServer {}
 
 #[derive(Clone, Default)]
 struct XfrDataProvidingZonesWrapper {

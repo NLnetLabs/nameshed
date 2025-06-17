@@ -64,25 +64,9 @@
 //! QueryResult update. Additional commands are used internally to keep Gate
 //! clones configuration in sync with that of the original Gate.
 
-use crate::payload::Update;
-use async_trait::async_trait;
-
 use domain::base::Serial;
 use domain::zonetree::StoredName;
-use std::sync::Weak;
-use std::{
-    any::Any,
-    fmt::{self, Debug, Display},
-};
-use tokio::sync::mpsc;
-use uuid::Uuid;
-
-#[async_trait]
-pub trait DirectUpdate {
-    async fn direct_update(&self, update: Update);
-}
-
-pub trait AnyDirectUpdate: Any + Debug + Send + Sync + DirectUpdate {}
+use std::fmt::{self, Debug};
 
 //------------ GraphMetrics --------------------------------------------------
 pub trait GraphStatus: Send + Sync {
@@ -159,65 +143,4 @@ pub enum ApplicationCommand {
         zone_name: StoredName,
         zone_serial: Serial,
     },
-}
-
-//------------ GateCommand ---------------------------------------------------
-
-/// A command sent by a link to a gate.
-#[derive(Debug)]
-enum GateCommand {
-    ApplicationCommand { data: ApplicationCommand },
-
-    Terminate,
-}
-
-impl Clone for GateCommand {
-    fn clone(&self) -> Self {
-        match self {
-            Self::Terminate => Self::Terminate,
-            Self::ApplicationCommand { data } => Self::ApplicationCommand { data: data.clone() },
-        }
-    }
-}
-
-impl Display for GateCommand {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            GateCommand::ApplicationCommand { .. } => f.write_str("ApplicationCommand"),
-            GateCommand::Terminate => f.write_str("Terminate"),
-        }
-    }
-}
-
-//------------ UpdateSender --------------------------------------------------
-
-/// The gate side of sending updates.
-#[derive(Clone, Debug)]
-struct UpdateSender {
-    /// The actual sender.
-    ///
-    /// This is an option to facilitate deleted dropped links. When sending
-    /// fails, we swap this to `None` and then go over the slab again and
-    /// drop anything that is `None`. We need to do this because
-    /// `Slab::retain` isn’t async but `mpsc::Sender::send` is.
-    queue: Option<mpsc::Sender<Result<Update, UnitStatus>>>,
-
-    direct: Option<Weak<dyn AnyDirectUpdate>>,
-}
-
-//------------ UpdateReceiver ------------------------------------------------
-
-/// The link side of receiving updates.
-type UpdateReceiver = mpsc::Receiver<Result<Update, UnitStatus>>;
-
-//------------ SubscribeResponse ---------------------------------------------
-
-/// The response to a subscribe request.
-#[derive(Debug)]
-struct SubscribeResponse {
-    /// The slot number of this subscription in the gate.
-    slot: Uuid,
-
-    /// The update receiver for this subscription.
-    receiver: Option<UpdateReceiver>,
 }
