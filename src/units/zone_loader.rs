@@ -86,7 +86,7 @@ use crate::zonemaintenance::types::{
 };
 
 #[derive(Debug)]
-pub struct ZoneLoaderUnit {
+pub struct ZoneLoader {
     /// The relative path at which we should listen for HTTP query API requests
     pub http_api_path: Arc<String>,
 
@@ -108,15 +108,15 @@ pub struct ZoneLoaderUnit {
     pub cmd_rx: mpsc::Receiver<ApplicationCommand>,
 }
 
-impl ZoneLoaderUnit {
+impl ZoneLoader {
     pub async fn run(
-        self,
+        mut self,
         mut component: Component,
         mut waitpoint: WaitPoint,
     ) -> Result<(), Terminated> {
         // TODO: metrics and status reporting
 
-        let (zone_updated_tx, zone_updated_rx) = tokio::sync::mpsc::channel(10);
+        let (zone_updated_tx, mut zone_updated_rx) = tokio::sync::mpsc::channel(10);
 
         let mut notify_cfg = NotifyConfig { tsig_key: None };
 
@@ -290,16 +290,48 @@ impl ZoneLoaderUnit {
 
         let component = Arc::new(RwLock::new(component));
 
-        ZoneLoader::new(
-            component,
-            self.http_api_path,
-            http_processor,
-            zone_maintainer,
-        )
-        .run(zone_updated_rx, self.update_tx, self.cmd_rx)
-        .await?;
+        loop {
+            tokio::select! {
+                zone_updated = zone_updated_rx.recv() => {
+                    let (zone_name, zone_serial) = zone_updated.unwrap();
 
-        Ok(())
+                    // status_reporter
+                    //     .listener_connection_accepted(client_addr);
+
+                    info!(
+                        "[ZL]: Received a new copy of zone '{zone_name}' at serial {zone_serial}",
+                    );
+
+                    self.update_tx
+                        .send(Update::UnsignedZoneUpdatedEvent {
+                            zone_name,
+                            zone_serial,
+                        })
+                        .await
+                        .unwrap();
+                }
+
+                cmd = self.cmd_rx.recv() => {
+                    match cmd {
+                        Some(cmd) => {
+                            info!(
+                                "[ZL] Received command: {cmd:?}",
+                            );
+
+                            if matches!(cmd, ApplicationCommand::Terminate) {
+                                // arc_self.status_reporter.terminated();
+                                return Err(Terminated);
+                            }
+                        }
+
+                        None => {
+                            // arc_self.status_reporter.terminated();
+                            return Err(Terminated);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fn default_http_api_path() -> Arc<String> {
@@ -455,102 +487,6 @@ impl WritableZone for NotifyOnCommitZone {
         })
     }
 }
-
-//------------ ZoneLoader ----------------------------------------------------
-
-struct ZoneLoader {
-    component: Arc<RwLock<Component>>,
-    #[allow(dead_code)]
-    http_api_path: Arc<String>,
-    http_processor: Arc<ZoneListApi>,
-    xfr_in: Arc<ZoneMaintainer<TsigKeyStore, DefaultConnFactory>>,
-}
-
-impl ZoneLoader {
-    #[allow(clippy::too_many_arguments)]
-    fn new(
-        component: Arc<RwLock<Component>>,
-        http_api_path: Arc<String>,
-        http_processor: Arc<ZoneListApi>,
-        xfr_in: Arc<ZoneMaintainer<TsigKeyStore, DefaultConnFactory>>,
-    ) -> Self {
-        Self {
-            component,
-            http_api_path,
-            http_processor,
-            xfr_in,
-        }
-    }
-
-    async fn run(
-        self,
-        mut zone_updated_rx: Receiver<(StoredName, Serial)>,
-        update_tx: mpsc::Sender<Update>,
-        mut cmd_rx: mpsc::Receiver<ApplicationCommand>,
-    ) -> Result<(), crate::comms::Terminated> {
-        // let status_reporter = self.status_reporter.clone();
-
-        let arc_self = Arc::new(self);
-
-        loop {
-            tokio::select! {
-                zone_updated = zone_updated_rx.recv() => {
-                    let (zone_name, zone_serial) = zone_updated.unwrap();
-
-                    // status_reporter
-                    //     .listener_connection_accepted(client_addr);
-
-                    info!(
-                        "[ZL]: Received a new copy of zone '{zone_name}' at serial {zone_serial}",
-                    );
-
-                    update_tx
-                        .send(Update::UnsignedZoneUpdatedEvent {
-                            zone_name,
-                            zone_serial,
-                        })
-                        .await
-                        .unwrap();
-                }
-
-                cmd = cmd_rx.recv() => {
-                    match cmd {
-                        Some(cmd) => {
-                            info!(
-                                "[ZL] Received command: {cmd:?}",
-                            );
-
-                            if matches!(cmd, ApplicationCommand::Terminate) {
-                                // arc_self.status_reporter.terminated();
-                                return Err(Terminated);
-                            }
-                        }
-
-                        None => {
-                            // arc_self.status_reporter.terminated();
-                            return Err(Terminated);
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-impl std::fmt::Debug for ZoneLoader {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ZoneLoader").finish()
-    }
-}
-
-#[async_trait]
-impl DirectUpdate for ZoneLoader {
-    async fn direct_update(&self, event: Update) {
-        info!("[ZL]: Received event: {event:?}",);
-    }
-}
-
-impl AnyDirectUpdate for ZoneLoader {}
 
 //------------ ZoneListApi ---------------------------------------------------
 

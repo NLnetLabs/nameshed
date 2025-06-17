@@ -32,7 +32,7 @@ use serde::Deserialize;
 #[allow(clippy::enum_variant_names)]
 #[derive(Debug)]
 pub enum Unit {
-    ZoneLoader(zone_loader::ZoneLoaderUnit),
+    ZoneLoader(zone_loader::ZoneLoader),
 
     ZoneServer(zone_server::ZoneServerUnit),
 

@@ -18,7 +18,7 @@ use crate::common::tsig::TsigKeyStore;
 use crate::comms::ApplicationCommand;
 use crate::targets::central_command::{self, CentralCommandTarget};
 use crate::targets::Target;
-use crate::units::zone_loader::ZoneLoaderUnit;
+use crate::units::zone_loader::ZoneLoader;
 use crate::units::zone_server::{self, ZoneServerUnit};
 use crate::units::zone_signer::{TomlDenialConfig, ZoneSignerUnit};
 use crate::units::Unit;
@@ -480,7 +480,7 @@ impl Manager {
         let units = [
             (
                 String::from("ZL"),
-                Unit::ZoneLoader(ZoneLoaderUnit {
+                Unit::ZoneLoader(ZoneLoader {
                     http_api_path: Arc::new(String::from("/zl/")),
                     listen: vec![
                         "tcp:127.0.0.1:8054".parse().unwrap(),
