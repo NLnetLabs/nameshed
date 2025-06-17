@@ -78,7 +78,7 @@ use crate::comms::ApplicationCommand;
 use crate::comms::{AnyDirectUpdate, DirectUpdate, GraphStatus, Terminated};
 use crate::http::{PercentDecodedPath, ProcessRequest};
 use crate::log::ExitError;
-use crate::manager::{Component, WaitPoint};
+use crate::manager::Component;
 use crate::metrics::{self, util::append_per_router_metric, Metric, MetricType, MetricUnit};
 use crate::payload::Update;
 use crate::units::Unit;
@@ -136,11 +136,7 @@ pub struct ZoneServerUnit {
 }
 
 impl ZoneServerUnit {
-    pub async fn run(
-        self,
-        component: Component,
-        mut waitpoint: WaitPoint,
-    ) -> Result<(), Terminated> {
+    pub async fn run(self, component: Component) -> Result<(), Terminated> {
         let unit_name = match (self.mode, self.source) {
             (Mode::Prepublish, Source::UnsignedZones) => "RS",
             (Mode::Prepublish, Source::SignedZones) => "RS2",
@@ -188,18 +184,6 @@ impl ZoneServerUnit {
                 }
             });
         }
-
-        // Wait for other components to be, and signal to other components
-        // that we are, ready to start. All units and targets start together,
-        // otherwise data passed from one component to another may be lost if
-        // the receiving component is not yet ready to accept it.
-        waitpoint.ready().await;
-
-        // Signal again once we are out of the process_until() so that anyone
-        // waiting to send important gate status updates won't send them while
-        // we are in process_until() which will just eat them without handling
-        // them.
-        waitpoint.running().await;
 
         let component = Arc::new(RwLock::new(component));
 

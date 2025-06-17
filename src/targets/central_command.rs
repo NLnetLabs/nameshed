@@ -11,7 +11,7 @@ use tokio::sync::mpsc;
 
 use crate::comms::{AnyDirectUpdate, ApplicationCommand, DirectUpdate, Terminated};
 use crate::http::{PercentDecodedPath, ProcessRequest};
-use crate::manager::{Component, TargetCommand, WaitPoint};
+use crate::manager::{Component, TargetCommand};
 use crate::payload::Update;
 
 #[derive(Debug)]
@@ -27,10 +27,9 @@ impl CentralCommandTarget {
         self,
         component: Component,
         cmd: mpsc::Receiver<TargetCommand>,
-        waitpoint: WaitPoint,
     ) -> Result<(), Terminated> {
         CentralCommand::new(self.config, component)
-            .run(cmd, waitpoint, self.update_rx)
+            .run(cmd, self.update_rx)
             .await
     }
 }
@@ -60,18 +59,11 @@ impl CentralCommand {
     pub async fn run(
         mut self,
         cmd_rx: mpsc::Receiver<TargetCommand>,
-        waitpoint: WaitPoint,
         update_rx: mpsc::Receiver<Update>,
     ) -> Result<(), Terminated> {
         let component = &mut self.component;
 
         let arc_self = Arc::new(self);
-
-        // Wait for other components to be, and signal to other components
-        // that we are, ready to start. All units and targets start together,
-        // otherwise data passed from one component to another may be lost if
-        // the receiving component is not yet ready to accept it.
-        waitpoint.running().await;
 
         arc_self.do_run(cmd_rx, update_rx).await
     }

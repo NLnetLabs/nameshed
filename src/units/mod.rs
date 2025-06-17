@@ -25,7 +25,7 @@ pub mod zone_signer;
 
 //------------ Unit ----------------------------------------------------------
 
-use crate::manager::{Component, WaitPoint};
+use crate::manager::Component;
 use serde::Deserialize;
 
 /// The fundamental entity for data processing.
@@ -40,11 +40,11 @@ pub enum Unit {
 }
 
 impl Unit {
-    pub async fn run(self, component: Component, waitpoint: WaitPoint) {
+    pub async fn run(self, component: Component) {
         let _ = match self {
-            Unit::ZoneLoader(unit) => unit.run(component, waitpoint).await,
-            Unit::ZoneServer(unit) => unit.run(component, waitpoint).await,
-            Unit::ZoneSigner(unit) => unit.run(component, waitpoint).await,
+            Unit::ZoneLoader(unit) => unit.run(component).await,
+            Unit::ZoneServer(unit) => unit.run(component).await,
+            Unit::ZoneSigner(unit) => unit.run(component).await,
         };
     }
 

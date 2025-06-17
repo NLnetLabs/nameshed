@@ -73,7 +73,7 @@ use crate::comms::{AnyDirectUpdate, ApplicationCommand, DirectUpdate, GraphStatu
 use crate::http::PercentDecodedPath;
 use crate::http::ProcessRequest;
 use crate::log::ExitError;
-use crate::manager::{Component, WaitPoint};
+use crate::manager::Component;
 use crate::metrics::{self, util::append_per_router_metric, Metric, MetricType, MetricUnit};
 use crate::payload::Update;
 use crate::units::Unit;
@@ -109,11 +109,7 @@ pub struct ZoneLoader {
 }
 
 impl ZoneLoader {
-    pub async fn run(
-        mut self,
-        mut component: Component,
-        mut waitpoint: WaitPoint,
-    ) -> Result<(), Terminated> {
+    pub async fn run(mut self, mut component: Component) -> Result<(), Terminated> {
         // TODO: metrics and status reporting
 
         let (zone_updated_tx, mut zone_updated_rx) = tokio::sync::mpsc::channel(10);
@@ -273,20 +269,8 @@ impl ZoneLoader {
             });
         }
 
-        // Wait for other components to be, and signal to other components
-        // that we are, ready to start. All units and targets start together,
-        // otherwise data passed from one component to another may be lost if
-        // the receiving component is not yet ready to accept it.
-        waitpoint.ready().await;
-
         let zone_maintainer_clone = zone_maintainer.clone();
         tokio::spawn(async move { zone_maintainer_clone.run().await });
-
-        // Signal again once we are out of the process_until() so that anyone
-        // waiting to send important gate status updates won't send them while
-        // we are in process_until() which will just eat them without handling
-        // them.
-        waitpoint.running().await;
 
         let component = Arc::new(RwLock::new(component));
 

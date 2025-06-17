@@ -21,7 +21,7 @@ use tokio::sync::mpsc;
 
 //------------ Target --------------------------------------------------------
 
-use crate::manager::{TargetCommand, WaitPoint};
+use crate::manager::TargetCommand;
 use crate::{comms::Terminated, manager::Component};
 
 /// The component for outputting data.
@@ -36,10 +36,9 @@ impl Target {
         self,
         component: Component,
         cmd: mpsc::Receiver<TargetCommand>,
-        waitpoint: WaitPoint,
     ) -> Result<(), Terminated> {
         match self {
-            Target::CentraLCommand(target) => target.run(component, cmd, waitpoint).await,
+            Target::CentraLCommand(target) => target.run(component, cmd).await,
         }
     }
 

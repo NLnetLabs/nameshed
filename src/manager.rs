@@ -1,17 +1,13 @@
 //! Controlling the entire operation.
 
 use arc_swap::ArcSwap;
-use futures::future::{join_all, select, Either};
 use log::{debug, info};
 use reqwest::Client as HttpClient;
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::fmt::Display;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::{self, Receiver, Sender};
-use tokio::sync::Barrier;
-use tracing::warn;
 
 use crate::common::file_io::TheFileIo;
 use crate::common::tsig::TsigKeyStore;
@@ -426,13 +422,9 @@ impl Manager {
         spawn_unit: SpawnUnit,
         spawn_target: SpawnTarget,
     ) where
-        SpawnUnit: Fn(Component, Unit, WaitPoint),
-        SpawnTarget: Fn(Component, Target, Receiver<TargetCommand>, WaitPoint),
+        SpawnUnit: Fn(Component, Unit),
+        SpawnTarget: Fn(Component, Target, Receiver<TargetCommand>),
     {
-        let num_targets = 1;
-        let num_units = 5;
-        let coordinator = Coordinator::new(num_targets + num_units);
-
         let (zl_tx, zl_rx) = mpsc::channel(10);
         let (rs_tx, rs_rx) = mpsc::channel(10);
         let (zs_tx, zs_rx) = mpsc::channel(10);
@@ -468,12 +460,7 @@ impl Manager {
 
             info!("Starting target '{}'", name);
             let (cmd_tx, cmd_rx) = mpsc::channel(100);
-            spawn_target(
-                component,
-                new_target,
-                cmd_rx,
-                coordinator.clone().track(name.clone()),
-            );
+            spawn_target(component, new_target, cmd_rx);
             self.center_tx = Some(cmd_tx);
         }
 
@@ -587,20 +574,8 @@ impl Manager {
 
             let unit_type = std::mem::discriminant(&new_unit);
             info!("Starting unit '{}'", name);
-            spawn_unit(component, new_unit, coordinator.clone().track(name.clone()));
+            spawn_unit(component, new_unit);
         }
-
-        tokio::spawn(async move {
-            coordinator
-                .wait(|pending_component_names, status| {
-                    warn!(
-                        "Components {} are taking a long time to become {}.",
-                        pending_component_names.join(", "),
-                        status
-                    );
-                })
-                .await;
-        });
     }
 
     pub fn terminate(&mut self) {
@@ -628,17 +603,12 @@ impl Manager {
         }
     }
 
-    fn spawn_unit(component: Component, new_unit: Unit, waitpoint: WaitPoint) {
-        tokio::spawn(new_unit.run(component, waitpoint));
+    fn spawn_unit(component: Component, new_unit: Unit) {
+        tokio::spawn(new_unit.run(component));
     }
 
-    fn spawn_target(
-        component: Component,
-        new_target: Target,
-        cmd_rx: Receiver<TargetCommand>,
-        waitpoint: WaitPoint,
-    ) {
-        tokio::spawn(new_target.run(component, cmd_rx, waitpoint));
+    fn spawn_target(component: Component, new_target: Target, cmd_rx: Receiver<TargetCommand>) {
+        tokio::spawn(new_target.run(component, cmd_rx));
     }
 
     fn terminate_target(name: &str, sender: Arc<Sender<TargetCommand>>) {
@@ -656,132 +626,6 @@ impl Manager {
     /// Returns a new reference the the HTTP resources collection.
     pub fn http_resources(&self) -> http::Resources {
         self.http_resources.clone()
-    }
-}
-
-//------------ Checkpoint ----------------------------------------------------
-
-pub struct WaitPoint {
-    coordinator: Arc<Coordinator>,
-    name: String,
-    ready: bool,
-}
-
-impl WaitPoint {
-    pub fn new(coordinator: Arc<Coordinator>, name: String) -> Self {
-        Self {
-            coordinator,
-            name,
-            ready: false,
-        }
-    }
-
-    pub async fn ready(&mut self) {
-        self.coordinator.clone().ready(&self.name).await;
-        self.ready = true;
-    }
-
-    pub async fn running(mut self) {
-        // Targets don't need to signal ready & running separately so they
-        // just invoke this fn, but we still need to make sure that the
-        // barrier is reached twice otherwise the client of the Coordinator
-        // will be left waiting forever.
-        if !self.ready {
-            self.ready().await;
-        }
-        self.coordinator.ready(&self.name).await
-    }
-}
-
-pub struct Coordinator {
-    barrier: Barrier,
-    max_components: usize,
-    pending: Arc<RwLock<HashSet<String>>>,
-}
-
-impl Coordinator {
-    pub const SLOW_COMPONENT_ALARM_DURATION: Duration = Duration::from_secs(60);
-
-    pub fn new(max_components: usize) -> Arc<Self> {
-        let barrier = Barrier::new(max_components + 1);
-        let pending = Arc::new(RwLock::new(HashSet::new()));
-        Arc::new(Self {
-            barrier,
-            max_components,
-            pending,
-        })
-    }
-
-    pub fn track(self: Arc<Self>, name: String) -> WaitPoint {
-        if self.pending.write().unwrap().insert(name.clone()) {
-            if self.pending.read().unwrap().len() > self.max_components {
-                panic!("Coordinator::track() called more times than expected");
-            }
-            WaitPoint::new(self, name)
-        } else {
-            unreachable!();
-        }
-    }
-
-    // Note: should be invoked twice:
-    //   - The first time the the units and targets reach the barrier when all
-    //     are ready. The barrier is then automatically reset and ready for
-    //     use again.
-    //   - The second time the units and targets reach the barrier when all
-    //     are running.
-    pub async fn ready(self: Arc<Self>, name: &str) {
-        if self
-            .pending
-            .read()
-            .unwrap()
-            .get(&name.to_string())
-            .is_some()
-        {
-            self.barrier.wait().await;
-        } else {
-            unreachable!();
-        }
-    }
-
-    pub async fn wait<T>(self: Arc<Self>, mut alarm: T)
-    where
-        T: FnMut(Vec<String>, &str),
-    {
-        // Units and targets need to reach the barrier twice: once to signal
-        // that they are ready to run but are not yet actually running, and
-        // once when they are running.
-        self.clone().wait_internal(&mut alarm, "ready").await;
-        self.wait_internal(&mut alarm, "running").await;
-    }
-
-    pub async fn wait_internal<T>(self: Arc<Self>, alarm: &mut T, status: &str)
-    where
-        T: FnMut(Vec<String>, &str),
-    {
-        debug!("Waiting for all components to become {}...", status);
-        let num_unused_barriers = self.max_components - self.pending.read().unwrap().len() + 1;
-        let unused_barriers: Vec<_> = (0..num_unused_barriers)
-            .map(|_| self.barrier.wait())
-            .collect();
-        let slow_startup_alarm = Box::pin(tokio::time::sleep(Self::SLOW_COMPONENT_ALARM_DURATION));
-        match select(join_all(unused_barriers), slow_startup_alarm).await {
-            Either::Left(_) => {}
-            Either::Right((_, incomplete_join_all)) => {
-                // Raise the alarm about the slow components
-                let pending_component_names = self
-                    .pending
-                    .read()
-                    .unwrap()
-                    .iter()
-                    .cloned()
-                    .collect::<Vec<String>>();
-                alarm(pending_component_names, status);
-
-                // Previous wait was interrupted, keep waiting
-                incomplete_join_all.await;
-            }
-        }
-        info!("All components are {}.", status);
     }
 }
 
