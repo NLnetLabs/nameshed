@@ -47,8 +47,6 @@ pub struct Component {
     /// A reference to the HTTP resources collection.
     http_resources: http::Resources,
 
-    // /// A reference to the compiled Roto script.
-    // roto_compiled: Option<Arc<CompiledRoto>>,
     /// A reference to the unsigned zones.
     unsigned_zones: Arc<ArcSwap<ZoneTree>>,
 
@@ -75,7 +73,6 @@ impl Default for Component {
             http_client: Default::default(),
             metrics: Default::default(),
             http_resources: Default::default(),
-            // roto_compiled: Default::default(),
             unsigned_zones: Default::default(),
             signed_zones: Default::default(),
             published_zones: Default::default(),
@@ -94,7 +91,6 @@ impl Component {
         http_client: HttpClient,
         metrics: metrics::Collection,
         http_resources: http::Resources,
-        // roto_compiled: Option<Arc<CompiledRoto>>,
         unsigned_zones: Arc<ArcSwap<ZoneTree>>,
         signed_zones: Arc<ArcSwap<ZoneTree>>,
         published_zones: Arc<ArcSwap<ZoneTree>>,
@@ -107,7 +103,6 @@ impl Component {
             http_client: Some(http_client),
             metrics: Some(metrics),
             http_resources,
-            // roto_compiled,
             unsigned_zones,
             signed_zones,
             published_zones,
@@ -134,10 +129,6 @@ impl Component {
     pub fn http_resources(&self) -> &http::Resources {
         &self.http_resources
     }
-
-    // pub fn roto_compiled(&self) -> &Option<Arc<CompiledRoto>> {
-    //     &self.roto_compiled
-    // }
 
     pub fn unsigned_zones(&self) -> &Arc<ArcSwap<ZoneTree>> {
         &self.unsigned_zones
@@ -249,8 +240,6 @@ pub struct Manager {
     /// The HTTP resources collection maintained by this manager.
     http_resources: http::Resources,
 
-    // /// A reference to the compiled Roto script.
-    // roto_compiled: Option<Arc<CompiledRoto>>,
     #[allow(dead_code)]
     file_io: TheFileIo,
 
@@ -294,7 +283,6 @@ impl Manager {
             http_client: Default::default(),
             metrics: Default::default(),
             http_resources: Default::default(),
-            // roto_compiled: Default::default(),
             file_io: TheFileIo::default(),
             unsigned_zones,
             signed_zones,
@@ -328,26 +316,6 @@ impl Manager {
             tx.send(data).await.unwrap();
         }
     }
-
-    // pub fn compile_roto_script(
-    //     &mut self,
-    //     roto_scripts_path: &Option<std::path::PathBuf>,
-    // ) -> Result<(), String> {
-    //     let path = if let Some(p) = roto_scripts_path {
-    //         p
-    //     } else {
-    //         info!("no roto scripts path to load filters from");
-    //         return Ok(());
-    //     };
-
-    //     let i = roto::read_files([path.to_string_lossy()]).map_err(|e| e.to_string())?;
-    //     let c = i
-    //         .compile(create_runtime().unwrap(), usize::BITS / 8)
-    //         .map_err(|e| e.to_string())?;
-
-    //     self.roto_compiled = Some(Arc::new(Mutex::new(c)));
-    //     Ok(())
-    // }
 
     /// Spawns all units and targets in the config into the given runtime.
     ///
@@ -532,7 +500,6 @@ impl Manager {
                 self.http_client.clone(),
                 self.metrics.clone(),
                 self.http_resources.clone(),
-                // self.roto_compiled.clone(),
                 self.unsigned_zones.clone(),
                 self.signed_zones.clone(),
                 self.published_zones.clone(),
@@ -653,7 +620,6 @@ impl Manager {
                 self.http_client.clone(),
                 self.metrics.clone(),
                 self.http_resources.clone(),
-                // self.roto_compiled.clone(),
                 self.unsigned_zones.clone(),
                 self.signed_zones.clone(),
                 self.published_zones.clone(),
@@ -904,25 +870,3 @@ impl From<HashMap<String, Target>> for TargetSet {
         Self { targets: v }
     }
 }
-
-// //------------ Loading FilterName --------------------------------------------
-
-// thread_local!(
-//     static ROTO_FILTER_NAMES: RefCell<Option<HashSet<FilterName>>> =
-//         RefCell::new(Some(Default::default()))
-// );
-
-// /// Loads a filter name with the given name.
-// ///
-// /// # Panics
-// ///
-// /// This function panics if it is called outside of a run of
-// /// [`Manager::load`].
-// pub fn load_filter_name(filter_name: FilterName) -> FilterName {
-//     ROTO_FILTER_NAMES.with(|filter_names| {
-//         let mut filter_names = filter_names.borrow_mut();
-//         let filter_names = filter_names.as_mut().unwrap();
-//         filter_names.insert(filter_name.clone());
-//         filter_name
-//     })
-// }

@@ -288,10 +288,6 @@ impl LogConfig {
         //     Ok(_) => self.log_level.0.min(LevelFilter::Trace),
         //     Err(_) => self.log_level.0.min(LevelFilter::Warn),
         // };
-        // let roto_log_level = match std::env::var("ROTONDA_ROTO_LOG") {
-        //     Ok(_) => self.log_level.0.min(LevelFilter::Trace),
-        //     Err(_) => self.log_level.0.min(LevelFilter::Warn),
-        // };
 
         let debug_enabled = self.log_level.0 >= LevelFilter::Debug;
 
@@ -372,7 +368,6 @@ impl LogConfig {
         // res = res
         //     .level_for("rotonda_store", rotonda_store_log_level)
         //     .level_for("rumqttc", mqtt_log_level)
-        //     .level_for("roto", roto_log_level);
 
         if debug_enabled {
             // Don't enable too much logging for some modules even if the main
