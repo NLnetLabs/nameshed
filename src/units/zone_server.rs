@@ -60,7 +60,7 @@ use octseq::Octets;
 use serde::Deserialize;
 use serde_with::{serde_as, DeserializeFromStr, DisplayFromStr};
 use tokio::net::UdpSocket;
-use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::sleep;
 #[cfg(feature = "tls")]
@@ -321,10 +321,12 @@ impl ZoneServer {
     async fn run(self) -> Result<(), crate::comms::Terminated> {
         let status_reporter = self.status_reporter.clone();
 
+        let (approval_tx, mut approval_rx) = mpsc::channel(10);
+
         // Setup REST API endpoint
         let http_processor = Arc::new(ZoneReviewApi::new(
             self.http_api_path.clone(),
-            self.gate.clone(),
+            approval_tx,
             self.pending_approvals.clone(),
             self.zones.clone(),
             self.mode,
@@ -341,13 +343,9 @@ impl ZoneServer {
         loop {
             //     status_reporter.listener_listening(&listen_addr.to_string());
 
-            match arc_self
-                .clone()
-                .process_until(core::future::pending::<()>())
-                .await
-            {
-                ControlFlow::Continue(()) => {
-                    todo!()
+            match arc_self.clone().process_until(approval_rx.recv()).await {
+                ControlFlow::Continue(event) => {
+                    arc_self.gate.update_data(event.unwrap()).await;
                 }
                 ControlFlow::Break(Terminated) => return Err(Terminated),
             }
@@ -739,7 +737,7 @@ fn zone_server_service(
 
 struct ZoneReviewApi {
     http_api_path: Arc<String>,
-    gate: Gate,
+    approval_tx: mpsc::Sender<Update>,
     #[allow(clippy::type_complexity)]
     pending_approvals: Arc<RwLock<HashMap<(Name<Bytes>, Serial), Vec<Uuid>>>>,
     zones: XfrDataProvidingZonesWrapper,
@@ -752,7 +750,7 @@ impl ZoneReviewApi {
     #[allow(clippy::type_complexity)]
     fn new(
         http_api_path: Arc<String>,
-        gate: Gate,
+        approval_tx: mpsc::Sender<Update>,
         pending_approvals: Arc<RwLock<HashMap<(Name<Bytes>, Serial), Vec<Uuid>>>>,
         zones: XfrDataProvidingZonesWrapper,
         mode: Mode,
@@ -761,7 +759,7 @@ impl ZoneReviewApi {
     ) -> Self {
         Self {
             http_api_path,
-            gate,
+            approval_tx,
             pending_approvals,
             zones,
             mode,
@@ -865,7 +863,7 @@ impl ProcessRequest for ZoneReviewApi {
                                                         Source::PublishedZones => unreachable!(),
                                                     };
                                                     info!("Pending {zone_type} zone '{zone_name}' approved at serial {zone_serial}.");
-                                                    self.gate.update_data(event).await;
+                                                    self.approval_tx.send(event).await.unwrap();
                                                     remove_approvals = true;
                                                 }
                                             }
