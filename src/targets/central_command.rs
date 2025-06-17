@@ -1,4 +1,4 @@
-use std::fmt::{Debug, Display};
+use std::fmt::Debug;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
@@ -9,11 +9,9 @@ use serde::Deserialize;
 use serde_with::serde_as;
 use tokio::sync::mpsc;
 
-use crate::common::status_reporter::{AnyStatusReporter, Chainable, Named, TargetStatusReporter};
-use crate::comms::{AnyDirectUpdate, ApplicationCommand, DirectUpdate, GraphStatus, Terminated};
+use crate::comms::{AnyDirectUpdate, ApplicationCommand, DirectUpdate, Terminated};
 use crate::http::{PercentDecodedPath, ProcessRequest};
 use crate::manager::{Component, TargetCommand, WaitPoint};
-use crate::metrics;
 use crate::payload::Update;
 
 #[derive(Debug)]
@@ -40,7 +38,6 @@ impl CentralCommandTarget {
 pub(super) struct CentralCommand {
     component: Component,
     config: Arc<ArcSwap<Config>>,
-    status_reporter: Arc<CentralCommandStatusReporter>,
     http_processor: Arc<CentralCommandApi>,
 }
 
@@ -48,19 +45,14 @@ impl CentralCommand {
     pub fn new(config: Config, mut component: Component) -> Self {
         let config = Arc::new(ArcSwap::from_pointee(config));
 
-        let metrics = Arc::new(CentralCommandMetrics::new());
-        component.register_metrics(metrics.clone());
+        // TODO: metrics and status reporting
 
         let http_processor = Arc::new(CentralCommandApi::new());
         component.register_http_resource(http_processor.clone(), "/");
 
-        let status_reporter =
-            Arc::new(CentralCommandStatusReporter::new(component.name(), metrics));
-
         Self {
             component,
             config,
-            status_reporter,
             http_processor,
         }
     }
@@ -92,7 +84,7 @@ impl CentralCommand {
     ) -> Result<(), Terminated> {
         loop {
             if let Err(Terminated) = self.process_events(&mut cmd_rx, &mut update_rx).await {
-                self.status_reporter.terminated();
+                // self.status_reporter.terminated();
                 return Err(Terminated);
             }
         }
@@ -112,7 +104,7 @@ impl CentralCommand {
                 // target commands to handle.
                 cmd = cmd_rx.recv() => {
                     if let Some(cmd) = &cmd {
-                        self.status_reporter.command_received(cmd);
+                        // self.status_reporter.command_received(cmd);
                     }
 
                     match cmd {
@@ -202,87 +194,6 @@ impl std::fmt::Debug for CentralCommand {
 #[serde_as]
 #[derive(Debug, Default, Deserialize)]
 pub struct Config {}
-
-//------------ CentralCommandStatusReporter ----------------------------------
-
-#[derive(Debug, Default)]
-pub struct CentralCommandStatusReporter {
-    name: String,
-    metrics: Arc<CentralCommandMetrics>,
-}
-
-impl CentralCommandStatusReporter {
-    pub fn new<T: Display>(name: T, metrics: Arc<CentralCommandMetrics>) -> Self {
-        Self {
-            name: format!("{}", name),
-            metrics,
-        }
-    }
-
-    pub fn metrics(&self) -> Arc<CentralCommandMetrics> {
-        self.metrics.clone()
-    }
-}
-
-impl TargetStatusReporter for CentralCommandStatusReporter {}
-
-impl AnyStatusReporter for CentralCommandStatusReporter {
-    fn metrics(&self) -> Option<Arc<dyn crate::metrics::Source>> {
-        Some(self.metrics.clone())
-    }
-}
-
-impl Chainable for CentralCommandStatusReporter {
-    fn add_child<T: Display>(&self, child_name: T) -> Self {
-        Self::new(self.link_names(child_name), self.metrics.clone())
-    }
-}
-
-impl Named for CentralCommandStatusReporter {
-    fn name(&self) -> &str {
-        &self.name
-    }
-}
-
-//------------ CentralCommandMetrics -----------------------------------------
-
-#[derive(Debug, Default)]
-pub struct CentralCommandMetrics {}
-
-impl GraphStatus for CentralCommandMetrics {
-    fn status_text(&self) -> String {
-        "TODO".to_string()
-    }
-
-    fn okay(&self) -> Option<bool> {
-        Some(false)
-    }
-}
-
-impl CentralCommandMetrics {
-    // const CONNECTION_ESTABLISHED_METRIC: Metric = Metric::new(
-    //     "mqtt_target_connection_established",
-    //     "the state of the connection to the MQTT broker: 0=down, 1=up",
-    //     MetricType::Gauge,
-    //     MetricUnit::State,
-    // );
-}
-
-impl CentralCommandMetrics {
-    pub fn new() -> Self {
-        CentralCommandMetrics::default()
-    }
-}
-
-impl metrics::Source for CentralCommandMetrics {
-    fn append(&self, _unit_name: &str, _target: &mut metrics::Target) {
-        // target.append_simple(
-        //     &Self::CONNECTION_ESTABLISHED_METRIC,
-        //     Some(unit_name),
-        //     self.connection_established_state.load(SeqCst) as u8,
-        // );
-    }
-}
 
 //------------ CentralCommandApi ---------------------------------------------
 
