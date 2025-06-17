@@ -447,44 +447,6 @@ impl ZoneSigner {
                 Ok(status) => {
                     self.status_reporter.gate_status_announced(&status);
                     match status {
-                        GateStatus::Reconfiguring {
-                            new_config:
-                                Unit::ZoneSigner(ZoneSignerUnit {
-                                    http_api_path,
-                                    keys_path,
-                                    treat_single_keys_as_csks: treat_single_key_as_csk,
-                                    rrsig_inception_offset_secs: inception_offset_secs,
-                                    rrsig_expiration_offset_secs: expiration_offset_secs,
-                                    denial_config,
-                                    use_lightweight_zone_tree,
-                                    max_concurrent_operations,
-                                    max_concurrent_rrsig_generation_tasks,
-                                }),
-                        } => {
-                            // Runtime reconfiguration of this unit has been
-                            // requested. New connections will be handled
-                            // using the new configuration, existing
-                            // connections handled by router_handler() tasks
-                            // will receive their own copy of this
-                            // Reconfiguring status update and can react to it
-                            // accordingly. let rebind = self.listen !=
-                            // new_listen;
-
-                            // self.listen = new_listen;
-                            // self.filter_name.store(new_filter_name.into());
-                            // self.router_id_template
-                            //     .store(new_router_id_template.into());
-                            // self.tracing_mode.store(new_tracing_mode.into());
-
-                            // if rebind {
-                            //     // Trigger re-binding to the new listen port.
-                            //     let err = std::io::ErrorKind::Other;
-                            //     return ControlFlow::Continue(
-                            //         Err(err.into()),
-                            //     );
-                            // }
-                        }
-
                         GateStatus::ApplicationCommand { cmd } => {
                             info!("[{component_name}]: Received command: {cmd:?}");
                             match &cmd {

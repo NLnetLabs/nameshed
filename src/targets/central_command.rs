@@ -1,5 +1,5 @@
 use std::fmt::{Debug, Display};
-use std::{ops::ControlFlow, sync::Arc};
+use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
@@ -18,7 +18,6 @@ use crate::http::{PercentDecodedPath, ProcessRequest};
 use crate::manager::{Component, TargetCommand, WaitPoint};
 use crate::metrics;
 use crate::payload::Update;
-use crate::targets::Target;
 
 #[derive(Debug)]
 pub struct CentralCommandTarget {
@@ -137,12 +136,6 @@ impl CentralCommand {
                     }
 
                     match cmd {
-                        Some(TargetCommand::Reconfigure { new_config: Target::CentraLCommand(new_config) }) => {
-                            if self.reconfigure(sources, new_config).await.is_break() {
-                                // NOOP
-                            }
-                        }
-
                         None | Some(TargetCommand::Terminate) => {
                             return Err(Terminated);
                         }
@@ -150,45 +143,6 @@ impl CentralCommand {
                 }
             }
         }
-    }
-
-    async fn reconfigure(
-        self: &Arc<Self>,
-        sources: &mut Option<NonEmpty<DirectLink>>,
-        CentralCommandTarget {
-            sources: new_sources,
-            config: new_config,
-        }: CentralCommandTarget,
-    ) -> ControlFlow<()> {
-        if let Some(sources) = sources {
-            self.status_reporter
-                .upstream_sources_changed(sources.len(), new_sources.len());
-
-            *sources = new_sources;
-
-            // Register as a direct update receiver with the new
-            // set of linked gates.
-            for link in sources.iter_mut() {
-                link.connect(self.clone(), false).await.unwrap();
-            }
-        }
-
-        // Store the changed configuration
-        self.config.store(Arc::new(new_config));
-
-        // Report that we have finished handling the reconfigure command
-        self.status_reporter.reconfigured();
-
-        // if reconnect {
-        //     // Advise the caller to stop using the current MQTT client
-        //     // and instead to re-create it using the new config
-        //     ControlFlow::Break(())
-        // } else {
-        //     // Advise the caller to keep using the current MQTT client
-        //     ControlFlow::Continue(())
-        // }
-
-        ControlFlow::Continue(())
     }
 }
 

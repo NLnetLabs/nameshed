@@ -67,7 +67,7 @@
 use crate::common::frim::FrimMap;
 use crate::metrics;
 use crate::metrics::{Metric, MetricType, MetricUnit};
-use crate::{payload::Update, units::Unit};
+use crate::payload::Update;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use crossbeam_utils::atomic::AtomicCell;
@@ -291,37 +291,6 @@ impl Gate {
                 } => self.subscribe(suspended, response, direct_update).await,
 
                 GateCommand::Unsubscribe { slot } => self.unsubscribe(slot).await,
-
-                GateCommand::Reconfigure {
-                    new_config,
-                    new_gate,
-                } => {
-                    // Ensure we drop the lock before we hit the .awaits below
-                    // as we cannot hold the lock across an .await.
-                    {
-                        let new_id = *new_gate.id.lock().unwrap();
-                        let mut id = self.id.lock().unwrap();
-                        if log_enabled!(log::Level::Trace) {
-                            trace!(
-                                "Gate[{} ({})]: Reconfiguring: new ID={}",
-                                self.name,
-                                id,
-                                new_id
-                            );
-                        }
-                        *id = new_id;
-                    }
-
-                    // This is an ugly way to take over the internals of the
-                    // given Gate object and use them ourselves. We need to
-                    // take() because just destructuring the Gate struct
-                    // causes compilation failure because the Gate innards
-                    // can't be moved out when Gate has a Drop impl.
-                    let (new_commands, new_updates) = new_gate.take();
-                    *self.commands.write().await = new_commands;
-                    self.updates.replace(new_updates);
-                    return Ok(GateStatus::Reconfiguring { new_config });
-                }
 
                 GateCommand::ApplicationCommand { data } => {
                     return Ok(GateStatus::ApplicationCommand { cmd: data });
@@ -573,16 +542,6 @@ impl GateAgent {
 
     pub fn is_terminated(&self) -> bool {
         self.commands.is_closed()
-    }
-
-    pub async fn reconfigure(&self, new_config: Unit, new_gate: Gate) -> Result<(), String> {
-        self.commands
-            .send(GateCommand::Reconfigure {
-                new_config,
-                new_gate,
-            })
-            .await
-            .map_err(|err| format!("{}", err))
     }
 
     pub async fn send_application_command(&self, data: ApplicationCommand) -> Result<(), String> {
@@ -1129,13 +1088,6 @@ pub enum GateStatus {
     /// from this unit.
     Dormant,
 
-    /// The unit owning this gate should update its configuration.
-    ///
-    /// The payload contains the new configuration settings that the unit
-    /// should adopt, where possible. In particular any changes to upstream
-    /// links should be honored as soon as possible.
-    Reconfiguring { new_config: Unit },
-
     /// The unit owning this gate has received a command via the manager.
     ///
     /// The payload contents have meaning only to the sender and receiver.
@@ -1156,7 +1108,6 @@ impl Display for GateStatus {
         match self {
             GateStatus::Active => f.write_str("Active"),
             GateStatus::Dormant => f.write_str("Dormant"),
-            GateStatus::Reconfiguring { .. } => f.write_str("Reconfiguring"),
             GateStatus::ApplicationCommand { .. } => f.write_str("Triggered"),
         }
     }
@@ -1260,11 +1211,6 @@ enum GateCommand {
         slot: Uuid,
     },
 
-    Reconfigure {
-        new_config: Unit,
-        new_gate: Gate,
-    },
-
     ApplicationCommand {
         data: ApplicationCommand,
     },
@@ -1288,7 +1234,6 @@ impl Display for GateCommand {
             GateCommand::Suspension { .. } => f.write_str("Suspension"),
             GateCommand::Subscribe { .. } => f.write_str("Subscribe"),
             GateCommand::Unsubscribe { .. } => f.write_str("Unsubscribe"),
-            GateCommand::Reconfigure { .. } => f.write_str("Reconfigure"),
             GateCommand::ApplicationCommand { .. } => f.write_str("ApplicationCommand"),
             GateCommand::Terminate => f.write_str("Terminate"),
         }

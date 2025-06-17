@@ -37,9 +37,6 @@ where
         }
         Either::Left((Ok(status), next_fut)) => {
             status_reporter.gate_status_announced(&status);
-            if let GateStatus::Reconfiguring { .. } = status {
-                status_reporter.reconfigured();
-            }
             UnitActivity::GateStatusChanged(status, next_fut)
         }
         Either::Right((Err(err), _process_fut)) => UnitActivity::InputError(err),

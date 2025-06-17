@@ -371,41 +371,6 @@ impl ZoneServer {
                 Either::Left((Ok(status), next_fut)) => {
                     self.status_reporter.gate_status_announced(&status);
                     match status {
-                        GateStatus::Reconfiguring {
-                            new_config:
-                                Unit::ZoneServer(ZoneServerUnit {
-                                    http_api_path,
-                                    listen,
-                                    xfr_out,
-                                    mode,
-                                    source,
-                                    hooks,
-                                }),
-                        } => {
-                            // Runtime reconfiguration of this unit has
-                            // been requested. New connections will be
-                            // handled using the new configuration,
-                            // existing connections handled by
-                            // router_handler() tasks will receive their
-                            // own copy of this Reconfiguring status
-                            // update and can react to it accordingly.
-                            // let rebind = self.listen != new_listen;
-
-                            // self.listen = new_listen;
-                            // self.filter_name.store(new_filter_name.into());
-                            // self.router_id_template
-                            //     .store(new_router_id_template.into());
-                            // self.tracing_mode.store(new_tracing_mode.into());
-
-                            // if rebind {
-                            //     // Trigger re-binding to the new listen port.
-                            //     let err = std::io::ErrorKind::Other;
-                            //     return ControlFlow::Continue(
-                            //         Err(err.into()),
-                            //     );
-                            // }
-                        }
-
                         GateStatus::ApplicationCommand { cmd } => {
                             info!("[{component_name}] Received command: {cmd:?}",);
                             match &cmd {

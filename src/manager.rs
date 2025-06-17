@@ -2,7 +2,7 @@
 
 use arc_swap::ArcSwap;
 use futures::future::{join_all, select, Either};
-use log::{debug, error, info};
+use log::{debug, info};
 use reqwest::Client as HttpClient;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -245,15 +245,12 @@ impl From<&DirectLink> for LinkInfo {
 
 #[allow(clippy::large_enum_variant)]
 pub enum TargetCommand {
-    Reconfigure { new_config: Target },
-
     Terminate,
 }
 
 impl Display for TargetCommand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            TargetCommand::Reconfigure { .. } => f.write_str("Reconfigure"),
             TargetCommand::Terminate => f.write_str("Terminate"),
         }
     }
@@ -423,8 +420,6 @@ impl Manager {
         self.spawn_internal(
             Self::spawn_unit,
             Self::spawn_target,
-            Self::reconfigure_unit,
-            Self::reconfigure_target,
             Self::terminate_unit,
             Self::terminate_target,
         )
@@ -541,19 +536,15 @@ impl Manager {
     /// detect the missing config and send a Terminate command to the orphaned
     /// unit/target.
     #[allow(clippy::too_many_arguments)]
-    fn spawn_internal<SpawnUnit, SpawnTarget, ReconfUnit, ReconfTarget, TermUnit, TermTarget>(
+    fn spawn_internal<SpawnUnit, SpawnTarget, TermUnit, TermTarget>(
         &mut self,
         spawn_unit: SpawnUnit,
         spawn_target: SpawnTarget,
-        reconfigure_unit: ReconfUnit,
-        reconfigure_target: ReconfTarget,
         terminate_unit: TermUnit,
         terminate_target: TermTarget,
     ) where
         SpawnUnit: Fn(Component, Unit, Gate, WaitPoint),
         SpawnTarget: Fn(Component, Target, Receiver<TargetCommand>, WaitPoint),
-        ReconfUnit: Fn(&str, GateAgent, Unit, Gate),
-        ReconfTarget: Fn(&str, Sender<TargetCommand>, Target),
         TermUnit: Fn(&str, Arc<GateAgent>),
         TermTarget: Fn(&str, Arc<Sender<TargetCommand>>),
     {
@@ -707,7 +698,7 @@ impl Manager {
             ),
         ];
 
-        // Spawn, reconfigure and terminate units
+        // Spawn and terminate units
         for (name, new_unit, mut new_gate, new_agent, agent_out) in units {
             new_gate.set_name(&name);
 
@@ -787,32 +778,6 @@ impl Manager {
     ) {
         info!("Starting target '{}'", component.name);
         tokio::spawn(new_target.run(component, cmd_rx, waitpoint));
-    }
-
-    fn reconfigure_unit(name: &str, agent: GateAgent, new_config: Unit, new_gate: Gate) {
-        info!("Reconfiguring unit '{}'", name);
-        let name = name.to_owned();
-        tokio::spawn(async move {
-            if let Err(err) = agent.reconfigure(new_config, new_gate).await {
-                error!(
-                    "Internal error: reconfigure command could not be sent to unit '{}': {}",
-                    name, err
-                );
-            }
-        });
-    }
-
-    fn reconfigure_target(name: &str, sender: Sender<TargetCommand>, new_config: Target) {
-        info!("Reconfiguring target '{}'", name);
-        let name = name.to_owned();
-        tokio::spawn(async move {
-            if let Err(err) = sender.send(TargetCommand::Reconfigure { new_config }).await {
-                error!(
-                    "Internal error: reconfigure command could not be sent to target '{}': {}",
-                    name, err
-                );
-            }
-        });
     }
 
     fn terminate_unit(name: &str, agent: Arc<GateAgent>) {
@@ -1214,8 +1179,6 @@ mod tests {
     enum SpawnAction {
         SpawnUnit,
         SpawnTarget,
-        ReconfigureUnit,
-        ReconfigureTarget,
         TerminateUnit,
         TerminateTarget,
     }
@@ -1225,8 +1188,6 @@ mod tests {
             match self {
                 SpawnAction::SpawnUnit => f.write_str("SpawnUnit"),
                 SpawnAction::SpawnTarget => f.write_str("SpawnTarget"),
-                SpawnAction::ReconfigureUnit => f.write_str("ReconfigureUnit"),
-                SpawnAction::ReconfigureTarget => f.write_str("ReconfigureTarget"),
                 SpawnAction::TerminateUnit => f.write_str("TerminateUnit"),
                 SpawnAction::TerminateTarget => f.write_str("TerminateTarget"),
             }
@@ -1335,22 +1296,6 @@ mod tests {
         );
     }
 
-    fn reconfigure_unit(name: &str, _: GateAgent, u: Unit, _: Gate) {
-        log_spawn_action(
-            name.to_string(),
-            SpawnAction::ReconfigureUnit,
-            UnitOrTargetConfig::UnitConfig(u),
-        );
-    }
-
-    fn reconfigure_target(name: &str, _: Sender<TargetCommand>, t: Target) {
-        log_spawn_action(
-            name.to_string(),
-            SpawnAction::ReconfigureTarget,
-            UnitOrTargetConfig::TargetConfig(t),
-        );
-    }
-
     fn terminate_unit(name: &str, _: Arc<GateAgent>) {
         log_spawn_action(
             name.to_string(),
@@ -1377,14 +1322,7 @@ mod tests {
 
     fn spawn(manager: &mut Manager) {
         clear_spawn_action_log();
-        manager.spawn_internal(
-            spawn_unit,
-            spawn_target,
-            reconfigure_unit,
-            reconfigure_target,
-            terminate_unit,
-            terminate_target,
-        );
+        manager.spawn_internal(spawn_unit, spawn_target, terminate_unit, terminate_target);
     }
 
     fn init_manager() -> Manager {
