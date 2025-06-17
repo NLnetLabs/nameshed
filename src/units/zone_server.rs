@@ -141,7 +141,12 @@ impl ZoneServerUnit {
         component: Component,
         mut waitpoint: WaitPoint,
     ) -> Result<(), Terminated> {
-        let unit_name = component.name().clone();
+        let unit_name = match (self.mode, self.source) {
+            (Mode::Prepublish, Source::UnsignedZones) => "RS",
+            (Mode::Prepublish, Source::SignedZones) => "RS2",
+            (Mode::Publish, Source::PublishedZones) => "PS",
+            _ => unreachable!(),
+        };
 
         // TODO: metrics and status reporting
 
@@ -174,12 +179,12 @@ impl ZoneServerUnit {
         let svc = Arc::new(svc);
 
         for addr in self.listen.iter().cloned() {
-            info!("[{}]: Binding on {:?}", component.name(), addr);
+            info!("[{unit_name}]: Binding on {:?}", addr);
             let svc = svc.clone();
-            let component_name = component.name().clone();
+            let unit_name: Box<str> = unit_name.into();
             tokio::spawn(async move {
                 if let Err(err) = Self::server(addr, svc).await {
-                    error!("[{}]: {}", component_name, err);
+                    error!("[{unit_name}]: {}", err);
                 }
             });
         }
@@ -207,7 +212,7 @@ impl ZoneServerUnit {
             self.listen,
             zones,
         )
-        .run(self.update_tx, self.cmd_rx)
+        .run(unit_name, self.update_tx, self.cmd_rx)
         .await?;
 
         Ok(())
@@ -298,6 +303,7 @@ impl ZoneServer {
 
     async fn run(
         self,
+        unit_name: &str,
         update_tx: mpsc::Sender<Update>,
         mut cmd_rx: mpsc::Receiver<ApplicationCommand>,
     ) -> Result<(), crate::comms::Terminated> {
@@ -318,7 +324,6 @@ impl ZoneServer {
             .await
             .register_http_resource(http_processor.clone(), &self.http_api_path);
 
-        let component_name = self.component.read().await.name().clone();
         let arc_self = Arc::new(self);
 
         // status_reporter.listener_listening(&listen_addr.to_string());
@@ -331,7 +336,7 @@ impl ZoneServer {
                         return Err(Terminated);
                     };
 
-                    info!("[{component_name}] Received command: {cmd:?}",);
+                    info!("[{unit_name}] Received command: {cmd:?}",);
                     match &cmd {
                         ApplicationCommand::Terminate => {
                             // arc_self.status_reporter.terminated();
@@ -355,10 +360,10 @@ impl ZoneServer {
                                 } => "signed",
                                 _ => unreachable!(),
                             };
-                            info!("[{component_name}]: Seeking approval for {zone_type} zone '{zone_name}' at serial {zone_serial}.");
+                            info!("[{unit_name}]: Seeking approval for {zone_type} zone '{zone_name}' at serial {zone_serial}.");
                             for hook in &arc_self.hooks {
                                 let approval_token = Uuid::new_v4();
-                                info!("[{component_name}]: Generated approval token '{approval_token}' for {zone_type} zone '{zone_name}' at serial {zone_serial}.");
+                                info!("[{unit_name}]: Generated approval token '{approval_token}' for {zone_type} zone '{zone_name}' at serial {zone_serial}.");
 
                                 arc_self.pending_approvals
                                     .write()
@@ -374,13 +379,13 @@ impl ZoneServer {
                                     .spawn()
                                 {
                                     Ok(_) => {
-                                        info!("[{component_name}]: Executed hook '{hook}' for {zone_type} zone '{zone_name}' at serial {zone_serial}");
-                                        info!("[{component_name}]: Confirm with HTTP GET {}approve/{approval_token}?zone={zone_name}&serial={zone_serial}", arc_self.http_api_path);
-                                        info!("[{component_name}]: Reject with HTTP GET {}reject/{approval_token}?zone={zone_name}&serial={zone_serial}", arc_self.http_api_path);
+                                        info!("[{unit_name}]: Executed hook '{hook}' for {zone_type} zone '{zone_name}' at serial {zone_serial}");
+                                        info!("[{unit_name}]: Confirm with HTTP GET {}approve/{approval_token}?zone={zone_name}&serial={zone_serial}", arc_self.http_api_path);
+                                        info!("[{unit_name}]: Reject with HTTP GET {}reject/{approval_token}?zone={zone_name}&serial={zone_serial}", arc_self.http_api_path);
                                     }
                                     Err(err) => {
                                         error!(
-                                            "[{component_name}]: Failed to execute hook '{hook}' for {zone_type} zone '{zone_name}' at serial {zone_serial}: {err}",
+                                            "[{unit_name}]: Failed to execute hook '{hook}' for {zone_type} zone '{zone_name}' at serial {zone_serial}: {err}",
                                         );
                                     }
                                 }
@@ -392,7 +397,7 @@ impl ZoneServer {
                             zone_serial,
                         } => {
                             info!(
-                                "[{component_name}]: Publishing signed zone '{zone_name}' at serial {zone_serial}."
+                                "[{unit_name}]: Publishing signed zone '{zone_name}' at serial {zone_serial}."
                             );
                             // Move the zone from the signed collection to the published collection.
                             // TODO: Bump the zone serial?
@@ -407,7 +412,7 @@ impl ZoneServer {
                                 // new zone to that copied set and
                                 // then replace the original set with
                                 // the new set.
-                                info!("[{component_name}]: Adding '{zone_name}' to the set of published zones.");
+                                info!("[{unit_name}]: Adding '{zone_name}' to the set of published zones.");
                                 let mut new_published_zones =
                                     Arc::unwrap_or_clone(published_zones.clone());
                                 let _ = new_published_zones
@@ -422,7 +427,7 @@ impl ZoneServer {
                                 // zone from the copied set and then
                                 // replace the original set with the
                                 // new set.
-                                info!("[{component_name}]: Removing '{zone_name}' from the set of signed zones.");
+                                info!("[{unit_name}]: Removing '{zone_name}' from the set of signed zones.");
                                 let mut new_signed_zones =
                                     Arc::unwrap_or_clone(signed_zones.clone());
                                 new_signed_zones.remove_zone(zone_name, Class::IN).unwrap();
@@ -447,10 +452,7 @@ impl std::fmt::Debug for ZoneServer {
 #[async_trait]
 impl DirectUpdate for ZoneServer {
     async fn direct_update(&self, event: Update) {
-        info!(
-            "[{}]: Received event: {event:?}",
-            self.component.read().await.name()
-        );
+        info!("[S??]: Received event: {event:?}",);
     }
 }
 

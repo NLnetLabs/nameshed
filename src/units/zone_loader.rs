@@ -114,8 +114,6 @@ impl ZoneLoaderUnit {
         mut component: Component,
         mut waitpoint: WaitPoint,
     ) -> Result<(), Terminated> {
-        let unit_name = component.name().clone();
-
         // TODO: metrics and status reporting
 
         let (zone_updated_tx, zone_updated_rx) = tokio::sync::mpsc::channel(10);
@@ -131,10 +129,7 @@ impl ZoneLoaderUnit {
 
         for (key_name, opt_alg_and_hex_bytes) in self.tsig_keys.iter() {
             let key = parse_key_strings(key_name, opt_alg_and_hex_bytes).map_err(|err| {
-                error!(
-                    "[{}]: Failed to parse TSIG key '{key_name}': {err}",
-                    component.name()
-                );
+                error!("[ZL]: Failed to parse TSIG key '{key_name}': {err}",);
                 Terminated
             })?;
             component.tsig_key_store().insert(key);
@@ -163,16 +158,10 @@ impl ZoneLoaderUnit {
                 let before = Instant::now();
 
                 // Load the specified zone file.
-                info!(
-                    "[{}]: Loading primary zone '{zone_name}' from '{zone_path}'..",
-                    component.name()
-                );
+                info!("[ZL]: Loading primary zone '{zone_name}' from '{zone_path}'..",);
                 let mut zone_file = File::open(zone_path)
                     .inspect_err(|err| {
-                        error!(
-                            "[{}]: Error: Failed to open zone file '{zone_path}': {err}",
-                            component.name()
-                        )
+                        error!("[ZL]: Error: Failed to open zone file '{zone_path}': {err}",)
                     })
                     .map_err(|_| Terminated)?;
 
@@ -180,23 +169,20 @@ impl ZoneLoaderUnit {
                 // size of the original file so uses default allocation which
                 // allocates more bytes than are needed. Instead control the
                 // allocation size based on our knowledge of the file size.
-                let zone_file_len = zone_file
-                    .metadata()
-                    .inspect_err(|err| {
-                        error!(
-                            "[{}]: Error: Failed to read metadata for file '{zone_path}': {err}",
-                            component.name()
+                let zone_file_len =
+                    zone_file
+                        .metadata()
+                        .inspect_err(|err| {
+                            error!(
+                            "[ZL]: Error: Failed to read metadata for file '{zone_path}': {err}",
                         )
-                    })
-                    .map_err(|_| Terminated)?
-                    .len();
+                        })
+                        .map_err(|_| Terminated)?
+                        .len();
                 let mut buf = inplace::Zonefile::with_capacity(zone_file_len as usize).writer();
                 std::io::copy(&mut zone_file, &mut buf)
                     .inspect_err(|err| {
-                        error!(
-                            "[{}]: Error: Failed to read data from file '{zone_path}': {err}",
-                            component.name()
-                        )
+                        error!("[ZL]: Error: Failed to read data from file '{zone_path}': {err}",)
                     })
                     .map_err(|_| Terminated)?;
                 let reader = buf.into_inner();
@@ -208,11 +194,7 @@ impl ZoneLoaderUnit {
                     for (name, err) in errors.into_iter() {
                         msg.push_str(&format!("  {name}: {err}\n"));
                     }
-                    error!(
-                        "[{}]: Error parsing zone '{zone_name}': {}",
-                        component.name(),
-                        msg
-                    );
+                    error!("[ZL]: Error parsing zone '{zone_name}': {}", msg);
                     return Err(Terminated);
                 };
 
@@ -230,16 +212,10 @@ impl ZoneLoaderUnit {
             } else {
                 let apex_name = Name::from_str(zone_name)
                     .inspect_err(|err| {
-                        error!(
-                            "[{}]: Error: Invalid zone name '{zone_name}': {err}",
-                            component.name()
-                        )
+                        error!("[ZL]: Error: Invalid zone name '{zone_name}': {err}",)
                     })
                     .map_err(|_| Terminated)?;
-                info!(
-                    "[{}]: Adding secondary zone '{zone_name}'",
-                    component.name()
-                );
+                info!("[ZL]: Adding secondary zone '{zone_name}'",);
                 Zone::new(LightWeightZone::new(apex_name, true))
             };
 
@@ -253,23 +229,19 @@ impl ZoneLoaderUnit {
                     component.tsig_key_store(),
                 )
                 .map_err(|_| {
-                    error!("[{}]: Error parsing XFR ACL", component.name());
+                    error!("[ZL]: Error parsing XFR ACL");
                     Terminated
                 })?;
 
                 info!(
-                    "[{}]: Allowing NOTIFY from {} for zone '{zone_name}'",
-                    component.name(),
+                    "[ZL]: Allowing NOTIFY from {} for zone '{zone_name}'",
                     src.ip()
                 );
                 zone_cfg
                     .allow_notify_from
                     .add_src(src.ip(), notify_cfg.clone());
                 if src.port() != 0 {
-                    info!(
-                        "[{}]: Adding XFR primary {src} for zone '{zone_name}'",
-                        component.name()
-                    );
+                    info!("[ZL]: Adding XFR primary {src} for zone '{zone_name}'",);
                     zone_cfg.request_xfr_from.add_dst(src, xfr_cfg.clone());
                 }
             }
@@ -292,12 +264,11 @@ impl ZoneLoaderUnit {
         let svc = Arc::new(svc);
 
         for addr in self.listen.iter().cloned() {
-            info!("[{}]: Binding on {:?}", component.name(), addr);
+            info!("[ZL]: Binding on {:?}", addr);
             let svc = svc.clone();
-            let component_name = component.name().clone();
             tokio::spawn(async move {
                 if let Err(err) = Self::server(addr, svc).await {
-                    error!("[{}]: {}", component_name, err);
+                    error!("[ZL]: {}", err);
                 }
             });
         }
@@ -530,8 +501,7 @@ impl ZoneLoader {
                     //     .listener_connection_accepted(client_addr);
 
                     info!(
-                        "[{}]: Received a new copy of zone '{zone_name}' at serial {zone_serial}",
-                        arc_self.component.read().await.name(),
+                        "[ZL]: Received a new copy of zone '{zone_name}' at serial {zone_serial}",
                     );
 
                     update_tx
@@ -547,8 +517,7 @@ impl ZoneLoader {
                     match cmd {
                         Some(cmd) => {
                             info!(
-                                "[{}] Received command: {cmd:?}",
-                                arc_self.component.read().await.name()
+                                "[ZL] Received command: {cmd:?}",
                             );
 
                             if matches!(cmd, ApplicationCommand::Terminate) {
@@ -577,10 +546,7 @@ impl std::fmt::Debug for ZoneLoader {
 #[async_trait]
 impl DirectUpdate for ZoneLoader {
     async fn direct_update(&self, event: Update) {
-        info!(
-            "[{}]: Received event: {event:?}",
-            self.component.read().await.name()
-        );
+        info!("[ZL]: Received event: {event:?}",);
     }
 }
 

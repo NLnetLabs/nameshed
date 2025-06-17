@@ -64,7 +64,6 @@ impl CentralCommand {
         update_rx: mpsc::Receiver<Update>,
     ) -> Result<(), Terminated> {
         let component = &mut self.component;
-        let _unit_name = component.name().clone();
 
         let arc_self = Arc::new(self);
 
@@ -125,7 +124,7 @@ impl CentralCommand {
 #[async_trait]
 impl DirectUpdate for CentralCommand {
     async fn direct_update(&self, event: Update) {
-        info!("[{}]: Event received: {event:?}", self.component.name());
+        info!("[CC]: Event received: {event:?}");
         let (msg, target, cmd) = match event {
             Update::UnsignedZoneUpdatedEvent {
                 zone_name,
@@ -176,7 +175,7 @@ impl DirectUpdate for CentralCommand {
             ),
         };
 
-        info!("[{}]: {msg}", self.component.name());
+        info!("[CC]: {msg}");
         self.component.send_command(target, cmd).await;
     }
 }

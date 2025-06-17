@@ -32,12 +32,6 @@ use domain::zonetree::ZoneTree;
 /// Upon being started, every component receives one of these. It provides
 /// access to information and services available to all components.
 pub struct Component {
-    /// The component’s name.
-    name: Arc<str>,
-
-    /// The component's type name.
-    type_name: &'static str,
-
     /// An HTTP client.
     http_client: Option<HttpClient>,
 
@@ -68,8 +62,6 @@ pub struct Component {
 impl Default for Component {
     fn default() -> Self {
         Self {
-            name: "MOCK".into(),
-            type_name: "MOCK",
             http_client: Default::default(),
             metrics: Default::default(),
             http_resources: Default::default(),
@@ -86,8 +78,6 @@ impl Component {
     /// Creates a new component from its, well, components.
     #[allow(clippy::too_many_arguments)]
     fn new(
-        name: String,
-        type_name: &'static str,
         http_client: HttpClient,
         metrics: metrics::Collection,
         http_resources: http::Resources,
@@ -98,8 +88,6 @@ impl Component {
         app_cmd_tx: Sender<(String, ApplicationCommand)>,
     ) -> Self {
         Component {
-            name: name.into(),
-            type_name,
             http_client: Some(http_client),
             metrics: Some(metrics),
             http_resources,
@@ -109,16 +97,6 @@ impl Component {
             tsig_key_store,
             app_cmd_tx,
         }
-    }
-
-    /// Returns the name of the component.
-    pub fn name(&self) -> &Arc<str> {
-        &self.name
-    }
-
-    /// Returns the type name of the component.
-    pub fn type_name(&self) -> &'static str {
-        self.type_name
     }
 
     /// Returns a reference to an HTTP Client.
@@ -146,13 +124,6 @@ impl Component {
         &self.tsig_key_store
     }
 
-    /// Register a metrics source.
-    pub fn register_metrics(&mut self, source: Arc<dyn metrics::Source>) {
-        if let Some(metrics) = &self.metrics {
-            metrics.register(self.name.clone(), Arc::downgrade(&source));
-        }
-    }
-
     /// Register an HTTP resource.
     pub fn register_http_resource(
         &mut self,
@@ -160,13 +131,8 @@ impl Component {
         rel_base_url: &str,
     ) {
         debug!("registering resource {:?}", &rel_base_url);
-        self.http_resources.register(
-            Arc::downgrade(&process),
-            self.name.clone(),
-            self.type_name,
-            rel_base_url,
-            false,
-        )
+        self.http_resources
+            .register(Arc::downgrade(&process), rel_base_url, false)
     }
 
     /// Register a sub HTTP resource.
@@ -176,13 +142,8 @@ impl Component {
         rel_base_url: &str,
     ) {
         debug!("registering resource {:?}", &rel_base_url);
-        self.http_resources.register(
-            Arc::downgrade(&process),
-            self.name.clone(),
-            self.type_name,
-            rel_base_url,
-            true,
-        )
+        self.http_resources
+            .register(Arc::downgrade(&process), rel_base_url, true)
     }
 
     pub async fn send_command(&self, target_unit_name: &str, data: ApplicationCommand) {
@@ -495,8 +456,6 @@ impl Manager {
 
             // Spawn the new target
             let component = Component::new(
-                name.clone(),
-                new_target.type_name(),
                 self.http_client.clone(),
                 self.metrics.clone(),
                 self.http_resources.clone(),
@@ -507,6 +466,7 @@ impl Manager {
                 self.app_cmd_tx.clone(),
             );
 
+            info!("Starting target '{}'", name);
             let (cmd_tx, cmd_rx) = mpsc::channel(100);
             spawn_target(
                 component,
@@ -615,8 +575,6 @@ impl Manager {
         for (name, new_unit) in units {
             // Spawn the new unit
             let component = Component::new(
-                name.clone(),
-                new_unit.type_name(),
                 self.http_client.clone(),
                 self.metrics.clone(),
                 self.http_resources.clone(),
@@ -628,6 +586,7 @@ impl Manager {
             );
 
             let unit_type = std::mem::discriminant(&new_unit);
+            info!("Starting unit '{}'", name);
             spawn_unit(component, new_unit, coordinator.clone().track(name.clone()));
         }
 
@@ -670,7 +629,6 @@ impl Manager {
     }
 
     fn spawn_unit(component: Component, new_unit: Unit, waitpoint: WaitPoint) {
-        info!("Starting unit '{}'", component.name);
         tokio::spawn(new_unit.run(component, waitpoint));
     }
 
@@ -680,7 +638,6 @@ impl Manager {
         cmd_rx: Receiver<TargetCommand>,
         waitpoint: WaitPoint,
     ) {
-        info!("Starting target '{}'", component.name);
         tokio::spawn(new_target.run(component, cmd_rx, waitpoint));
     }
 

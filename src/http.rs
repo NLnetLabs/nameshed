@@ -299,8 +299,6 @@ impl Resources {
     pub fn register(
         &self,
         process: Weak<dyn ProcessRequest>,
-        component_name: Arc<str>,
-        component_type: &'static str,
         rel_base_url: &str,
         is_sub_resource: bool,
     ) {
@@ -315,8 +313,6 @@ impl Resources {
 
         let new_source = Arc::new(RegisteredResource {
             processor: process,
-            component_name,
-            component_type,
             rel_base_url: Arc::new(rel_base_url.to_string()),
             is_sub_resource,
         });
@@ -354,18 +350,6 @@ impl Resources {
             .cloned()
             .collect()
     }
-
-    pub fn resources_for_component_type(
-        &self,
-        component_type: &'static str,
-    ) -> SmallVec<[Arc<RegisteredResource>; 8]> {
-        self.sources
-            .load()
-            .iter()
-            .filter(|item| !item.is_sub_resource && item.component_type == component_type)
-            .cloned()
-            .collect()
-    }
 }
 
 impl fmt::Debug for Resources {
@@ -382,12 +366,6 @@ impl fmt::Debug for Resources {
 pub struct RegisteredResource {
     /// A weak pointer to the resource’s processor.
     processor: Weak<dyn ProcessRequest>,
-
-    /// The name of the unit that registered the processor.
-    pub component_name: Arc<str>,
-
-    /// The type of unit that registered the processor.
-    pub component_type: &'static str,
 
     /// The base URL or main entrypoint of the API offered by the processor.
     pub rel_base_url: Arc<String>,

@@ -167,8 +167,6 @@ impl ZoneSignerUnit {
         component: Component,
         mut waitpoint: WaitPoint,
     ) -> Result<(), Terminated> {
-        let unit_name = component.name().clone();
-
         // TODO: metrics and status reporting
 
         let mut key_path_stems = HashSet::new();
@@ -403,8 +401,6 @@ impl ZoneSigner {
         mut self,
         mut cmd_rx: mpsc::Receiver<ApplicationCommand>,
     ) -> Result<(), crate::comms::Terminated> {
-        let component_name = self.component.name().clone();
-
         // Setup REST API endpoint
         let http_processor = Arc::new(SigningHistoryApi::new(
             self.http_api_path.clone(),
@@ -414,7 +410,7 @@ impl ZoneSigner {
             .register_http_resource(http_processor.clone(), &self.http_api_path);
 
         while let Some(cmd) = cmd_rx.recv().await {
-            info!("[{component_name}]: Received command: {cmd:?}");
+            info!("[ZS]: Received command: {cmd:?}");
             match &cmd {
                 ApplicationCommand::Terminate => {
                     // self.status_reporter.terminated();
@@ -425,8 +421,8 @@ impl ZoneSigner {
                     zone_name,
                     zone_serial,
                 } => {
-                    if let Err(err) = self.sign_zone(component_name.clone(), zone_name).await {
-                        error!("[{component_name}]: Signing of zone '{zone_name}' failed: {err}");
+                    if let Err(err) = self.sign_zone(zone_name).await {
+                        error!("[ZS]: Signing of zone '{zone_name}' failed: {err}");
                     }
                 }
 
@@ -438,18 +434,14 @@ impl ZoneSigner {
         Ok(())
     }
 
-    async fn sign_zone(
-        &self,
-        component_name: Arc<str>,
-        zone_name: &StoredName,
-    ) -> Result<(), String> {
+    async fn sign_zone(&self, zone_name: &StoredName) -> Result<(), String> {
         // TODO: Implement serial bumping (per policy, e.g. ODS 'keep', 'counter', etc.?)
 
-        info!("[{component_name}]: Waiting to start signing operation for zone '{zone_name}'.");
+        info!("[ZS]: Waiting to start signing operation for zone '{zone_name}'.");
         self.signer_status.write().await.enqueue(zone_name.clone());
 
         let permit = self.concurrent_operation_permits.acquire().await.unwrap();
-        info!("[{component_name}]: Starting signing operation for zone '{zone_name}'");
+        info!("[ZS]: Starting signing operation for zone '{zone_name}'");
 
         //
         // Lookup the unsigned zone.
@@ -487,7 +479,7 @@ impl ZoneSigner {
         //
         // Convert zone records into a form we can sign.
         //
-        trace!("[{component_name}]: Collecting records to sign for zone '{zone_name}'.");
+        trace!("[ZS]: Collecting records to sign for zone '{zone_name}'.");
         let walk_start = Instant::now();
         let passed_zone = unsigned_zone.clone();
         let mut records = spawn_blocking(|| collect_zone(passed_zone)).await.unwrap();
@@ -517,7 +509,7 @@ impl ZoneSigner {
             for k in signing_keys {
                 // Is KSK?
                 if k.is_secure_entry_point() {
-                    trace!("[{component_name}]: Found KSK for '{zone_name}'.");
+                    trace!("[ZS]: Found KSK for '{zone_name}'.");
                     ksks.push(k);
                 }
             }
@@ -527,7 +519,7 @@ impl ZoneSigner {
             // simplistic approach.
             if self.treat_single_keys_as_csks && ksks.is_empty() {
                 for k in signing_keys {
-                    trace!("[{component_name}]: Using ZSK as KSK for '{zone_name}'.");
+                    trace!("[ZS]: Using ZSK as KSK for '{zone_name}'.");
                     ksks.push(k);
                 }
             }
@@ -541,7 +533,7 @@ impl ZoneSigner {
                 let record = Record::new(zone_name.clone(), Class::IN, soa_rr.ttl(), data);
                 dnskey_rrs.push(record.clone());
                 records.push(record);
-                trace!("[{component_name}]: Generated DNSKEY RR for '{zone_name}'.");
+                trace!("[ZS]: Generated DNSKEY RR for '{zone_name}'.");
             }
             let dnskey_rrset = Rrset::new(&dnskey_rrs).unwrap();
 
@@ -557,14 +549,14 @@ impl ZoneSigner {
                 let data = ZoneRecordData::Rrsig(rrsig.data().clone());
                 let record = Record::new(rrsig.owner().clone(), rrsig.class(), rrsig.ttl(), data);
                 records.push(record);
-                trace!("[{component_name}]: Generated RRSIG for DNSKEY RRset for '{zone_name}'.");
+                trace!("[ZS]: Generated RRSIG for DNSKEY RRset for '{zone_name}'.");
             }
         }
 
         //
         // Sort them into DNSSEC order ready for NSEC(3) generation.
         //
-        trace!("[{component_name}]: Sorting collected records for zone '{zone_name}'.");
+        trace!("[ZS]: Sorting collected records for zone '{zone_name}'.");
         let sort_start = Instant::now();
         let mut records = spawn_blocking(|| {
             DefaultSorter::sort_by(&mut records, CanonicalOrd::canonical_cmp);
@@ -582,7 +574,7 @@ impl ZoneSigner {
         //
         // Generate NSEC(3) RRs.
         //
-        trace!("[{component_name}]: Generating denial records for zone '{zone_name}'.");
+        trace!("[ZS]: Generating denial records for zone '{zone_name}'.");
         let denial_start = Instant::now();
         let apex_owner = zone_name.clone();
         let unsigned_records = spawn_blocking(move || {
@@ -614,7 +606,7 @@ impl ZoneSigner {
         // async task which receives generated RRSIGs via a Tokio
         // mpsc::channel and accumulates them into the signed zone.
         //
-        trace!("[{component_name}]: Generating RRSIG records.");
+        trace!("[ZS]: Generating RRSIG records.");
         let rrsig_start = Instant::now();
 
         // Work out how many RRs have to be signed and how many concurrent
