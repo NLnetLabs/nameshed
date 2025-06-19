@@ -87,6 +87,7 @@ use tokio::sync::{Mutex, RwLock, Semaphore};
 use tokio::time::{sleep, Instant};
 #[cfg(feature = "tls")]
 use tokio_rustls::rustls::ServerConfig;
+use url::Url;
 
 use crate::common::frim::FrimMap;
 use crate::common::light_weight_zone::LightWeightZone;
@@ -506,44 +507,28 @@ impl ZoneSigner {
             }
 
             if let Some(priv_key_name) = key_info.privref() {
-                let priv_key_path = self.keys_path.join(priv_key_name);
-                debug!(
-                    "Attempting to load private key '{}'.",
-                    priv_key_path.display()
-                );
+                let priv_url = Url::parse(priv_key_name).expect("valid URL expected");
+                let priv_key_path = priv_url.path();
+                //let priv_key_path = self.keys_path.join(priv_key_name);
+                debug!("Attempting to load private key '{}'.", priv_key_path);
 
-                let private_key =
-                    ZoneSignerUnit::load_private_key(&priv_key_path).map_err(|_| {
-                        format!(
-                            "Failed to load private key from '{}'",
-                            priv_key_path.display()
-                        )
-                    })?;
+                let private_key = ZoneSignerUnit::load_private_key(Path::new(priv_key_path))
+                    .map_err(|_| format!("Failed to load private key from '{}'", priv_key_path))?;
 
-                let pub_key_path = self.keys_path.join(pub_key_name);
-                debug!(
-                    "Attempting to load public key '{}'.",
-                    pub_key_path.display()
-                );
+                let pub_url = Url::parse(pub_key_name).expect("valid URL expected");
+                let pub_key_path = pub_url.path();
+                //let pub_key_path = self.keys_path.join(pub_key_name);
+                debug!("Attempting to load public key '{}'.", pub_key_path);
 
-                let public_key = ZoneSignerUnit::load_public_key(&pub_key_path).map_err(|_| {
-                    format!(
-                        "Failed to load public key from '{}'",
-                        pub_key_path.display()
-                    )
-                })?;
+                let public_key = ZoneSignerUnit::load_public_key(Path::new(pub_key_path))
+                    .map_err(|_| format!("Failed to load public key from '{}'", pub_key_path))?;
 
                 let key = ZoneSignerUnit::mk_signing_key(
                     (*public_key.owner()).clone(),
                     &private_key,
                     (*public_key.data()).clone(),
                 )
-                .map_err(|err| {
-                    format!(
-                        "Failed to make key pair for '{}': {err}",
-                        pub_key_path.display()
-                    )
-                })?;
+                .map_err(|err| format!("Failed to make key pair for '{}': {err}", pub_key_path))?;
 
                 signing_keys.push(key);
             }
