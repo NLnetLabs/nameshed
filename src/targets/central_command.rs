@@ -227,7 +227,16 @@ impl DirectUpdate for CentralCommand {
                 "ZS",
                 ApplicationCommand::SignZone {
                     zone_name,
-                    zone_serial,
+                    zone_serial: Some(zone_serial),
+                },
+            ),
+
+            Update::ResignZoneEvent { zone_name } => (
+                "Instructing zone signer to re-sign the zone",
+                "ZS",
+                ApplicationCommand::SignZone {
+                    zone_name,
+                    zone_serial: None,
                 },
             ),
 

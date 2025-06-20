@@ -19,6 +19,7 @@
 
 //------------ Sub-modules ---------------------------------------------------
 
+mod key_manager;
 mod zone_loader;
 mod zone_server;
 mod zone_signer;
@@ -34,6 +35,9 @@ use serde::Deserialize;
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "type")]
 pub enum Unit {
+    #[serde(rename = "key-manager")]
+    KeyManager(key_manager::KeyManagerUnit),
+
     #[serde(rename = "zone-loader")]
     ZoneLoader(zone_loader::ZoneLoaderUnit),
 
@@ -47,6 +51,7 @@ pub enum Unit {
 impl Unit {
     pub async fn run(self, component: Component, gate: Gate, waitpoint: WaitPoint) {
         let _ = match self {
+            Unit::KeyManager(unit) => unit.run(component, gate, waitpoint).await,
             Unit::ZoneLoader(unit) => unit.run(component, gate, waitpoint).await,
             Unit::ZoneServer(unit) => unit.run(component, gate, waitpoint).await,
             Unit::ZoneSigner(unit) => unit.run(component, gate, waitpoint).await,
@@ -55,6 +60,7 @@ impl Unit {
 
     pub fn type_name(&self) -> &'static str {
         match self {
+            Unit::KeyManager(_) => "key-manager",
             Unit::ZoneLoader(_) => "zone-loader",
             Unit::ZoneServer(_) => "zone-server",
             Unit::ZoneSigner(_) => "zone-signer",

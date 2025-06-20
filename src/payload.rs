@@ -23,4 +23,8 @@ pub enum Update {
         zone_name: StoredName,
         zone_serial: Serial,
     },
+
+    ResignZoneEvent {
+        zone_name: StoredName,
+    },
 }
