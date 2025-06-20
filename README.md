@@ -1,25 +1,23 @@
 # Nameshed
 
-A primary name server written in Rust.
+**Nameshed will offer a flexible DNSSEC signing pipeline.** 
 
-This project is under heavy development, watch this space!
+**A proof of concept (PcC) is scheduled to be available before October 2025,
+followed by a production grade release in Q4 2025. Do NOT use the 
+current codebase in production.**
 
-# Status
+If you have questions, suggestions or feature requests, don't hesitate to
+[reach out](mailto:nameshed@nlnetlabs.nl)!
 
-Do NOT use this in production.
+## Pipeline Design
 
-This is currently in a proof-of-concept stage and under active development.
+![nameshed-pipeline 001](https://github.com/user-attachments/assets/0d9c599c-5362-4ee6-96bc-dc54de9c8c0f)
 
-This PoC is intended to allow testing of ideas regarding user interfaces
-and high level architecture.
+## Architecture
 
-It is NOT intended to be performant, have good memory usage, and should be
-expected to have bugs.
-
-It is NOT intended to be the final code of Nameshed, the final code may be
-completely different to this PoC code.
-
-# Architecture
+The PoC is intended to allow testing of ideas regarding user interfaces
+and high level architecture. It is NOT intended to be performant, have 
+good memory usage, and should be expected to have bugs.
 
 The PoC uses an underlying framework based on Rotonda (which in turn was
 originally based on RTRTR). This provides a dynamic graph based connected
