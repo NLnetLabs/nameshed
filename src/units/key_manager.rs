@@ -149,11 +149,8 @@ impl KeyManager {
         for zone in zone_tree.load().iter_zones() {
             let apex_name = zone.apex_name().to_string();
             let cfg_path = dnst_keyset_data_dir.join(format!("{apex_name}.cfg"));
-            let state_path = dnst_keyset_data_dir.join(format!("{apex_name}.state"));
             let mut args = vec!["keyset", "-c"];
             args.push(cfg_path.to_str().unwrap());
-            args.push("-s");
-            args.push(state_path.to_str().unwrap());
             args.push("cron");
             println!(
                 "Invoking keyset cron for zone {apex_name} with {}",
