@@ -103,7 +103,6 @@ impl KeyManager {
         loop {
             tokio::select! {
                 _ = interval.tick() => {
-                    //eprintln!("TICK");
                     self.tick(dnst_keyset_bin_path.as_path(), dnst_keyset_data_dir.as_path()).await;
                 }
 
@@ -156,6 +155,10 @@ impl KeyManager {
         for zone in zone_tree.load().iter_zones() {
             let apex_name = zone.apex_name().to_string();
             let state_path = Path::new("/tmp/").join(format!("{apex_name}.state"));
+            if !state_path.exists() {
+                continue;
+            }
+
             let info = ks_info.get(&apex_name);
             let Some(info) = info else {
                 let value = get_keyset_info(state_path);
@@ -238,8 +241,8 @@ impl KeyManager {
                     };
                     if new_info.retries >= CRON_MAX_RETRIES {
                         error!(
-			    "The command 'dnst keyset cron' for config {} failed to update state file {}", cfg_path.display(), state_path.display()
-			);
+                            "The command 'dnst keyset cron' for config {} failed to update state file {}", cfg_path.display(), state_path.display()
+                        );
 
                         // Clear cron_next.
                         let info = KeySetInfo {
