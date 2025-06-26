@@ -17,8 +17,6 @@ use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Method, Request, Response, StatusCode, Uri};
 use log::{error, info, trace, warn};
 use percent_encoding::percent_decode;
-use serde::Deserialize;
-use serde_with::{serde_as, OneOrMany};
 use smallvec::SmallVec;
 use std::borrow::Cow;
 use std::convert::Infallible;
@@ -37,23 +35,22 @@ use url::form_urlencoded::parse;
 //------------ Server --------------------------------------------------------
 
 /// The configuration for the HTTP server.
-#[serde_as]
-#[derive(Clone, Deserialize)]
+#[derive(Clone)]
 #[cfg_attr(test, derive(Default))]
 pub struct Server {
     /// The socket addresses to listen on.
-    #[serde_as(deserialize_as = "OneOrMany<_>")]
-    #[serde(rename = "http_listen")]
     listen: Vec<SocketAddr>,
 
     /// Whether or not to support GZIP response compression
-    #[serde(default = "Server::default_compress_responses")]
     compress_responses: bool,
 }
 
 impl Server {
-    pub fn default_compress_responses() -> bool {
-        true
+    pub fn new(listen: Vec<SocketAddr>) -> Self {
+        Self {
+            listen,
+            compress_responses: true,
+        }
     }
 
     pub fn listen(&self) -> &[SocketAddr] {
@@ -109,10 +106,11 @@ impl Server {
         // Now spawn the listeners onto the runtime. This way, they will start
         // doing their thing as soon as the runtime is started.
         for listener in listeners {
-            crate::tokio::spawn(
-                &format!("http-listener[{}]", listener.local_addr().unwrap()),
-                Self::single_listener(listener, metrics.clone(), resources.clone()),
-            );
+            tokio::spawn(Self::single_listener(
+                listener,
+                metrics.clone(),
+                resources.clone(),
+            ));
         }
         Ok(())
     }
@@ -301,8 +299,6 @@ impl Resources {
     pub fn register(
         &self,
         process: Weak<dyn ProcessRequest>,
-        component_name: Arc<str>,
-        component_type: &'static str,
         rel_base_url: &str,
         is_sub_resource: bool,
     ) {
@@ -317,8 +313,6 @@ impl Resources {
 
         let new_source = Arc::new(RegisteredResource {
             processor: process,
-            component_name,
-            component_type,
             rel_base_url: Arc::new(rel_base_url.to_string()),
             is_sub_resource,
         });
@@ -356,18 +350,6 @@ impl Resources {
             .cloned()
             .collect()
     }
-
-    pub fn resources_for_component_type(
-        &self,
-        component_type: &'static str,
-    ) -> SmallVec<[Arc<RegisteredResource>; 8]> {
-        self.sources
-            .load()
-            .iter()
-            .filter(|item| !item.is_sub_resource && item.component_type == component_type)
-            .cloned()
-            .collect()
-    }
 }
 
 impl fmt::Debug for Resources {
@@ -384,12 +366,6 @@ impl fmt::Debug for Resources {
 pub struct RegisteredResource {
     /// A weak pointer to the resource’s processor.
     processor: Weak<dyn ProcessRequest>,
-
-    /// The name of the unit that registered the processor.
-    pub component_name: Arc<str>,
-
-    /// The type of unit that registered the processor.
-    pub component_type: &'static str,
 
     /// The base URL or main entrypoint of the API offered by the processor.
     pub rel_base_url: Arc<String>,

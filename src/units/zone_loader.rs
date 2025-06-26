@@ -55,37 +55,27 @@ use non_empty_vec::NonEmpty;
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, DeserializeFromStr, DisplayFromStr};
 use tokio::net::UdpSocket;
-use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::{sleep, Instant};
 
 #[cfg(feature = "tls")]
 use tokio_rustls::rustls::ServerConfig;
 
-use crate::common::frim::FrimMap;
 use crate::common::light_weight_zone::LightWeightZone;
 use crate::common::net::{
     ListenAddr, StandardTcpListenerFactory, StandardTcpStream, TcpListener, TcpListenerFactory,
     TcpStreamWrapper,
 };
-use crate::common::status_reporter::{
-    sr_log, AnyStatusReporter, Chainable, Named, UnitStatusReporter,
-};
 use crate::common::tsig::{parse_key_strings, TsigKeyStore};
-use crate::common::unit::UnitActivity;
 use crate::common::xfr::parse_xfr_acl;
-use crate::comms::{
-    AnyDirectUpdate, DirectLink, DirectUpdate, Gate, GateMetrics, GateStatus, GraphStatus,
-    Terminated,
-};
+use crate::comms::{ApplicationCommand, GraphStatus, Terminated};
 use crate::http::PercentDecodedPath;
 use crate::http::ProcessRequest;
 use crate::log::ExitError;
-use crate::manager::{Component, WaitPoint};
+use crate::manager::Component;
 use crate::metrics::{self, util::append_per_router_metric, Metric, MetricType, MetricUnit};
 use crate::payload::Update;
-use crate::tokio::TokioTaskMetrics;
-use crate::tracing::Tracer;
 use crate::units::Unit;
 use crate::zonemaintenance::maintainer::{
     Config, DefaultConnFactory, TypedZone, ZoneLookup, ZoneMaintainer,
@@ -95,12 +85,10 @@ use crate::zonemaintenance::types::{
     ZoneMaintainerKeyStore, ZoneRefreshCause, ZoneRefreshStatus, ZoneReportDetails,
 };
 
-#[serde_as]
-#[derive(Clone, Debug, Deserialize)]
-pub struct ZoneLoaderUnit {
+#[derive(Debug)]
+pub struct ZoneLoader {
     /// The relative path at which we should listen for HTTP query API requests
-    #[serde(default = "ZoneLoaderUnit::default_http_api_path")]
-    http_api_path: Arc<String>,
+    pub http_api_path: Arc<String>,
 
     /// Addresses and protocols to listen on.
     pub listen: Vec<ListenAddr>,
@@ -109,31 +97,22 @@ pub struct ZoneLoaderUnit {
     pub zones: Arc<HashMap<String, String>>,
 
     /// XFR in per zone: Allow NOTIFY from, and when with a port also request XFR from.
-    #[serde(default)]
     pub xfr_in: Arc<HashMap<String, String>>,
 
     /// TSIG keys.
-    #[serde(default)]
     pub tsig_keys: HashMap<String, String>,
+
+    /// Updates for the central command.
+    pub update_tx: mpsc::Sender<Update>,
+
+    pub cmd_rx: mpsc::Receiver<ApplicationCommand>,
 }
 
-impl ZoneLoaderUnit {
-    pub async fn run(
-        self,
-        mut component: Component,
-        gate: Gate,
-        mut waitpoint: WaitPoint,
-    ) -> Result<(), Terminated> {
-        let unit_name = component.name().clone();
+impl ZoneLoader {
+    pub async fn run(mut self, mut component: Component) -> Result<(), Terminated> {
+        // TODO: metrics and status reporting
 
-        // Setup our metrics
-        let metrics = Arc::new(ZoneLoaderMetrics::new(&gate));
-        component.register_metrics(metrics.clone());
-
-        // Setup our status reporting
-        let status_reporter = Arc::new(ZoneLoaderStatusReporter::new(&unit_name, metrics.clone()));
-
-        let (zone_updated_tx, zone_updated_rx) = tokio::sync::mpsc::channel(10);
+        let (zone_updated_tx, mut zone_updated_rx) = tokio::sync::mpsc::channel(10);
 
         let mut notify_cfg = NotifyConfig { tsig_key: None };
 
@@ -146,10 +125,7 @@ impl ZoneLoaderUnit {
 
         for (key_name, opt_alg_and_hex_bytes) in self.tsig_keys.iter() {
             let key = parse_key_strings(key_name, opt_alg_and_hex_bytes).map_err(|err| {
-                error!(
-                    "[{}]: Failed to parse TSIG key '{key_name}': {err}",
-                    component.name()
-                );
+                error!("[ZL]: Failed to parse TSIG key '{key_name}': {err}",);
                 Terminated
             })?;
             component.tsig_key_store().insert(key);
@@ -178,16 +154,10 @@ impl ZoneLoaderUnit {
                 let before = Instant::now();
 
                 // Load the specified zone file.
-                info!(
-                    "[{}]: Loading primary zone '{zone_name}' from '{zone_path}'..",
-                    component.name()
-                );
+                info!("[ZL]: Loading primary zone '{zone_name}' from '{zone_path}'..",);
                 let mut zone_file = File::open(zone_path)
                     .inspect_err(|err| {
-                        error!(
-                            "[{}]: Error: Failed to open zone file '{zone_path}': {err}",
-                            component.name()
-                        )
+                        error!("[ZL]: Error: Failed to open zone file '{zone_path}': {err}",)
                     })
                     .map_err(|_| Terminated)?;
 
@@ -195,23 +165,20 @@ impl ZoneLoaderUnit {
                 // size of the original file so uses default allocation which
                 // allocates more bytes than are needed. Instead control the
                 // allocation size based on our knowledge of the file size.
-                let zone_file_len = zone_file
-                    .metadata()
-                    .inspect_err(|err| {
-                        error!(
-                            "[{}]: Error: Failed to read metadata for file '{zone_path}': {err}",
-                            component.name()
+                let zone_file_len =
+                    zone_file
+                        .metadata()
+                        .inspect_err(|err| {
+                            error!(
+                            "[ZL]: Error: Failed to read metadata for file '{zone_path}': {err}",
                         )
-                    })
-                    .map_err(|_| Terminated)?
-                    .len();
+                        })
+                        .map_err(|_| Terminated)?
+                        .len();
                 let mut buf = inplace::Zonefile::with_capacity(zone_file_len as usize).writer();
                 std::io::copy(&mut zone_file, &mut buf)
                     .inspect_err(|err| {
-                        error!(
-                            "[{}]: Error: Failed to read data from file '{zone_path}': {err}",
-                            component.name()
-                        )
+                        error!("[ZL]: Error: Failed to read data from file '{zone_path}': {err}",)
                     })
                     .map_err(|_| Terminated)?;
                 let reader = buf.into_inner();
@@ -223,11 +190,7 @@ impl ZoneLoaderUnit {
                     for (name, err) in errors.into_iter() {
                         msg.push_str(&format!("  {name}: {err}\n"));
                     }
-                    error!(
-                        "[{}]: Error parsing zone '{zone_name}': {}",
-                        component.name(),
-                        msg
-                    );
+                    error!("[ZL]: Error parsing zone '{zone_name}': {}", msg);
                     return Err(Terminated);
                 };
 
@@ -245,16 +208,10 @@ impl ZoneLoaderUnit {
             } else {
                 let apex_name = Name::from_str(zone_name)
                     .inspect_err(|err| {
-                        error!(
-                            "[{}]: Error: Invalid zone name '{zone_name}': {err}",
-                            component.name()
-                        )
+                        error!("[ZL]: Error: Invalid zone name '{zone_name}': {err}",)
                     })
                     .map_err(|_| Terminated)?;
-                info!(
-                    "[{}]: Adding secondary zone '{zone_name}'",
-                    component.name()
-                );
+                info!("[ZL]: Adding secondary zone '{zone_name}'",);
                 Zone::new(LightWeightZone::new(apex_name, true))
             };
 
@@ -268,23 +225,19 @@ impl ZoneLoaderUnit {
                     component.tsig_key_store(),
                 )
                 .map_err(|_| {
-                    error!("[{}]: Error parsing XFR ACL", component.name());
+                    error!("[ZL]: Error parsing XFR ACL");
                     Terminated
                 })?;
 
                 info!(
-                    "[{}]: Allowing NOTIFY from {} for zone '{zone_name}'",
-                    component.name(),
+                    "[ZL]: Allowing NOTIFY from {} for zone '{zone_name}'",
                     src.ip()
                 );
                 zone_cfg
                     .allow_notify_from
                     .add_src(src.ip(), notify_cfg.clone());
                 if src.port() != 0 {
-                    info!(
-                        "[{}]: Adding XFR primary {src} for zone '{zone_name}'",
-                        component.name()
-                    );
+                    info!("[ZL]: Adding XFR primary {src} for zone '{zone_name}'",);
                     zone_cfg.request_xfr_from.add_dst(src, xfr_cfg.clone());
                 }
             }
@@ -307,46 +260,62 @@ impl ZoneLoaderUnit {
         let svc = Arc::new(svc);
 
         for addr in self.listen.iter().cloned() {
-            info!("[{}]: Binding on {:?}", component.name(), addr);
+            info!("[ZL]: Binding on {:?}", addr);
             let svc = svc.clone();
-            let component_name = component.name().clone();
             tokio::spawn(async move {
                 if let Err(err) = Self::server(addr, svc).await {
-                    error!("[{}]: {}", component_name, err);
+                    error!("[ZL]: {}", err);
                 }
             });
         }
 
-        // Wait for other components to be, and signal to other components
-        // that we are, ready to start. All units and targets start together,
-        // otherwise data passed from one component to another may be lost if
-        // the receiving component is not yet ready to accept it.
-        gate.process_until(waitpoint.ready()).await?;
-
         let zone_maintainer_clone = zone_maintainer.clone();
         tokio::spawn(async move { zone_maintainer_clone.run().await });
 
-        // Signal again once we are out of the process_until() so that anyone
-        // waiting to send important gate status updates won't send them while
-        // we are in process_until() which will just eat them without handling
-        // them.
-        waitpoint.running().await;
-
         let component = Arc::new(RwLock::new(component));
 
-        ZoneLoader::new(
-            component,
-            self.http_api_path,
-            gate,
-            metrics,
-            status_reporter,
-            http_processor,
-            zone_maintainer,
-        )
-        .run(zone_updated_rx)
-        .await?;
+        loop {
+            tokio::select! {
+                zone_updated = zone_updated_rx.recv() => {
+                    let (zone_name, zone_serial) = zone_updated.unwrap();
 
-        Ok(())
+                    // status_reporter
+                    //     .listener_connection_accepted(client_addr);
+
+                    info!(
+                        "[ZL]: Received a new copy of zone '{zone_name}' at serial {zone_serial}",
+                    );
+
+                    self.update_tx
+                        .send(Update::UnsignedZoneUpdatedEvent {
+                            zone_name,
+                            zone_serial,
+                        })
+                        .await
+                        .unwrap();
+                }
+
+                cmd = self.cmd_rx.recv() => {
+                    match cmd {
+                        Some(cmd) => {
+                            info!(
+                                "[ZL] Received command: {cmd:?}",
+                            );
+
+                            if matches!(cmd, ApplicationCommand::Terminate) {
+                                // arc_self.status_reporter.terminated();
+                                return Err(Terminated);
+                            }
+                        }
+
+                        None => {
+                            // arc_self.status_reporter.terminated();
+                            return Err(Terminated);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fn default_http_api_path() -> Arc<String> {
@@ -500,264 +469,6 @@ impl WritableZone for NotifyOnCommitZone {
             }
             res
         })
-    }
-}
-
-//------------ ZoneLoader ----------------------------------------------------
-
-struct ZoneLoader {
-    component: Arc<RwLock<Component>>,
-    #[allow(dead_code)]
-    http_api_path: Arc<String>,
-    gate: Gate,
-    metrics: Arc<ZoneLoaderMetrics>,
-    status_reporter: Arc<ZoneLoaderStatusReporter>,
-    http_processor: Arc<ZoneListApi>,
-    xfr_in: Arc<ZoneMaintainer<TsigKeyStore, DefaultConnFactory>>,
-}
-
-impl ZoneLoader {
-    #[allow(clippy::too_many_arguments)]
-    fn new(
-        component: Arc<RwLock<Component>>,
-        http_api_path: Arc<String>,
-        gate: Gate,
-        metrics: Arc<ZoneLoaderMetrics>,
-        status_reporter: Arc<ZoneLoaderStatusReporter>,
-        http_processor: Arc<ZoneListApi>,
-        xfr_in: Arc<ZoneMaintainer<TsigKeyStore, DefaultConnFactory>>,
-    ) -> Self {
-        Self {
-            component,
-            http_api_path,
-            gate,
-            metrics,
-            status_reporter,
-            http_processor,
-            xfr_in,
-        }
-    }
-
-    async fn run(
-        self,
-        mut zone_updated_rx: Receiver<(StoredName, Serial)>,
-    ) -> Result<(), crate::comms::Terminated> {
-        let status_reporter = self.status_reporter.clone();
-
-        let arc_self = Arc::new(self);
-
-        loop {
-            //     status_reporter.listener_listening(&listen_addr.to_string());
-
-            match arc_self.clone().process_until(zone_updated_rx.recv()).await {
-                ControlFlow::Continue(Some((zone_name, zone_serial))) => {
-                    // status_reporter
-                    //     .listener_connection_accepted(client_addr);
-
-                    info!(
-                        "[{}]: Received a new copy of zone '{zone_name}' at serial {zone_serial}",
-                        arc_self.component.read().await.name(),
-                    );
-
-                    arc_self
-                        .gate
-                        .update_data(Update::UnsignedZoneUpdatedEvent {
-                            zone_name,
-                            zone_serial,
-                        })
-                        .await;
-                }
-                ControlFlow::Continue(None) | ControlFlow::Break(Terminated) => {
-                    return Err(Terminated)
-                }
-            }
-        }
-    }
-
-    async fn process_until<T, U>(
-        self: Arc<Self>,
-        until_fut: T,
-    ) -> ControlFlow<Terminated, Option<U>>
-    where
-        T: Future<Output = Option<U>>,
-    {
-        let mut until_fut = Box::pin(until_fut);
-
-        loop {
-            let process_fut = self.gate.process();
-            pin_mut!(process_fut);
-
-            match select(process_fut, until_fut).await {
-                Either::Left((Err(Terminated), _)) => {
-                    self.status_reporter.terminated();
-                    return ControlFlow::Break(Terminated);
-                }
-                Either::Left((Ok(status), next_fut)) => {
-                    self.status_reporter.gate_status_announced(&status);
-                    match status {
-                        GateStatus::Reconfiguring {
-                            new_config:
-                                Unit::ZoneLoader(ZoneLoaderUnit {
-                                    http_api_path,
-                                    listen,
-                                    zones,
-                                    xfr_in,
-                                    tsig_keys,
-                                }),
-                        } => {
-                            // Runtime reconfiguration of this unit has
-                            // been requested. New connections will be
-                            // handled using the new configuration,
-                            // existing connections handled by
-                            // router_handler() tasks will receive their
-                            // own copy of this Reconfiguring status
-                            // update and can react to it accordingly.
-                            // let rebind = self.listen != new_listen;
-
-                            // self.listen = new_listen;
-                            // self.filter_name.store(new_filter_name.into());
-                            // self.router_id_template
-                            //     .store(new_router_id_template.into());
-                            // self.tracing_mode.store(new_tracing_mode.into());
-
-                            // if rebind {
-                            //     // Trigger re-binding to the new listen port.
-                            //     let err = std::io::ErrorKind::Other;
-                            //     return ControlFlow::Continue(
-                            //         Err(err.into()),
-                            //     );
-                            // }
-                        }
-
-                        GateStatus::ReportLinks { report } => {
-                            report.declare_source();
-                            report.set_graph_status(self.metrics.clone());
-                        }
-
-                        GateStatus::ApplicationCommand { cmd } => {
-                            info!(
-                                "[{}] Received command: {cmd:?}",
-                                self.component.read().await.name()
-                            );
-                        }
-
-                        _ => { /* Nothing to do */ }
-                    }
-
-                    until_fut = next_fut;
-                }
-                Either::Right((updated_zone_name, _)) => {
-                    return ControlFlow::Continue(updated_zone_name);
-                }
-            }
-        }
-    }
-}
-
-impl std::fmt::Debug for ZoneLoader {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ZoneLoader").finish()
-    }
-}
-
-#[async_trait]
-impl DirectUpdate for ZoneLoader {
-    async fn direct_update(&self, event: Update) {
-        info!(
-            "[{}]: Received event: {event:?}",
-            self.component.read().await.name()
-        );
-    }
-}
-
-impl AnyDirectUpdate for ZoneLoader {}
-
-//------------ ZoneLoaderMetrics ---------------------------------------------
-
-#[derive(Debug, Default)]
-pub struct ZoneLoaderMetrics {
-    gate: Option<Arc<GateMetrics>>, // optional to make testing easier
-}
-
-impl GraphStatus for ZoneLoaderMetrics {
-    fn status_text(&self) -> String {
-        "TODO".to_string()
-    }
-
-    fn okay(&self) -> Option<bool> {
-        Some(false)
-    }
-}
-
-impl ZoneLoaderMetrics {
-    // const LISTENER_BOUND_COUNT_METRIC: Metric = Metric::new(
-    //     "bmp_tcp_in_listener_bound_count",
-    //     "the number of times the TCP listen port was bound to",
-    //     MetricType::Counter,
-    //     MetricUnit::Total,
-    // );
-}
-
-impl ZoneLoaderMetrics {
-    pub fn new(gate: &Gate) -> Self {
-        Self {
-            gate: Some(gate.metrics()),
-        }
-    }
-}
-
-impl metrics::Source for ZoneLoaderMetrics {
-    fn append(&self, unit_name: &str, target: &mut metrics::Target) {
-        if let Some(gate) = &self.gate {
-            gate.append(unit_name, target);
-        }
-
-        // target.append_simple(
-        //     &Self::LISTENER_BOUND_COUNT_METRIC,
-        //     Some(unit_name),
-        //     self.listener_bound_count.load(SeqCst),
-        // );
-    }
-}
-
-//------------ ZoneLoaderStatusReporter --------------------------------------
-
-#[derive(Debug, Default)]
-pub struct ZoneLoaderStatusReporter {
-    name: String,
-    metrics: Arc<ZoneLoaderMetrics>,
-}
-
-impl ZoneLoaderStatusReporter {
-    pub fn new<T: Display>(name: T, metrics: Arc<ZoneLoaderMetrics>) -> Self {
-        Self {
-            name: format!("{}", name),
-            metrics,
-        }
-    }
-
-    pub fn _typed_metrics(&self) -> Arc<ZoneLoaderMetrics> {
-        self.metrics.clone()
-    }
-}
-
-impl UnitStatusReporter for ZoneLoaderStatusReporter {}
-
-impl AnyStatusReporter for ZoneLoaderStatusReporter {
-    fn metrics(&self) -> Option<Arc<dyn crate::metrics::Source>> {
-        Some(self.metrics.clone())
-    }
-}
-
-impl Chainable for ZoneLoaderStatusReporter {
-    fn add_child<T: Display>(&self, child_name: T) -> Self {
-        Self::new(self.link_names(child_name), self.metrics.clone())
-    }
-}
-
-impl Named for ZoneLoaderStatusReporter {
-    fn name(&self) -> &str {
-        &self.name
     }
 }
 

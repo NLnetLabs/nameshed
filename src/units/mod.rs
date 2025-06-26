@@ -19,37 +19,32 @@
 
 //------------ Sub-modules ---------------------------------------------------
 
-mod zone_loader;
-mod zone_server;
-mod zone_signer;
+pub mod zone_loader;
+pub mod zone_server;
+pub mod zone_signer;
 
 //------------ Unit ----------------------------------------------------------
 
-use crate::comms::Gate;
-use crate::manager::{Component, WaitPoint};
+use crate::manager::Component;
 use serde::Deserialize;
 
 /// The fundamental entity for data processing.
 #[allow(clippy::enum_variant_names)]
-#[derive(Clone, Debug, Deserialize)]
-#[serde(tag = "type")]
+#[derive(Debug)]
 pub enum Unit {
-    #[serde(rename = "zone-loader")]
-    ZoneLoader(zone_loader::ZoneLoaderUnit),
+    ZoneLoader(zone_loader::ZoneLoader),
 
-    #[serde(rename = "zone-server")]
     ZoneServer(zone_server::ZoneServerUnit),
 
-    #[serde(rename = "zone-signer")]
     ZoneSigner(zone_signer::ZoneSignerUnit),
 }
 
 impl Unit {
-    pub async fn run(self, component: Component, gate: Gate, waitpoint: WaitPoint) {
+    pub async fn run(self, component: Component) {
         let _ = match self {
-            Unit::ZoneLoader(unit) => unit.run(component, gate, waitpoint).await,
-            Unit::ZoneServer(unit) => unit.run(component, gate, waitpoint).await,
-            Unit::ZoneSigner(unit) => unit.run(component, gate, waitpoint).await,
+            Unit::ZoneLoader(unit) => unit.run(component).await,
+            Unit::ZoneServer(unit) => unit.run(component).await,
+            Unit::ZoneSigner(unit) => unit.run(component).await,
         };
     }
 

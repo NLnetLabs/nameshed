@@ -15,21 +15,18 @@
 //------------ Sub-modules ---------------------------------------------------
 //
 // These contain all the actual unit types grouped by shared functionality.
-mod central_command;
+pub mod central_command;
 
 use tokio::sync::mpsc;
 
 //------------ Target --------------------------------------------------------
 
-use crate::manager::{TargetCommand, WaitPoint};
+use crate::manager::TargetCommand;
 use crate::{comms::Terminated, manager::Component};
-use serde::Deserialize;
 
 /// The component for outputting data.
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type")]
+#[derive(Debug)]
 pub enum Target {
-    #[serde(rename = "central-command")]
     CentraLCommand(central_command::CentralCommandTarget),
 }
 
@@ -39,10 +36,9 @@ impl Target {
         self,
         component: Component,
         cmd: mpsc::Receiver<TargetCommand>,
-        waitpoint: WaitPoint,
     ) -> Result<(), Terminated> {
         match self {
-            Target::CentraLCommand(target) => target.run(component, cmd, waitpoint).await,
+            Target::CentraLCommand(target) => target.run(component, cmd).await,
         }
     }
 

@@ -3,6 +3,7 @@ use core::future::{ready, Ready};
 
 use std::any::Any;
 use std::collections::HashMap;
+use std::convert::Infallible;
 use std::fmt::Display;
 use std::fs::File;
 use std::marker::Sync;
@@ -60,36 +61,26 @@ use octseq::Octets;
 use serde::Deserialize;
 use serde_with::{serde_as, DeserializeFromStr, DisplayFromStr};
 use tokio::net::UdpSocket;
-use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::sleep;
 #[cfg(feature = "tls")]
 use tokio_rustls::rustls::ServerConfig;
 use uuid::Uuid;
 
-use crate::common::frim::FrimMap;
 use crate::common::net::{
     ListenAddr, StandardTcpListenerFactory, StandardTcpStream, TcpListener, TcpListenerFactory,
     TcpStreamWrapper,
 };
-use crate::common::status_reporter::{
-    sr_log, AnyStatusReporter, Chainable, Named, UnitStatusReporter,
-};
 use crate::common::tsig::{parse_key_strings, TsigKeyStore};
-use crate::common::unit::UnitActivity;
 use crate::common::xfr::parse_xfr_acl;
 use crate::comms::ApplicationCommand;
-use crate::comms::{
-    AnyDirectUpdate, DirectLink, DirectUpdate, Gate, GateMetrics, GateStatus, GraphStatus,
-    Terminated,
-};
+use crate::comms::{GraphStatus, Terminated};
 use crate::http::{PercentDecodedPath, ProcessRequest};
 use crate::log::ExitError;
-use crate::manager::{Component, WaitPoint};
+use crate::manager::Component;
 use crate::metrics::{self, util::append_per_router_metric, Metric, MetricType, MetricUnit};
 use crate::payload::Update;
-use crate::tokio::TokioTaskMetrics;
-use crate::tracing::Tracer;
 use crate::units::Unit;
 use crate::zonemaintenance::maintainer::{DefaultConnFactory, TypedZone, ZoneMaintainer};
 use crate::zonemaintenance::types::TsigKey;
@@ -122,11 +113,10 @@ pub enum Source {
     PublishedZones,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Debug)]
 pub struct ZoneServerUnit {
     /// The relative path at which we should listen for HTTP query API requests
-    #[serde(default = "ZoneServerUnit::default_http_api_path")]
-    http_api_path: Arc<String>,
+    pub http_api_path: Arc<String>,
 
     /// Addresses and protocols to listen on.
     pub listen: Vec<ListenAddr>,
@@ -139,23 +129,22 @@ pub struct ZoneServerUnit {
     pub mode: Mode,
 
     pub source: Source,
+
+    pub update_tx: mpsc::Sender<Update>,
+
+    pub cmd_rx: mpsc::Receiver<ApplicationCommand>,
 }
 
 impl ZoneServerUnit {
-    pub async fn run(
-        self,
-        mut component: Component,
-        gate: Gate,
-        mut waitpoint: WaitPoint,
-    ) -> Result<(), Terminated> {
-        let unit_name = component.name().clone();
+    pub async fn run(self, component: Component) -> Result<(), Terminated> {
+        let unit_name = match (self.mode, self.source) {
+            (Mode::Prepublish, Source::UnsignedZones) => "RS",
+            (Mode::Prepublish, Source::SignedZones) => "RS2",
+            (Mode::Publish, Source::PublishedZones) => "PS",
+            _ => unreachable!(),
+        };
 
-        // Setup our metrics
-        let metrics = Arc::new(ZoneLoaderMetrics::new(&gate));
-        component.register_metrics(metrics.clone());
-
-        // Setup our status reporting
-        let status_reporter = Arc::new(ZoneLoaderStatusReporter::new(&unit_name, metrics.clone()));
+        // TODO: metrics and status reporting
 
         // TODO: This will just choose all current zones to be served. For signed and published
         // zones this doesn't matter so much as they only exist while being and once approved.
@@ -186,43 +175,28 @@ impl ZoneServerUnit {
         let svc = Arc::new(svc);
 
         for addr in self.listen.iter().cloned() {
-            info!("[{}]: Binding on {:?}", component.name(), addr);
+            info!("[{unit_name}]: Binding on {:?}", addr);
             let svc = svc.clone();
-            let component_name = component.name().clone();
+            let unit_name: Box<str> = unit_name.into();
             tokio::spawn(async move {
                 if let Err(err) = Self::server(addr, svc).await {
-                    error!("[{}]: {}", component_name, err);
+                    error!("[{unit_name}]: {}", err);
                 }
             });
         }
-
-        // Wait for other components to be, and signal to other components
-        // that we are, ready to start. All units and targets start together,
-        // otherwise data passed from one component to another may be lost if
-        // the receiving component is not yet ready to accept it.
-        gate.process_until(waitpoint.ready()).await?;
-
-        // Signal again once we are out of the process_until() so that anyone
-        // waiting to send important gate status updates won't send them while
-        // we are in process_until() which will just eat them without handling
-        // them.
-        waitpoint.running().await;
 
         let component = Arc::new(RwLock::new(component));
 
         ZoneServer::new(
             component,
             self.http_api_path,
-            gate,
-            metrics,
-            status_reporter,
             self.mode,
             self.source,
             self.hooks,
             self.listen,
             zones,
         )
-        .run()
+        .run(unit_name, self.update_tx, self.cmd_rx)
         .await?;
 
         Ok(())
@@ -278,9 +252,6 @@ struct ZoneServer {
     component: Arc<RwLock<Component>>,
     #[allow(dead_code)]
     http_api_path: Arc<String>,
-    gate: Gate,
-    metrics: Arc<ZoneLoaderMetrics>,
-    status_reporter: Arc<ZoneLoaderStatusReporter>,
     #[allow(dead_code)]
     mode: Mode,
     source: Source,
@@ -296,9 +267,6 @@ impl ZoneServer {
     fn new(
         component: Arc<RwLock<Component>>,
         http_api_path: Arc<String>,
-        gate: Gate,
-        metrics: Arc<ZoneLoaderMetrics>,
-        status_reporter: Arc<ZoneLoaderStatusReporter>,
         mode: Mode,
         source: Source,
         hooks: Vec<String>,
@@ -308,9 +276,6 @@ impl ZoneServer {
         Self {
             component,
             http_api_path,
-            gate,
-            metrics,
-            status_reporter,
             mode,
             source,
             hooks,
@@ -320,13 +285,18 @@ impl ZoneServer {
         }
     }
 
-    async fn run(self) -> Result<(), crate::comms::Terminated> {
-        let status_reporter = self.status_reporter.clone();
+    async fn run(
+        self,
+        unit_name: &str,
+        update_tx: mpsc::Sender<Update>,
+        mut cmd_rx: mpsc::Receiver<ApplicationCommand>,
+    ) -> Result<(), crate::comms::Terminated> {
+        // let status_reporter = self.status_reporter.clone();
 
         // Setup REST API endpoint
         let http_processor = Arc::new(ZoneReviewApi::new(
             self.http_api_path.clone(),
-            self.gate.clone(),
+            update_tx.clone(),
             self.pending_approvals.clone(),
             self.zones.clone(),
             self.mode,
@@ -340,187 +310,117 @@ impl ZoneServer {
 
         let arc_self = Arc::new(self);
 
-        loop {
-            //     status_reporter.listener_listening(&listen_addr.to_string());
-
-            match arc_self
-                .clone()
-                .process_until(core::future::pending::<()>())
-                .await
-            {
-                ControlFlow::Continue(()) => {
-                    todo!()
-                }
-                ControlFlow::Break(Terminated) => return Err(Terminated),
-            }
-        }
-    }
-
-    async fn process_until<T, U>(self: Arc<Self>, until_fut: T) -> ControlFlow<Terminated, U>
-    where
-        T: Future<Output = U>,
-    {
-        let mut until_fut = Box::pin(until_fut);
-        let component_name = self.component.read().await.name().clone();
+        // status_reporter.listener_listening(&listen_addr.to_string());
 
         loop {
-            let process_fut = self.gate.process();
-            pin_mut!(process_fut);
+            tokio::select! {
+                cmd = cmd_rx.recv() => {
+                    let Some(cmd) = cmd else {
+                        // arc_self.status_reporter.terminated();
+                        return Err(Terminated);
+                    };
 
-            match select(process_fut, until_fut).await {
-                Either::Left((Err(Terminated), _)) => {
-                    self.status_reporter.terminated();
-                    return ControlFlow::Break(Terminated);
-                }
-                Either::Left((Ok(status), next_fut)) => {
-                    self.status_reporter.gate_status_announced(&status);
-                    match status {
-                        GateStatus::Reconfiguring {
-                            new_config:
-                                Unit::ZoneServer(ZoneServerUnit {
-                                    http_api_path,
-                                    listen,
-                                    xfr_out,
-                                    mode,
-                                    source,
-                                    hooks,
-                                }),
+                    info!("[{unit_name}] Received command: {cmd:?}",);
+                    match &cmd {
+                        ApplicationCommand::Terminate => {
+                            // arc_self.status_reporter.terminated();
+                            return Err(Terminated);
+                        }
+
+                        ApplicationCommand::SeekApprovalForUnsignedZone {
+                            zone_name,
+                            zone_serial,
+                        }
+                        | ApplicationCommand::SeekApprovalForSignedZone {
+                            zone_name,
+                            zone_serial,
                         } => {
-                            // Runtime reconfiguration of this unit has
-                            // been requested. New connections will be
-                            // handled using the new configuration,
-                            // existing connections handled by
-                            // router_handler() tasks will receive their
-                            // own copy of this Reconfiguring status
-                            // update and can react to it accordingly.
-                            // let rebind = self.listen != new_listen;
-
-                            // self.listen = new_listen;
-                            // self.filter_name.store(new_filter_name.into());
-                            // self.router_id_template
-                            //     .store(new_router_id_template.into());
-                            // self.tracing_mode.store(new_tracing_mode.into());
-
-                            // if rebind {
-                            //     // Trigger re-binding to the new listen port.
-                            //     let err = std::io::ErrorKind::Other;
-                            //     return ControlFlow::Continue(
-                            //         Err(err.into()),
-                            //     );
-                            // }
-                        }
-
-                        GateStatus::ReportLinks { report } => {
-                            report.declare_source();
-                            report.set_graph_status(self.metrics.clone());
-                        }
-
-                        GateStatus::ApplicationCommand { cmd } => {
-                            info!("[{component_name}] Received command: {cmd:?}",);
-                            match &cmd {
+                            let zone_type = match cmd {
                                 ApplicationCommand::SeekApprovalForUnsignedZone {
-                                    zone_name,
-                                    zone_serial,
-                                }
-                                | ApplicationCommand::SeekApprovalForSignedZone {
-                                    zone_name,
-                                    zone_serial,
-                                } => {
-                                    let zone_type = match cmd {
-                                        ApplicationCommand::SeekApprovalForUnsignedZone {
-                                            ..
-                                        } => "unsigned",
-                                        ApplicationCommand::SeekApprovalForSignedZone {
-                                            ..
-                                        } => "signed",
-                                        _ => unreachable!(),
-                                    };
-                                    info!("[{component_name}]: Seeking approval for {zone_type} zone '{zone_name}' at serial {zone_serial}.");
-                                    for hook in &self.hooks {
-                                        let approval_token = Uuid::new_v4();
-                                        info!("[{component_name}]: Generated approval token '{approval_token}' for {zone_type} zone '{zone_name}' at serial {zone_serial}.");
+                                    ..
+                                } => "unsigned",
+                                ApplicationCommand::SeekApprovalForSignedZone {
+                                    ..
+                                } => "signed",
+                                _ => unreachable!(),
+                            };
+                            info!("[{unit_name}]: Seeking approval for {zone_type} zone '{zone_name}' at serial {zone_serial}.");
+                            for hook in &arc_self.hooks {
+                                let approval_token = Uuid::new_v4();
+                                info!("[{unit_name}]: Generated approval token '{approval_token}' for {zone_type} zone '{zone_name}' at serial {zone_serial}.");
 
-                                        self.pending_approvals
-                                            .write()
-                                            .await
-                                            .entry((zone_name.clone(), *zone_serial))
-                                            .and_modify(|e| e.push(approval_token))
-                                            .or_insert(vec![approval_token]);
+                                arc_self.pending_approvals
+                                    .write()
+                                    .await
+                                    .entry((zone_name.clone(), *zone_serial))
+                                    .and_modify(|e| e.push(approval_token))
+                                    .or_insert(vec![approval_token]);
 
-                                        match Command::new(hook)
-                                            .arg(format!("{zone_name}"))
-                                            .arg(format!("{zone_serial}"))
-                                            .arg(format!("{approval_token}"))
-                                            .spawn()
-                                        {
-                                            Ok(_) => {
-                                                info!("[{component_name}]: Executed hook '{hook}' for {zone_type} zone '{zone_name}' at serial {zone_serial}");
-                                                info!("[{component_name}]: Confirm with HTTP GET {}approve/{approval_token}?zone={zone_name}&serial={zone_serial}", self.http_api_path);
-                                                info!("[{component_name}]: Reject with HTTP GET {}reject/{approval_token}?zone={zone_name}&serial={zone_serial}", self.http_api_path);
-                                            }
-                                            Err(err) => {
-                                                error!(
-                                                    "[{component_name}]: Failed to execute hook '{hook}' for {zone_type} zone '{zone_name}' at serial {zone_serial}: {err}",
-                                                );
-                                            }
-                                        }
+                                match Command::new(hook)
+                                    .arg(format!("{zone_name}"))
+                                    .arg(format!("{zone_serial}"))
+                                    .arg(format!("{approval_token}"))
+                                    .spawn()
+                                {
+                                    Ok(_) => {
+                                        info!("[{unit_name}]: Executed hook '{hook}' for {zone_type} zone '{zone_name}' at serial {zone_serial}");
+                                        info!("[{unit_name}]: Confirm with HTTP GET {}approve/{approval_token}?zone={zone_name}&serial={zone_serial}", arc_self.http_api_path);
+                                        info!("[{unit_name}]: Reject with HTTP GET {}reject/{approval_token}?zone={zone_name}&serial={zone_serial}", arc_self.http_api_path);
+                                    }
+                                    Err(err) => {
+                                        error!(
+                                            "[{unit_name}]: Failed to execute hook '{hook}' for {zone_type} zone '{zone_name}' at serial {zone_serial}: {err}",
+                                        );
                                     }
                                 }
-
-                                ApplicationCommand::PublishSignedZone {
-                                    zone_name,
-                                    zone_serial,
-                                } => {
-                                    info!(
-                                        "[{component_name}]: Publishing signed zone '{zone_name}' at serial {zone_serial}."                                        
-                                    );
-                                    // Move the zone from the signed collection to the published collection.
-                                    // TODO: Bump the zone serial?
-                                    let component = self.component.write().await;
-                                    let signed_zones = component.signed_zones().load();
-                                    if let Some(zone) = signed_zones.get_zone(zone_name, Class::IN)
-                                    {
-                                        let published_zones = component.published_zones().load();
-
-                                        // Create a deep copy of the set of
-                                        // published zones. We will add the
-                                        // new zone to that copied set and
-                                        // then replace the original set with
-                                        // the new set.
-                                        info!("[{component_name}]: Adding '{zone_name}' to the set of published zones.");
-                                        let mut new_published_zones =
-                                            Arc::unwrap_or_clone(published_zones.clone());
-                                        let _ = new_published_zones
-                                            .remove_zone(zone.apex_name(), zone.class());
-                                        new_published_zones.insert_zone(zone.clone()).unwrap();
-                                        component
-                                            .published_zones()
-                                            .store(Arc::new(new_published_zones));
-
-                                        // Create a deep copy of the set of
-                                        // signed zones. We will remove the
-                                        // zone from the copied set and then
-                                        // replace the original set with the
-                                        // new set.
-                                        info!("[{component_name}]: Removing '{zone_name}' from the set of signed zones.");
-                                        let mut new_signed_zones =
-                                            Arc::unwrap_or_clone(signed_zones.clone());
-                                        new_signed_zones.remove_zone(zone_name, Class::IN).unwrap();
-                                        component.signed_zones().store(Arc::new(new_signed_zones));
-                                    }
-                                }
-
-                                _ => { /* Not for us */ }
                             }
                         }
 
-                        _ => { /* Nothing to do */ }
-                    }
+                        ApplicationCommand::PublishSignedZone {
+                            zone_name,
+                            zone_serial,
+                        } => {
+                            info!(
+                                "[{unit_name}]: Publishing signed zone '{zone_name}' at serial {zone_serial}."
+                            );
+                            // Move the zone from the signed collection to the published collection.
+                            // TODO: Bump the zone serial?
+                            let component = arc_self.component.write().await;
+                            let signed_zones = component.signed_zones().load();
+                            if let Some(zone) = signed_zones.get_zone(zone_name, Class::IN)
+                            {
+                                let published_zones = component.published_zones().load();
 
-                    until_fut = next_fut;
-                }
-                Either::Right((updated_zone_name, _)) => {
-                    return ControlFlow::Continue(updated_zone_name);
+                                // Create a deep copy of the set of
+                                // published zones. We will add the
+                                // new zone to that copied set and
+                                // then replace the original set with
+                                // the new set.
+                                info!("[{unit_name}]: Adding '{zone_name}' to the set of published zones.");
+                                let mut new_published_zones =
+                                    Arc::unwrap_or_clone(published_zones.clone());
+                                let _ = new_published_zones
+                                    .remove_zone(zone.apex_name(), zone.class());
+                                new_published_zones.insert_zone(zone.clone()).unwrap();
+                                component
+                                    .published_zones()
+                                    .store(Arc::new(new_published_zones));
+
+                                // Create a deep copy of the set of
+                                // signed zones. We will remove the
+                                // zone from the copied set and then
+                                // replace the original set with the
+                                // new set.
+                                info!("[{unit_name}]: Removing '{zone_name}' from the set of signed zones.");
+                                let mut new_signed_zones =
+                                    Arc::unwrap_or_clone(signed_zones.clone());
+                                new_signed_zones.remove_zone(zone_name, Class::IN).unwrap();
+                                component.signed_zones().store(Arc::new(new_signed_zones));
+                            }
+                        }
+
+                        _ => { /* Not for us */ }
+                    }
                 }
             }
         }
@@ -530,107 +430,6 @@ impl ZoneServer {
 impl std::fmt::Debug for ZoneServer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ZoneLoader").finish()
-    }
-}
-
-#[async_trait]
-impl DirectUpdate for ZoneServer {
-    async fn direct_update(&self, event: Update) {
-        info!(
-            "[{}]: Received event: {event:?}",
-            self.component.read().await.name()
-        );
-    }
-}
-
-impl AnyDirectUpdate for ZoneServer {}
-
-//------------ ZoneLoaderMetrics ---------------------------------------------
-
-#[derive(Debug, Default)]
-pub struct ZoneLoaderMetrics {
-    gate: Option<Arc<GateMetrics>>, // optional to make testing easier
-}
-
-impl GraphStatus for ZoneLoaderMetrics {
-    fn status_text(&self) -> String {
-        "TODO".to_string()
-    }
-
-    fn okay(&self) -> Option<bool> {
-        Some(false)
-    }
-}
-
-impl ZoneLoaderMetrics {
-    // const LISTENER_BOUND_COUNT_METRIC: Metric = Metric::new(
-    //     "bmp_tcp_in_listener_bound_count",
-    //     "the number of times the TCP listen port was bound to",
-    //     MetricType::Counter,
-    //     MetricUnit::Total,
-    // );
-}
-
-impl ZoneLoaderMetrics {
-    pub fn new(gate: &Gate) -> Self {
-        Self {
-            gate: Some(gate.metrics()),
-        }
-    }
-}
-
-impl metrics::Source for ZoneLoaderMetrics {
-    fn append(&self, unit_name: &str, target: &mut metrics::Target) {
-        if let Some(gate) = &self.gate {
-            gate.append(unit_name, target);
-        }
-
-        // target.append_simple(
-        //     &Self::LISTENER_BOUND_COUNT_METRIC,
-        //     Some(unit_name),
-        //     self.listener_bound_count.load(SeqCst),
-        // );
-    }
-}
-
-//------------ ZoneLoaderStatusReporter --------------------------------------
-
-#[derive(Debug, Default)]
-pub struct ZoneLoaderStatusReporter {
-    name: String,
-    metrics: Arc<ZoneLoaderMetrics>,
-}
-
-impl ZoneLoaderStatusReporter {
-    pub fn new<T: Display>(name: T, metrics: Arc<ZoneLoaderMetrics>) -> Self {
-        Self {
-            name: format!("{}", name),
-            metrics,
-        }
-    }
-
-    pub fn _typed_metrics(&self) -> Arc<ZoneLoaderMetrics> {
-        self.metrics.clone()
-    }
-}
-
-impl UnitStatusReporter for ZoneLoaderStatusReporter {}
-
-impl AnyStatusReporter for ZoneLoaderStatusReporter {
-    fn metrics(&self) -> Option<Arc<dyn crate::metrics::Source>> {
-        Some(self.metrics.clone())
-    }
-}
-
-impl Chainable for ZoneLoaderStatusReporter {
-    fn add_child<T: Display>(&self, child_name: T) -> Self {
-        Self::new(self.link_names(child_name), self.metrics.clone())
-    }
-}
-
-impl Named for ZoneLoaderStatusReporter {
-    fn name(&self) -> &str {
-        &self.name
     }
 }
 
@@ -746,7 +545,7 @@ fn zone_server_service(
 
 struct ZoneReviewApi {
     http_api_path: Arc<String>,
-    gate: Gate,
+    update_tx: mpsc::Sender<Update>,
     #[allow(clippy::type_complexity)]
     pending_approvals: Arc<RwLock<HashMap<(Name<Bytes>, Serial), Vec<Uuid>>>>,
     zones: XfrDataProvidingZonesWrapper,
@@ -759,7 +558,7 @@ impl ZoneReviewApi {
     #[allow(clippy::type_complexity)]
     fn new(
         http_api_path: Arc<String>,
-        gate: Gate,
+        update_tx: mpsc::Sender<Update>,
         pending_approvals: Arc<RwLock<HashMap<(Name<Bytes>, Serial), Vec<Uuid>>>>,
         zones: XfrDataProvidingZonesWrapper,
         mode: Mode,
@@ -768,7 +567,7 @@ impl ZoneReviewApi {
     ) -> Self {
         Self {
             http_api_path,
-            gate,
+            update_tx,
             pending_approvals,
             zones,
             mode,
@@ -872,7 +671,7 @@ impl ProcessRequest for ZoneReviewApi {
                                                         Source::PublishedZones => unreachable!(),
                                                     };
                                                     info!("Pending {zone_type} zone '{zone_name}' approved at serial {zone_serial}.");
-                                                    self.gate.update_data(event).await;
+                                                    self.update_tx.send(event).await.unwrap();
                                                     remove_approvals = true;
                                                 }
                                             }
