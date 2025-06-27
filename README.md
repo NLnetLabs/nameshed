@@ -35,6 +35,11 @@ components:
   - RS: "Pre-Signing Review Server": An instance of `ZoneServer` responsible
     for serving an unsigned loaded zone for review.
 
+  - KM: "Key Manager": An instance of `KeyManager` responsible for periodically
+    invoking the `dnst keyset cron_next` command for each known unsigned zone,
+    thereby ensuring that the `dnst keyset` state files for the zone are updated
+    and on update that a zone resign command is sent to the "Zone Signer".
+
   - ZS: "Zone Signer": An instance of `ZoneSigner` responsible for signing
     an approved unsigned loaded zone.
 
@@ -49,7 +54,7 @@ components:
     next action that should occur, e.g. start serving a new copy of an
     unsigned review because it has been loaded.
 
-ZL, RS, ZS, RS2 and PS send their events downtream to CC.
+ZL, RS, KM, ZS, RS2 and PS send their events downtream to CC.
 
 CC currently assumes it knows the names of its upstream components in order to
 send commands to them by name.
