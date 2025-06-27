@@ -2,7 +2,7 @@
 
 **Nameshed will offer a flexible DNSSEC signing pipeline.** 
 
-**A proof of concept (PcC) is scheduled to be available before October 2025,
+**A proof of concept (PoC) is scheduled to be available before October 2025,
 followed by a production grade release in Q4 2025. Do NOT use the 
 current codebase in production.**
 
