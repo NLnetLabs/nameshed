@@ -61,8 +61,8 @@ send commands to them by name.
 
 ## HSM Support
 
-Signing keys can either be file based BIND format key files or signing keys
-stored in a KMIP compatible HSM, or PKCS#11 compatible HSM (via
+Signing keys can either be BIND format key files or signing keys stored in a
+KMIP compatible HSM, or PKCS#11 compatible HSM (via
 [`nameshed-hsm-relay`](https://github.com/NLnetLabs/nameshed-hsm-relay)).
 
 KMIP support is currently limited to that needed to communicate with
