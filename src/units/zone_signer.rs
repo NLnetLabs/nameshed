@@ -1642,7 +1642,9 @@ fn parse_kmip_key_url(
     Ok((key_id, algorithm, flags, host_and_port))
 }
 
-// Like domain::crypto::sign::KeyPair but omits Ring which is not thread safe.
+// Like domain::crypto::sign::KeyPair but omits Ring which is currently not
+// thread safe, though it is expected that can be resolved and thus this type
+// would no longer be needed.
 #[derive(Debug)]
 enum ThreadSafeKeyPair {
     OpenSSL(domain::crypto::openssl::sign::KeyPair),
