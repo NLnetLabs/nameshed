@@ -59,6 +59,11 @@ ZL, RS, KM, ZS, RS2 and PS send their events downtream to CC.
 CC currently assumes it knows the names of its upstream components in order to
 send commands to them by name.
 
-Minimally tested with a local `NSD` acting as primary with `nameshed` acting as
-secondary receiving a zone via XFR, and invoking dnssec-verify as a post-signing
-hook.
+## HSM Support
+
+Signing keys can either be file based BIND format key files or signing keys
+stored in a KMIP compatible HSM, or PKCS#11 compatible HSM (via
+[`nameshed-hsm-relay`](https://github.com/NLnetLabs/nameshed-hsm-relay)).
+
+KMIP support is currently limited to that needed to communicate with
+`nameshed-hsm-relay`.
