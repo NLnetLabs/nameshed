@@ -14,9 +14,10 @@ use crate::common::tsig::TsigKeyStore;
 use crate::comms::ApplicationCommand;
 use crate::targets::central_command::{self, CentralCommandTarget};
 use crate::targets::Target;
+use crate::units::key_manager::KeyManagerUnit;
 use crate::units::zone_loader::ZoneLoader;
 use crate::units::zone_server::{self, ZoneServerUnit};
-use crate::units::zone_signer::{TomlDenialConfig, ZoneSignerUnit};
+use crate::units::zone_signer::{KmipServerConnectionSettings, TomlDenialConfig, ZoneSignerUnit};
 use crate::units::Unit;
 use crate::{http, metrics};
 use domain::zonetree::ZoneTree;
@@ -176,6 +177,9 @@ pub struct Manager {
     /// Commands for the review server.
     review_tx: Option<mpsc::Sender<ApplicationCommand>>,
 
+    /// Commands for the key manager.
+    key_manager_tx: Option<mpsc::Sender<ApplicationCommand>>,
+
     /// Commands for the zone signer.
     signer_tx: Option<mpsc::Sender<ApplicationCommand>>,
 
@@ -233,6 +237,7 @@ impl Manager {
         let manager = Manager {
             loader_tx: None,
             review_tx: None,
+            key_manager_tx: None,
             signer_tx: None,
             review2_tx: None,
             publish_tx: None,
@@ -262,6 +267,7 @@ impl Manager {
             let Some(tx) = (match &*unit_name {
                 "ZL" => self.loader_tx.as_ref(),
                 "RS" => self.review_tx.as_ref(),
+                "KM" => self.key_manager_tx.as_ref(),
                 "ZS" => self.signer_tx.as_ref(),
                 "RS2" => self.review2_tx.as_ref(),
                 "PS" => self.publish_tx.as_ref(),
@@ -427,12 +433,14 @@ impl Manager {
     {
         let (zl_tx, zl_rx) = mpsc::channel(10);
         let (rs_tx, rs_rx) = mpsc::channel(10);
+        let (km_tx, km_rx) = mpsc::channel(10);
         let (zs_tx, zs_rx) = mpsc::channel(10);
         let (rs2_tx, rs2_rx) = mpsc::channel(10);
         let (ps_tx, ps_rx) = mpsc::channel(10);
 
         self.loader_tx = Some(zl_tx);
         self.review_tx = Some(rs_tx);
+        self.key_manager_tx = Some(km_tx);
         self.signer_tx = Some(zs_tx);
         self.review2_tx = Some(rs2_tx);
         self.publish_tx = Some(ps_tx);
@@ -506,6 +514,15 @@ impl Manager {
                 }),
             ),
             (
+                String::from("KM"),
+                Unit::KeyManager(KeyManagerUnit {
+                    dnst_keyset_bin_path: "/tmp/dnst".into(),
+                    dnst_keyset_data_dir: "/tmp".into(),
+                    update_tx: update_tx.clone(),
+                    cmd_rx: km_rx,
+                }),
+            ),
+            (
                 String::from("ZS"),
                 Unit::ZoneSigner(ZoneSignerUnit {
                     http_api_path: Arc::new(String::from("/zs/")),
@@ -517,6 +534,12 @@ impl Manager {
                     denial_config: TomlDenialConfig::default(),
                     rrsig_inception_offset_secs: 60 * 90,
                     rrsig_expiration_offset_secs: 60 * 60 * 24 * 14,
+                    kmip_server_conn_settings: vec![KmipServerConnectionSettings {
+                        server_addr: "127.0.0.1".into(),
+                        server_port: 5696,
+                        server_insecure: true,
+                        ..Default::default()
+                    }],
                     update_tx: update_tx.clone(),
                     cmd_rx: zs_rx,
                 }),

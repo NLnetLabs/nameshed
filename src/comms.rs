@@ -133,7 +133,7 @@ pub enum ApplicationCommand {
     },
     SignZone {
         zone_name: StoredName,
-        zone_serial: Serial,
+        zone_serial: Option<Serial>,
     },
     SeekApprovalForSignedZone {
         zone_name: StoredName,

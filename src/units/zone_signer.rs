@@ -2,6 +2,7 @@ use core::fmt;
 use core::future::pending;
 use core::ops::{Add, ControlFlow};
 
+use std::io::Read;
 use std::any::Any;
 use std::cmp::Ordering;
 use std::collections::hash_map::Entry::{Occupied, Vacant};
@@ -22,14 +23,14 @@ use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use chrono::{DateTime, Utc};
-use domain::base::iana::Class;
+use domain::base::iana::{Class, SecurityAlgorithm};
 use domain::base::name::FlattenInto;
 use domain::base::record::ComposeRecord;
 use domain::base::wire::Composer;
 use domain::base::{
     CanonicalOrd, Name, ParsedName, ParsedRecord, Record, Rtype, Serial, ToName, Ttl,
 };
-use domain::crypto::sign::{generate, FromBytesError, GenerateParams, SecretKeyBytes};
+use domain::crypto::sign::{generate, FromBytesError, GenerateParams, SecretKeyBytes, SignRaw};
 use domain::dnssec::common::parse_from_bind;
 use domain::dnssec::sign::keys::SigningKey;
 use domain::dnssec::sign::records::{DefaultSorter, RecordsIter, Rrset, Sorter};
@@ -63,13 +64,16 @@ use domain::dnssec::sign::error::SigningError;
 use domain::tsig::KeyStore;
 use domain::tsig::{Algorithm, Key, KeyName};
 use domain::utils::base64;
-use domain::zonefile::inplace;
+use domain::zonefile::inplace::{self, Entry, Zonefile};
 use domain::zonetree::types::{StoredRecordData, ZoneUpdate};
 use domain::zonetree::update::ZoneUpdater;
 use domain::zonetree::{
     InMemoryZoneDiff, ReadableZone, StoredName, StoredRecord, WritableZone, WritableZoneNode, Zone,
     ZoneBuilder, ZoneStore, ZoneTree,
 };
+use domain::dnssec::sign::keys::keyset::{KeySet, KeyType};
+use domain::crypto::kmip::{self, ConnectionSettings};
+use domain::crypto::kmip_pool::{ConnectionManager, KmipConnPool};
 use futures::future::{select, Either};
 use futures::{pin_mut, Future, SinkExt};
 use indoc::formatdoc;
@@ -87,6 +91,8 @@ use tokio::sync::{Mutex, RwLock, Semaphore};
 use tokio::time::{sleep, Instant};
 #[cfg(feature = "tls")]
 use tokio_rustls::rustls::ServerConfig;
+use tokio::task::spawn_blocking;
+use url::Url;
 
 use crate::common::light_weight_zone::LightWeightZone;
 use crate::common::net::{
@@ -111,7 +117,7 @@ use crate::zonemaintenance::types::{
     CompatibilityMode, NotifyConfig, TransportStrategy, XfrConfig, XfrStrategy, ZoneConfig,
     ZoneMaintainerKeyStore,
 };
-use tokio::task::spawn_blocking;
+
 
 #[derive(Debug)]
 pub struct ZoneSignerUnit {
@@ -133,6 +139,8 @@ pub struct ZoneSignerUnit {
     pub max_concurrent_operations: usize,
 
     pub max_concurrent_rrsig_generation_tasks: usize,
+
+    pub kmip_server_conn_settings: Vec<KmipServerConnectionSettings>,
 
     pub update_tx: mpsc::Sender<Update>,
 
@@ -165,86 +173,32 @@ impl ZoneSignerUnit {
     pub async fn run(self, component: Component) -> Result<(), Terminated> {
         // TODO: metrics and status reporting
 
-        let mut key_path_stems = HashSet::new();
-        let mut keys = HashMap::<StoredName, Vec<SigningKey<Bytes, KeyPair>>>::new();
+        // Create KMIP server connection pools.
+        // Warning: This will block until the pools have established their
+        // minimum number of connections or timed out.
+        let kmip_servers = self.kmip_server_conn_settings.into_iter().filter_map(|conn_settings| {
+            let host_and_port = (conn_settings.server_addr.clone(), conn_settings.server_port);
 
-        info!("Loading key pairs from '{}'.", self.keys_path.display());
-        for entry in std::fs::read_dir(&self.keys_path).map_err(|err| {
-            error!(
-                "Unable to load keys from '{}': {err}",
-                self.keys_path.display()
-            );
-            Terminated
-        })? {
-            match entry {
-                Ok(entry)
-                    if entry
-                        .file_type()
-                        .map(|typ| typ.is_file())
-                        .unwrap_or_default() =>
-                {
-                    let path = entry.path();
-                    match (path.file_stem(), path.extension()) {
-                        (Some(stem), Some(ext)) if ext == "key" || ext == "private" => {
-                            key_path_stems.insert(stem.to_owned());
-                        }
-                        _ => { /* Skip */ }
-                    }
+            match ConnectionManager::create_connection_pool(
+                Arc::new(conn_settings.clone().into()),
+                10,
+                Duration::from_secs(60),
+                Duration::from_secs(60),
+            ) {
+                Ok(kmip_conn_pool) => {
+                    Some((host_and_port, kmip_conn_pool))
                 }
-                _ => { /* Skip */ }
-            }
-        }
 
-        for stem in key_path_stems {
-            let key_path = self.keys_path.join(stem);
-            debug!("Attempting to load key pair '{}'.", key_path.display());
-
-            let priv_key_path = Self::mk_private_key_path(&key_path);
-            let private_key = Self::load_private_key(&priv_key_path).inspect_err(|_| {
-                error!(
-                    "Failed to load private key from '{}'",
-                    priv_key_path.display()
-                );
-            })?;
-
-            let pub_key_path = Self::mk_public_key_path(&key_path);
-            let public_key = Self::load_public_key(&pub_key_path).inspect_err(|_| {
-                error!(
-                    "Failed to load public key from '{}'",
-                    pub_key_path.display()
-                );
-            })?;
-
-            let key = self
-                .mk_signing_key(
-                    (*public_key.owner()).clone(),
-                    &private_key,
-                    (*public_key.data()).clone(),
-                )
-                .map_err(|err| {
-                    error!(
-                        "Failed to make key pair for '{}': {err}",
-                        key_path.display()
-                    );
-                    Terminated
-                })?;
-
-            match keys.entry(key.owner().to_owned()) {
-                Occupied(mut e) => {
-                    e.get_mut().push(key);
-                }
-                Vacant(e) => {
-                    e.insert(vec![key]);
+                Err(()) => {
+                    error!("Failed to create connection pool for KMIP server '{}:{}', disabling use of this KMIP server", conn_settings.server_addr, conn_settings.server_port);
+                    None
                 }
             }
-
-            info!("Loaded key pair from {}", key_path.display());
-        }
+        }).collect();
 
         ZoneSigner::new(
             component,
             self.http_api_path,
-            keys,
             self.rrsig_inception_offset_secs,
             self.rrsig_expiration_offset_secs,
             self.denial_config,
@@ -253,6 +207,8 @@ impl ZoneSignerUnit {
             self.max_concurrent_rrsig_generation_tasks,
             self.treat_single_keys_as_csks,
             self.update_tx,
+            self.keys_path,
+            kmip_servers
         )
         .run(self.cmd_rx)
         .await?;
@@ -302,33 +258,6 @@ impl ZoneSignerUnit {
 
         Ok(public_key_info)
     }
-
-    fn mk_public_key_path(key_path: &Path) -> PathBuf {
-        if key_path.extension().and_then(|ext| ext.to_str()) == Some("key") {
-            key_path.to_path_buf()
-        } else {
-            PathBuf::from(format!("{}.key", key_path.display()))
-        }
-    }
-
-    fn mk_private_key_path(key_path: &Path) -> PathBuf {
-        if key_path.extension().and_then(|ext| ext.to_str()) == Some("private") {
-            key_path.to_path_buf()
-        } else {
-            PathBuf::from(format!("{}.private", key_path.display()))
-        }
-    }
-
-    fn mk_signing_key(
-        &self,
-        owner: Name<Bytes>,
-        private_key: &SecretKeyBytes,
-        public_key: Dnskey<Bytes>,
-    ) -> Result<SigningKey<Bytes, KeyPair>, FromBytesError> {
-        let key_pair = KeyPair::from_bytes(private_key, &public_key)?;
-        let signing_key = SigningKey::new(owner, public_key.flags(), key_pair);
-        Ok(signing_key)
-    }
 }
 
 //------------ ZoneSigner ----------------------------------------------------
@@ -337,8 +266,6 @@ struct ZoneSigner {
     component: Component,
     #[allow(dead_code)]
     http_api_path: Arc<String>,
-    #[allow(clippy::type_complexity)]
-    signing_keys: Arc<std::sync::RwLock<HashMap<StoredName, Vec<SigningKey<Bytes, KeyPair>>>>>,
     inception_offset_secs: u32,
     expiration_offset: u32,
     denial_config: TomlDenialConfig,
@@ -348,6 +275,8 @@ struct ZoneSigner {
     signer_status: Arc<RwLock<ZoneSignerStatus>>,
     treat_single_keys_as_csks: bool,
     update_tx: mpsc::Sender<Update>,
+    keys_path: PathBuf,
+    kmip_servers: HashMap<(String, u16), KmipConnPool>,
 }
 
 impl ZoneSigner {
@@ -355,7 +284,6 @@ impl ZoneSigner {
     fn new(
         component: Component,
         http_api_path: Arc<String>,
-        signing_keys: HashMap<StoredName, Vec<SigningKey<Bytes, KeyPair>>>,
         inception_offset_secs: u32,
         expiration_offset: u32,
         denial_config: TomlDenialConfig,
@@ -364,11 +292,12 @@ impl ZoneSigner {
         max_concurrent_rrsig_generation_tasks: usize,
         treat_single_keys_as_csks: bool,
         update_tx: mpsc::Sender<Update>,
+        keys_path: PathBuf,
+        kmip_servers: HashMap<(String, u16), KmipConnPool>,
     ) -> Self {
         Self {
             component,
             http_api_path,
-            signing_keys: Arc::new(std::sync::RwLock::new(signing_keys)),
             inception_offset_secs,
             expiration_offset,
             denial_config,
@@ -378,6 +307,8 @@ impl ZoneSigner {
             signer_status: Default::default(),
             treat_single_keys_as_csks,
             update_tx,
+            keys_path,
+            kmip_servers,
         }
     }
 
@@ -414,7 +345,6 @@ impl ZoneSigner {
             }
         }
 
-        // self.status_reporter.terminated();
         Ok(())
     }
 
@@ -475,66 +405,118 @@ impl ZoneSigner {
             s.walk_time = Some(Duration::from_secs(walk_time));
         });
 
-        //
-        // Get the signing keys for the zone.
-        // TODO: Receive these from the key manager.
-        //
-        let no_keys = vec![];
-        let mut ksks = vec![];
+        /// Persistent state for the keyset command.
+        /// Copied frmo the keyset branch of dnst.
+        #[derive(Deserialize, Serialize)]
+        struct KeySetState {
+            /// Domain KeySet state.
+            keyset: KeySet,
 
-        //
-        // Generate RRSIGs for DNSKEY RRs.
-        // TODO: Receive the DNSKEY RRset and its RRSIG from the key manager.
-        //
-        {
-            let signing_keys = self.signing_keys.read().unwrap();
-            let signing_keys = signing_keys.get(zone_name).unwrap_or(&no_keys);
+            dnskey_rrset: Vec<String>,
+            ds_rrset: Vec<String>,
+            cds_rrset: Vec<String>,
+            ns_rrset: Vec<String>,
+        }
 
-            for k in signing_keys {
-                // Is KSK?
-                if k.is_secure_entry_point() {
-                    trace!("[ZS]: Found KSK for '{zone_name}'.");
-                    ksks.push(k);
+        trace!("Reading dnst keyset DNSKEY RRs and RRSIG RRs");
+        // Read the DNSKEY RRs and DNSKEY RRSIG RR from the keyset state.
+        let apex_name = zone.apex_name().to_string();
+        let state_path = Path::new("/tmp/").join(format!("{apex_name}.state"));
+        let state = std::fs::read_to_string(&state_path).map_err(|err| format!("Unable to read `dnst keyset` state file '{}' while signing zone {zone_name}: {err}", state_path.display()))?;
+        let state: KeySetState = serde_json::from_str(&state).unwrap();
+        for dnskey_rr in state.dnskey_rrset {
+            let mut zonefile = Zonefile::new();
+            zonefile.extend_from_slice(dnskey_rr.as_bytes());
+            zonefile.extend_from_slice(b"\n");
+            if let Ok(Some(Entry::Record(rec))) = zonefile.next_entry() {
+                eprintln!("Adding RR {dnskey_rr}");
+                records.push(rec.flatten_into());
+            }
+        }
+
+        trace!("Loading dnst keyset signing keys");
+        // Load the signing keys indicated by the keyset state.
+        let mut signing_keys = vec![];
+        for (pub_key_name, key_info) in state.keyset.keys() {
+            // Only use active ZSKs or CSKs to sign the records in the zone.
+            if !matches!(key_info.keytype(),
+                KeyType::Zsk(key_state)|KeyType::Csk(_, key_state) if key_state.signer())
+            {
+                continue;
+            }
+
+            if let Some(priv_key_name) = key_info.privref() {
+                let priv_url = Url::parse(priv_key_name).expect("valid URL expected");
+                let pub_url = Url::parse(pub_key_name).expect("valid URL expected");
+
+                match (priv_url.scheme(), pub_url.scheme()) {
+                    ("file", "file") => {
+                        let priv_key_path = priv_url.path();
+                        debug!("Attempting to load private key '{}'.", priv_key_path);
+        
+                        let private_key = ZoneSignerUnit::load_private_key(Path::new(priv_key_path))
+                            .map_err(|_| format!("Failed to load private key from '{}'", priv_key_path))?;
+        
+                        let pub_key_path = pub_url.path();
+                        debug!("Attempting to load public key '{}'.", pub_key_path);
+        
+                        let public_key = ZoneSignerUnit::load_public_key(Path::new(pub_key_path))
+                            .map_err(|_| format!("Failed to load public key from '{}'", pub_key_path))?;
+        
+                        let key_pair = KeyPair::from_bytes(&private_key, public_key.data())
+                            .map_err(|err| format!("Failed to create key pair for zone {zone_name} using key files {pub_key_path} and {priv_key_path}: {err}"))?;
+                        // We use OpenSSL rather than Ring as the Ring KeyPair
+                        // cannot be shared across threads which breaks the
+                        // parallel usage below via Rayon.
+                        let key_pair = ThreadSafeKeyPair::OpenSSL(key_pair);
+                        let signing_key =
+                            SigningKey::new(zone_name.clone(), public_key.data().flags(), key_pair);
+                        signing_keys.push(signing_key);
+                    }
+
+                    ("kmip", "kmip") => {
+                        let (priv_key_id, priv_algorithm, priv_flags, priv_host_and_port) = parse_kmip_key_url(&priv_url)
+                            .map_err(|()| format!("Failed to parse KMIP key URL '{priv_url}'"))?;
+                        let (pub_key_id, pub_algorithm, pub_flags, pub_host_and_port) = parse_kmip_key_url(&pub_url)
+                            .map_err(|()| format!("Failed to parse KMIP key URL '{pub_url}'"))?;
+
+                        if priv_algorithm != pub_algorithm {
+                            return Err(format!("Private and public key URLs have different algorithms: {priv_algorithm} vs {pub_algorithm}"));
+                        } else if priv_flags != pub_flags {
+                            return Err(format!("Private and public key URLs have different flags: {priv_flags} vs {pub_flags}"));
+                        } else if priv_host_and_port != pub_host_and_port {
+                            return Err(format!("Private and public key URLs have different host and port: {}:{} vs {}:{}",
+                            priv_host_and_port.0, priv_host_and_port.1, pub_host_and_port.0, pub_host_and_port.1));
+                        }
+
+                        let kmip_conn_pool = self.kmip_servers
+                            .get(&priv_host_and_port)
+                            .ok_or(format!("No connection pool available for KMIP server '{}:{}'", priv_host_and_port.0, priv_host_and_port.1))?;
+
+                        let key_pair = ThreadSafeKeyPair::Kmip(kmip::sign::KeyPair::new(
+                            priv_algorithm,
+                            priv_flags,
+                            &priv_key_id,
+                            &pub_key_id,
+                            kmip_conn_pool.clone(),
+                        ));
+                    
+                        let signing_key = SigningKey::new(zone_name.clone(), priv_flags, key_pair);
+                        signing_keys.push(signing_key);
+                    }
+
+                    (other1, other2) => return Err(format!("Using different key URI schemes ({other1} vs {other2}) for a public/private key pair is not supported.")),
                 }
             }
+        }
 
-            // TODO: This will not be correct if there are some KSK/ZSK pairs and
-            // some lone ZSKs, the lone ZSKs will not be treated as KSKs by this
-            // simplistic approach.
-            if self.treat_single_keys_as_csks && ksks.is_empty() {
-                for k in signing_keys {
-                    trace!("[ZS]: Using ZSK as KSK for '{zone_name}'.");
-                    ksks.push(k);
-                }
-            }
+        trace!("{} signing keys loaded", signing_keys.len());
 
-            // Add a DNSKEY RR to the zone for each signing key.
-            // Assumes that the incoming unsigned zone has no DNSKEY RRs.
-            let mut dnskey_rrs = vec![];
-            for k in signing_keys {
-                let pubkey: Dnskey<Bytes> = k.dnskey().convert();
-                let data: ZoneRecordData<Bytes, StoredName> = ZoneRecordData::Dnskey(pubkey);
-                let record = Record::new(zone_name.clone(), Class::IN, soa_rr.ttl(), data);
-                dnskey_rrs.push(record.clone());
-                records.push(record);
-                trace!("[ZS]: Generated DNSKEY RR for '{zone_name}'.");
-            }
-            let dnskey_rrset = Rrset::new(&dnskey_rrs).unwrap();
-
-            // Add an RRSIG RR for the new DNSKEY RRset for each KSK that we use.
-            for k in &ksks {
-                let rrsig = sign_rrset(
-                    k,
-                    &dnskey_rrset,
-                    signing_config.inception,
-                    signing_config.expiration,
-                )
-                .expect("should not fail");
-                let data = ZoneRecordData::Rrsig(rrsig.data().clone());
-                let record = Record::new(rrsig.owner().clone(), rrsig.class(), rrsig.ttl(), data);
-                records.push(record);
-                trace!("[ZS]: Generated RRSIG for DNSKEY RRset for '{zone_name}'.");
-            }
+        // TODO: If signing is disabled for a zone should we then allow the
+        // unsigned zone to propagate through the pipeline?
+        if signing_keys.is_empty() {
+            warn!("No signing keys found for zone {zone_name}, aborting");
+            return Ok(());
         }
 
         //
@@ -623,7 +605,7 @@ impl ZoneSigner {
 
         // Generate RRSIGs concurrently.
         trace!("SIGNER: Generating RRSIGs concurrently..");
-        let keys = self.signing_keys.clone();
+        let keys = Arc::new(signing_keys);
         let passed_zone_name = zone_name.clone();
         let treat_single_keys_as_csks = self.treat_single_keys_as_csks;
 
@@ -805,16 +787,10 @@ fn sign_rr_chunk(
     thread_idx: usize,
     rrsig_cfg: &GenerateRrsigConfig,
     tx: Sender<(Vec<Record<StoredName, Rrsig<Bytes, StoredName>>>, Duration)>,
-    keys: Arc<std::sync::RwLock<HashMap<StoredName, Vec<SigningKey<Bytes, KeyPair>>>>>,
+    keys: Arc<Vec<SigningKey<Bytes, ThreadSafeKeyPair>>>,
     zone_name: StoredName,
     treat_single_keys_as_csks: bool,
 ) {
-    let keys = keys.read().unwrap();
-    let Some(keys) = keys.get(&zone_name) else {
-        error!("No key found for zone '{zone_name}");
-        return;
-    };
-
     let mut iter = RecordsIter::new(records);
     let mut n = 0;
     let mut m = 0;
@@ -846,16 +822,13 @@ fn sign_rr_chunk(
         // trace!("SIGNER: Thread {i}: processing owner_rrs slice of len {}.", slice.len());
         let before = Instant::now();
         // TODO: It's stupid to build this same ZSK set every time this fn is called.
-        let mut zsks = keys
-            .iter()
-            .filter(|k| !k.is_secure_entry_point())
-            .collect::<Vec<_>>();
+        let mut zsks = keys.iter().collect::<Vec<_>>();
 
         // TODO: This will not be correct if there are some KSK/ZSK pairs and
         // some lone KSKs, the lone KSKs will not be treated as ZSKs by this
         // simplistic approach.
         if treat_single_keys_as_csks && zsks.is_empty() {
-            for k in keys {
+            for k in keys.iter() {
                 zsks.push(k);
             }
         }
@@ -981,18 +954,6 @@ impl std::fmt::Debug for ZoneSigner {
         f.debug_struct("ZoneSigner").finish()
     }
 }
-
-// #[async_trait]
-// impl DirectUpdate for ZoneSigner {
-//     async fn direct_update(&self, event: Update) {
-//         info!(
-//             "[{}]: Received event: {event:?}",
-//             self.component.read().await.name()
-//         );
-//     }
-// }
-
-// impl AnyDirectUpdate for ZoneSigner {}
 
 //------------ ZoneSigningStatus ---------------------------------------------
 
@@ -1386,5 +1347,143 @@ impl domain::dnssec::sign::records::Sorter for MultiThreadedSorter {
         Record<N, D>: CanonicalOrd + Send,
     {
         records.par_sort_by(compare);
+    }
+}
+
+//------------ KMIP related --------------------------------------------------
+
+#[derive(Clone, Debug)]
+pub struct KmipServerConnectionSettings {
+    /// Path to the client certificate file in PEM format
+    pub client_cert_path: Option<PathBuf>,
+
+    /// Path to the client certificate key file in PEM format
+    pub client_key_path: Option<PathBuf>,
+
+    /// Path to the client certificate and key file in PKCS#12 format
+    pub client_pkcs12_path: Option<PathBuf>,
+
+    /// Disable secure checks (e.g. verification of the server certificate)
+    pub server_insecure: bool,
+
+    /// Path to the server certificate file in PEM format
+    pub server_cert_path: Option<PathBuf>,
+
+    /// Path to the server CA certificate file in PEM format
+    pub ca_cert_path: Option<PathBuf>,
+
+    /// IP address, hostname or FQDN of the KMIP server
+    pub server_addr: String,
+
+    /// The TCP port number on which the KMIP server listens
+    pub server_port: u16,
+
+    /// The user name to authenticate with the KMIP server
+    pub server_username: Option<String>,
+
+    /// The password to authenticate with the KMIP server
+    pub server_password: Option<String>,
+}
+
+impl Default for KmipServerConnectionSettings {
+    fn default() -> Self {
+        Self {
+            server_addr: "localhost".into(),
+            server_port: 5696,
+            server_insecure: false,
+            client_cert_path: None,
+            client_key_path: None,
+            client_pkcs12_path: None,
+            server_cert_path: None,
+            ca_cert_path: None,
+            server_username: None,
+            server_password: None,
+        }
+    }
+}
+
+impl From<KmipServerConnectionSettings> for ConnectionSettings {
+    fn from(cfg: KmipServerConnectionSettings) -> Self {
+        ConnectionSettings {
+            host: cfg.server_addr,
+            port: cfg.server_port,
+            username: cfg.server_username,
+            password: cfg.server_password,
+            insecure: cfg.server_insecure,
+            client_cert: None,        // TODO
+            server_cert: None,        // TODO
+            ca_cert: None,            // TODO
+            connect_timeout: None,    // TODO
+            read_timeout: None,       // TODO
+            write_timeout: None,      // TODO
+            max_response_bytes: None, // TODO
+        }
+    }
+}
+
+fn parse_kmip_key_url(
+    kmip_key_url: &Url,
+) -> Result<(String, SecurityAlgorithm, u16, (String, u16)), ()> {
+    let host_and_port = (
+        kmip_key_url.host_str().ok_or(())?.to_string(),
+        kmip_key_url.port().unwrap_or(5696)
+    );
+
+    // TODO: We ignore the username and password as we have all of the
+    // connection details. We need our own KMIP server configs as the URL
+    // doesn't contain everything we need, e.g. certificates... but having
+    // config both here AND in `dnst keyset` is annoying... can we get rid of
+    // this duplication somehow?
+
+    let url_path = kmip_key_url.path().to_string();
+    let (keys, key_id) = url_path.strip_prefix('/').ok_or(())?.split_once('/').unwrap();
+    if keys != "keys" {
+        return Err(());
+    }
+    let key_id = key_id.to_string();
+    let mut flags = None;
+    let mut algorithm = None;
+    for (k, v) in kmip_key_url.query_pairs() {
+        match &*k {
+            "flags" => flags = Some(v.parse::<u16>().map_err(|_| ())?),
+            "algorithm" => algorithm = Some(SecurityAlgorithm::from_str(&v).map_err(|_| ())?),
+            _ => { /* ignore unknown URL query parameter */ }
+        }
+    }
+    let flags = flags.ok_or(())?;
+    let algorithm = algorithm.ok_or(())?;
+    Ok((key_id, algorithm, flags, host_and_port))
+}
+
+// Like domain::crypto::sign::KeyPair but omits Ring which is currently not
+// thread safe, though it is expected that can be resolved and thus this type
+// would no longer be needed.
+#[derive(Debug)]
+enum ThreadSafeKeyPair {
+    OpenSSL(domain::crypto::openssl::sign::KeyPair),
+
+    Kmip(domain::crypto::kmip::sign::KeyPair),
+}
+
+impl SignRaw for ThreadSafeKeyPair {
+    fn algorithm(&self) -> SecurityAlgorithm {
+        match self {
+            ThreadSafeKeyPair::OpenSSL(key_pair) => key_pair.algorithm(),
+            ThreadSafeKeyPair::Kmip(key_pair) => key_pair.algorithm(),
+        }
+    }
+
+    fn dnskey(&self) -> Dnskey<Vec<u8>> {
+        match self {
+            ThreadSafeKeyPair::OpenSSL(key_pair) => key_pair.dnskey(),
+            ThreadSafeKeyPair::Kmip(key_pair) => key_pair.dnskey(),
+        }
+    }
+
+    fn sign_raw(&self, data: &[u8]) -> Result<domain::crypto::sign::Signature, domain::crypto::sign::SignError> {
+        match self {
+            ThreadSafeKeyPair::OpenSSL(key_pair) => key_pair.sign_raw(data),
+            ThreadSafeKeyPair::Kmip(key_pair) => key_pair.sign_raw(data),
+        }
     }
 }
