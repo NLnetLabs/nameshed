@@ -127,6 +127,7 @@ use crate::zonemaintenance::types::{
     CompatibilityMode, NotifyConfig, TransportStrategy, XfrConfig, XfrStrategy, ZoneConfig,
     ZoneMaintainerKeyStore,
 };
+use ::kmip::client::ClientCertificate;
 
 
 #[serde_as]
@@ -204,7 +205,9 @@ impl ZoneSignerUnit {
         // Create KMIP server connection pools.
         // Warning: This will block until the pools have established their
         // minimum number of connections or timed out.
-        let kmip_servers = self.kmip_server_conn_settings.drain(..).filter_map(|conn_settings| {
+        let expected_kmip_server_conn_pools = self.kmip_server_conn_settings.len();
+
+        let kmip_servers: HashMap<(String, u16), KmipConnPool> = self.kmip_server_conn_settings.drain(..).filter_map(|conn_settings| {
             let host_and_port = (conn_settings.server_addr.clone(), conn_settings.server_port);
 
             match ConnectionManager::create_connection_pool(
@@ -214,15 +217,41 @@ impl ZoneSignerUnit {
                 Duration::from_secs(60),
             ) {
                 Ok(kmip_conn_pool) => {
-                    Some((host_and_port, kmip_conn_pool))
+                    match kmip_conn_pool.get() {
+                        Ok(conn) => {
+                            match conn.query() {
+                                Ok(q) => {
+                                    // TODO: Check if the server meets our
+                                    // needs. We can't assume domain will do
+                                    // that for us because domain doesn't know
+                                    // which functions we need.
+                                    info!("Established connection pool for KMIP server '{}:{}' reporting as '{}'", conn_settings.server_addr, conn_settings.server_port, q.vendor_identification.unwrap_or_default());
+                                    Some((host_and_port, kmip_conn_pool))
+                                }
+                                Err(err) => {
+                                    error!("Failed to create usable connection pool for KMIP server '{}:{}': {err}", conn_settings.server_addr, conn_settings.server_port);
+                                    None
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            error!("Failed to create usable connection pool for KMIP server '{}:{}': {err}", conn_settings.server_addr, conn_settings.server_port);
+                            None
+                        }
+                    }
                 }
 
                 Err(()) => {
-                    error!("Failed to create connection pool for KMIP server '{}:{}', disabling use of this KMIP server", conn_settings.server_addr, conn_settings.server_port);
+                    error!("Failed to create connection pool for KMIP server '{}:{}'", conn_settings.server_addr, conn_settings.server_port);
                     None
                 }
             }
         }).collect();
+
+        if kmip_servers.len() != expected_kmip_server_conn_pools {
+            // TODO: This is a bit severe. There should be a cleaner way to abort.
+            std::process::exit(1);
+        }
 
         // Wait for other components to be, and signal to other components
         // that we are, ready to start. All units and targets start together,
@@ -1591,21 +1620,63 @@ impl Default for KmipServerConnectionSettings {
 
 impl From<KmipServerConnectionSettings> for ConnectionSettings {
     fn from(cfg: KmipServerConnectionSettings) -> Self {
+        let client_cert = load_client_cert(&cfg);
+        let server_cert = cfg.server_cert_path.map(|p| load_binary_file(&p));
+        let ca_cert = cfg.ca_cert_path.map(|p| load_binary_file(&p));
         ConnectionSettings {
             host: cfg.server_addr,
             port: cfg.server_port,
             username: cfg.server_username,
             password: cfg.server_password,
             insecure: cfg.server_insecure,
-            client_cert: None,        // TODO
-            server_cert: None,        // TODO
+            client_cert,
+            server_cert: None,        // TOOD
             ca_cert: None,            // TODO
-            connect_timeout: None,    // TODO
+            connect_timeout: Some(Duration::from_secs(5)), // TODO
             read_timeout: None,       // TODO
             write_timeout: None,      // TODO
             max_response_bytes: None, // TODO
         }
     }
+}
+
+fn load_client_cert(
+    opt: &KmipServerConnectionSettings,
+) -> Option<ClientCertificate> {
+    match (
+        &opt.client_cert_path,
+        &opt.client_key_path,
+        &opt.client_pkcs12_path,
+    ) {
+        (None, None, None) => None,
+        (None, None, Some(path)) => Some(ClientCertificate::CombinedPkcs12 {
+            cert_bytes: load_binary_file(path),
+        }),
+        (Some(path), None, None) => Some(ClientCertificate::SeparatePem {
+            cert_bytes: load_binary_file(path),
+            key_bytes: None,
+        }),
+        (None, Some(_), None) => {
+            panic!("Client certificate key path requires a client certificate path");
+            
+        }
+        (_, Some(_), Some(_)) | (Some(_), _, Some(_)) => {
+            panic!("Use either but not both of: client certificate and key PEM file paths, or a PCKS#12 certficate file path");
+        }
+        (Some(cert_path), Some(key_path), None) => Some(ClientCertificate::SeparatePem {
+            cert_bytes: load_binary_file(cert_path),
+            key_bytes: Some(load_binary_file(key_path)),
+        }),
+    }
+}
+
+pub fn load_binary_file(path: &Path) -> Vec<u8> {
+    use std::{fs::File, io::Read};
+
+    let mut bytes = Vec::new();
+    File::open(path).unwrap().read_to_end(&mut bytes).unwrap();
+
+    bytes
 }
 
 fn parse_kmip_key_url(

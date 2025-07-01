@@ -436,7 +436,7 @@ dependencies = [
 [[package]]
 name = "domain"
 version = "0.11.1-dev"
-source = "git+https://github.com/NLnetLabs/domain?branch=patches-for-nameshed-prototype#d0e8548ce75b85a8a6a0855346e60bd1967a8c13"
+source = "git+https://github.com/NLnetLabs/domain?branch=patches-for-nameshed-prototype#012f243506658d95334b30335e451276cf077c4a"
 dependencies = [
  "arc-swap",
  "bcder",
@@ -471,7 +471,7 @@ dependencies = [
 [[package]]
 name = "domain-macros"
 version = "0.11.1-dev"
-source = "git+https://github.com/NLnetLabs/domain?branch=patches-for-nameshed-prototype#d0e8548ce75b85a8a6a0855346e60bd1967a8c13"
+source = "git+https://github.com/NLnetLabs/domain?branch=patches-for-nameshed-prototype#012f243506658d95334b30335e451276cf077c4a"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1337,6 +1337,7 @@ dependencies = [
  "hashbrown 0.14.5",
  "hyper",
  "indoc",
+ "kmip-protocol",
  "layout-rs",
  "log",
  "log-reroute",
@@ -2777,7 +2778,7 @@ version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf221c93e13a30d793f7645a0e7762c55d169dbb0a49671918a2319d289b10bb"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]

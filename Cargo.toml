@@ -23,6 +23,7 @@ domain         = { git = "https://github.com/NLnetLabs/domain", branch = "patche
 fern           = "0.6.0"
 futures        = "0.3.17"
 futures-util   = "0.3"
+kmip           = { git = "https://github.com/NLnetLabs/kmip-protocol", branch = "next", package = "kmip-protocol", version = "0.5.0", features = ["tls-with-openssl-vendored"] } # TODO: use the async feature instead
 log            = "0.4"
 log-reroute    = "0.1.5"
 octseq         = { version = "0.5.2", default-features = false }
