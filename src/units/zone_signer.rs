@@ -572,16 +572,16 @@ impl ZoneSigner {
                     ("file", "file") => {
                         let priv_key_path = priv_url.path();
                         debug!("Attempting to load private key '{}'.", priv_key_path);
-        
+
                         let private_key = ZoneSignerUnit::load_private_key(Path::new(priv_key_path))
                             .map_err(|_| format!("Failed to load private key from '{}'", priv_key_path))?;
-        
+
                         let pub_key_path = pub_url.path();
                         debug!("Attempting to load public key '{}'.", pub_key_path);
-        
+
                         let public_key = ZoneSignerUnit::load_public_key(Path::new(pub_key_path))
                             .map_err(|_| format!("Failed to load public key from '{}'", pub_key_path))?;
-        
+
                         let key_pair = KeyPair::from_bytes(&private_key, &public_key.data())
                             .map_err(|err| format!("Failed to create key pair for zone {zone_name} using key files {pub_key_path} and {priv_key_path}: {err}"))?;
                         // We use OpenSSL rather than Ring as the Ring KeyPair
@@ -619,7 +619,7 @@ impl ZoneSigner {
                             &pub_key_id,
                             kmip_conn_pool.clone(),
                         ));
-                    
+
                         let signing_key = SigningKey::new(zone_name.clone(), priv_flags, key_pair);
                         signing_keys.push(signing_key);
                     }
