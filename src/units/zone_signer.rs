@@ -2,7 +2,6 @@ use core::fmt;
 use core::future::pending;
 use core::ops::{Add, ControlFlow};
 
-use std::io::Read;
 use std::any::Any;
 use std::cmp::Ordering;
 use std::collections::hash_map::Entry::{Occupied, Vacant};
@@ -10,6 +9,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
 use std::fmt::Display;
 use std::fs::File;
+use std::io::Read;
 use std::net::{IpAddr, SocketAddr};
 use std::ops::Sub;
 use std::path::{Path, PathBuf};
@@ -56,11 +56,14 @@ use domain::rdata::dnssec::Timestamp;
 use domain::rdata::nsec3::Nsec3Salt;
 use domain::rdata::{Dnskey, Nsec3param, Rrsig, Soa, ZoneRecordData};
 // Use openssl::KeyPair because ring::KeyPair is not Send.
+use domain::crypto::kmip::{self, ConnectionSettings};
+use domain::crypto::kmip_pool::{ConnectionManager, KmipConnPool};
 use domain::crypto::openssl::sign::KeyPair;
 use domain::dnssec::sign::denial::config::DenialConfig;
 use domain::dnssec::sign::denial::nsec::GenerateNsecConfig;
 use domain::dnssec::sign::denial::nsec3::{GenerateNsec3Config, Nsec3ParamTtlMode};
 use domain::dnssec::sign::error::SigningError;
+use domain::dnssec::sign::keys::keyset::{KeySet, KeyType};
 use domain::tsig::KeyStore;
 use domain::tsig::{Algorithm, Key, KeyName};
 use domain::utils::base64;
@@ -71,9 +74,6 @@ use domain::zonetree::{
     InMemoryZoneDiff, ReadableZone, StoredName, StoredRecord, WritableZone, WritableZoneNode, Zone,
     ZoneBuilder, ZoneStore, ZoneTree,
 };
-use domain::dnssec::sign::keys::keyset::{KeySet, KeyType};
-use domain::crypto::kmip::{self, ConnectionSettings};
-use domain::crypto::kmip_pool::{ConnectionManager, KmipConnPool};
 use futures::future::{select, Either};
 use futures::{pin_mut, Future, SinkExt};
 use indoc::formatdoc;
@@ -88,10 +88,10 @@ use serde_with::{serde_as, DeserializeFromStr, DisplayFromStr};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::sync::{Mutex, RwLock, Semaphore};
+use tokio::task::spawn_blocking;
 use tokio::time::{sleep, Instant};
 #[cfg(feature = "tls")]
 use tokio_rustls::rustls::ServerConfig;
-use tokio::task::spawn_blocking;
 use url::Url;
 
 use crate::common::frim::FrimMap;
@@ -128,7 +128,6 @@ use crate::zonemaintenance::types::{
     ZoneMaintainerKeyStore,
 };
 use ::kmip::client::ClientCertificate;
-
 
 #[serde_as]
 #[derive(Clone, Debug, Deserialize)]
@@ -279,7 +278,7 @@ impl ZoneSignerUnit {
             self.max_concurrent_rrsig_generation_tasks,
             self.treat_single_keys_as_csks,
             self.keys_path,
-            kmip_servers
+            kmip_servers,
         )
         .run()
         .await?;
@@ -1630,19 +1629,17 @@ impl From<KmipServerConnectionSettings> for ConnectionSettings {
             password: cfg.server_password,
             insecure: cfg.server_insecure,
             client_cert,
-            server_cert: None,        // TOOD
-            ca_cert: None,            // TODO
+            server_cert: None,                             // TOOD
+            ca_cert: None,                                 // TODO
             connect_timeout: Some(Duration::from_secs(5)), // TODO
-            read_timeout: None,       // TODO
-            write_timeout: None,      // TODO
-            max_response_bytes: None, // TODO
+            read_timeout: None,                            // TODO
+            write_timeout: None,                           // TODO
+            max_response_bytes: None,                      // TODO
         }
     }
 }
 
-fn load_client_cert(
-    opt: &KmipServerConnectionSettings,
-) -> Option<ClientCertificate> {
+fn load_client_cert(opt: &KmipServerConnectionSettings) -> Option<ClientCertificate> {
     match (
         &opt.client_cert_path,
         &opt.client_key_path,
@@ -1658,7 +1655,6 @@ fn load_client_cert(
         }),
         (None, Some(_), None) => {
             panic!("Client certificate key path requires a client certificate path");
-            
         }
         (_, Some(_), Some(_)) | (Some(_), _, Some(_)) => {
             panic!("Use either but not both of: client certificate and key PEM file paths, or a PCKS#12 certficate file path");
@@ -1684,7 +1680,7 @@ fn parse_kmip_key_url(
 ) -> Result<(String, SecurityAlgorithm, u16, (String, u16)), ()> {
     let host_and_port = (
         kmip_key_url.host_str().ok_or(())?.to_string(),
-        kmip_key_url.port().unwrap_or(5696)
+        kmip_key_url.port().unwrap_or(5696),
     );
 
     // TODO: We ignore the username and password as we have all of the
@@ -1694,7 +1690,11 @@ fn parse_kmip_key_url(
     // this duplication somehow?
 
     let url_path = kmip_key_url.path().to_string();
-    let (keys, key_id) = url_path.strip_prefix('/').ok_or(())?.split_once('/').unwrap();
+    let (keys, key_id) = url_path
+        .strip_prefix('/')
+        .ok_or(())?
+        .split_once('/')
+        .unwrap();
     if keys != "keys" {
         return Err(());
     }
@@ -1738,7 +1738,10 @@ impl SignRaw for ThreadSafeKeyPair {
         }
     }
 
-    fn sign_raw(&self, data: &[u8]) -> Result<domain::crypto::sign::Signature, domain::crypto::sign::SignError> {
+    fn sign_raw(
+        &self,
+        data: &[u8],
+    ) -> Result<domain::crypto::sign::Signature, domain::crypto::sign::SignError> {
         match self {
             ThreadSafeKeyPair::OpenSSL(key_pair) => key_pair.sign_raw(data),
             ThreadSafeKeyPair::Kmip(key_pair) => key_pair.sign_raw(data),
