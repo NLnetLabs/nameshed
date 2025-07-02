@@ -30,8 +30,17 @@ use domain::base::wire::Composer;
 use domain::base::{
     CanonicalOrd, Name, ParsedName, ParsedRecord, Record, Rtype, Serial, ToName, Ttl,
 };
-use domain::crypto::sign::{generate, FromBytesError, GenerateParams, SecretKeyBytes, SignRaw};
+use domain::crypto::kmip::{self, ClientCertificate, ConnectionSettings};
+use domain::crypto::kmip_pool::{ConnectionManager, KmipConnPool};
+use domain::crypto::sign::{
+    generate, FromBytesError, GenerateParams, KeyPair, SecretKeyBytes, SignRaw,
+};
 use domain::dnssec::common::parse_from_bind;
+use domain::dnssec::sign::denial::config::DenialConfig;
+use domain::dnssec::sign::denial::nsec::GenerateNsecConfig;
+use domain::dnssec::sign::denial::nsec3::{GenerateNsec3Config, Nsec3ParamTtlMode};
+use domain::dnssec::sign::error::SigningError;
+use domain::dnssec::sign::keys::keyset::{KeySet, KeyType};
 use domain::dnssec::sign::keys::SigningKey;
 use domain::dnssec::sign::records::{DefaultSorter, RecordsIter, Rrset, Sorter};
 use domain::dnssec::sign::signatures::rrsigs::{
@@ -55,15 +64,6 @@ use domain::net::server::ConnectionConfig;
 use domain::rdata::dnssec::Timestamp;
 use domain::rdata::nsec3::Nsec3Salt;
 use domain::rdata::{Dnskey, Nsec3param, Rrsig, Soa, ZoneRecordData};
-// Use openssl::KeyPair because ring::KeyPair is not Send.
-use domain::crypto::kmip::{self, ConnectionSettings};
-use domain::crypto::kmip_pool::{ConnectionManager, KmipConnPool};
-use domain::crypto::openssl::sign::KeyPair;
-use domain::dnssec::sign::denial::config::DenialConfig;
-use domain::dnssec::sign::denial::nsec::GenerateNsecConfig;
-use domain::dnssec::sign::denial::nsec3::{GenerateNsec3Config, Nsec3ParamTtlMode};
-use domain::dnssec::sign::error::SigningError;
-use domain::dnssec::sign::keys::keyset::{KeySet, KeyType};
 use domain::tsig::KeyStore;
 use domain::tsig::{Algorithm, Key, KeyName};
 use domain::utils::base64;
@@ -127,7 +127,6 @@ use crate::zonemaintenance::types::{
     CompatibilityMode, NotifyConfig, TransportStrategy, XfrConfig, XfrStrategy, ZoneConfig,
     ZoneMaintainerKeyStore,
 };
-use ::kmip::client::ClientCertificate;
 
 #[serde_as]
 #[derive(Clone, Debug, Deserialize)]
@@ -582,12 +581,8 @@ impl ZoneSigner {
                         let public_key = ZoneSignerUnit::load_public_key(Path::new(pub_key_path))
                             .map_err(|_| format!("Failed to load public key from '{}'", pub_key_path))?;
 
-                        let key_pair = KeyPair::from_bytes(&private_key, &public_key.data())
+                        let key_pair = domain::crypto::sign::KeyPair::from_bytes(&private_key, &public_key.data())
                             .map_err(|err| format!("Failed to create key pair for zone {zone_name} using key files {pub_key_path} and {priv_key_path}: {err}"))?;
-                        // We use OpenSSL rather than Ring as the Ring KeyPair
-                        // cannot be shared across threads which breaks the
-                        // parallel usage below via Rayon.
-                        let key_pair = ThreadSafeKeyPair::OpenSSL(key_pair);
                         let signing_key =
                             SigningKey::new(zone_name.clone(), public_key.data().flags(), key_pair);
                         signing_keys.push(signing_key);
@@ -612,7 +607,7 @@ impl ZoneSigner {
                             .get(&priv_host_and_port)
                             .ok_or(format!("No connection pool available for KMIP server '{}:{}'", priv_host_and_port.0, priv_host_and_port.1))?;
 
-                        let key_pair = ThreadSafeKeyPair::Kmip(kmip::sign::KeyPair::new(
+                        let key_pair = KeyPair::Kmip(kmip::sign::KeyPair::new(
                             priv_algorithm,
                             priv_flags,
                             &priv_key_id,
@@ -905,7 +900,7 @@ fn sign_rr_chunk(
     thread_idx: usize,
     rrsig_cfg: &GenerateRrsigConfig,
     tx: Sender<(Vec<Record<StoredName, Rrsig<Bytes, StoredName>>>, Duration)>,
-    keys: Arc<Vec<SigningKey<Bytes, ThreadSafeKeyPair>>>,
+    keys: Arc<Vec<SigningKey<Bytes, KeyPair>>>,
     zone_name: StoredName,
     treat_single_keys_as_csks: bool,
 ) {
@@ -1711,40 +1706,4 @@ fn parse_kmip_key_url(
     let flags = flags.ok_or(())?;
     let algorithm = algorithm.ok_or(())?;
     Ok((key_id, algorithm, flags, host_and_port))
-}
-
-// Like domain::crypto::sign::KeyPair but omits Ring which is currently not
-// thread safe, though it is expected that can be resolved and thus this type
-// would no longer be needed.
-#[derive(Debug)]
-enum ThreadSafeKeyPair {
-    OpenSSL(domain::crypto::openssl::sign::KeyPair),
-
-    Kmip(domain::crypto::kmip::sign::KeyPair),
-}
-
-impl SignRaw for ThreadSafeKeyPair {
-    fn algorithm(&self) -> SecurityAlgorithm {
-        match self {
-            ThreadSafeKeyPair::OpenSSL(key_pair) => key_pair.algorithm(),
-            ThreadSafeKeyPair::Kmip(key_pair) => key_pair.algorithm(),
-        }
-    }
-
-    fn dnskey(&self) -> Dnskey<Vec<u8>> {
-        match self {
-            ThreadSafeKeyPair::OpenSSL(key_pair) => key_pair.dnskey(),
-            ThreadSafeKeyPair::Kmip(key_pair) => key_pair.dnskey(),
-        }
-    }
-
-    fn sign_raw(
-        &self,
-        data: &[u8],
-    ) -> Result<domain::crypto::sign::Signature, domain::crypto::sign::SignError> {
-        match self {
-            ThreadSafeKeyPair::OpenSSL(key_pair) => key_pair.sign_raw(data),
-            ThreadSafeKeyPair::Kmip(key_pair) => key_pair.sign_raw(data),
-        }
-    }
 }
