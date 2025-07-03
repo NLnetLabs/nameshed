@@ -436,7 +436,7 @@ dependencies = [
 [[package]]
 name = "domain"
 version = "0.11.1-dev"
-source = "git+https://github.com/NLnetLabs/domain?branch=patches-for-nameshed-prototype#e3d600c4c0f8806a85d5b79ba26879891c9b53ea"
+source = "git+https://github.com/NLnetLabs/domain?branch=patches-for-nameshed-prototype#53fd6ca803907023c9f15af6a34a6caa71ba773d"
 dependencies = [
  "arc-swap",
  "bcder",
@@ -456,7 +456,6 @@ dependencies = [
  "r2d2",
  "rand 0.8.5",
  "ring 0.17.14",
- "rpki",
  "rustversion",
  "secrecy",
  "serde",
@@ -471,7 +470,7 @@ dependencies = [
 [[package]]
 name = "domain-macros"
 version = "0.11.1-dev"
-source = "git+https://github.com/NLnetLabs/domain?branch=patches-for-nameshed-prototype#e3d600c4c0f8806a85d5b79ba26879891c9b53ea"
+source = "git+https://github.com/NLnetLabs/domain?branch=patches-for-nameshed-prototype#53fd6ca803907023c9f15af6a34a6caa71ba773d"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1900,22 +1899,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rpki"
-version = "0.18.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "98a043d99463db58c05283f5ae5d9ced858cc3483011747264e21f50b9201cdd"
-dependencies = [
- "base64 0.22.1",
- "bcder",
- "bytes",
- "chrono",
- "log",
- "ring 0.17.14",
- "untrusted 0.9.0",
- "uuid",
-]
-
-[[package]]
 name = "rustc-demangle"
 version = "0.1.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2790,7 +2773,7 @@ version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf221c93e13a30d793f7645a0e7762c55d169dbb0a49671918a2319d289b10bb"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
