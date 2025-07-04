@@ -13,7 +13,7 @@ use tokio::{
 fn run_with_cmdline_args() -> Result<(), Terminate> {
     LogConfig::init_logging()?;
 
-    let app = Command::new("rotonda")
+    let app = Command::new("nameshed")
         .version(crate_version!())
         .author(crate_authors!())
         .next_line_help(true);
