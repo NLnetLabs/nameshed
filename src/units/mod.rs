@@ -19,49 +19,43 @@
 
 //------------ Sub-modules ---------------------------------------------------
 
-mod key_manager;
-mod zone_loader;
-mod zone_server;
-mod zone_signer;
+pub mod key_manager;
+pub mod zone_loader;
+pub mod zone_server;
+pub mod zone_signer;
 
 //------------ Unit ----------------------------------------------------------
 
-use crate::comms::Gate;
-use crate::manager::{Component, WaitPoint};
+use crate::manager::Component;
 use serde::Deserialize;
 
 /// The fundamental entity for data processing.
 #[allow(clippy::enum_variant_names)]
-#[derive(Clone, Debug, Deserialize)]
-#[serde(tag = "type")]
+#[derive(Debug)]
 pub enum Unit {
-    #[serde(rename = "key-manager")]
+    ZoneLoader(zone_loader::ZoneLoader),
+
     KeyManager(key_manager::KeyManagerUnit),
 
-    #[serde(rename = "zone-loader")]
-    ZoneLoader(zone_loader::ZoneLoaderUnit),
-
-    #[serde(rename = "zone-server")]
     ZoneServer(zone_server::ZoneServerUnit),
 
-    #[serde(rename = "zone-signer")]
     ZoneSigner(zone_signer::ZoneSignerUnit),
 }
 
 impl Unit {
-    pub async fn run(self, component: Component, gate: Gate, waitpoint: WaitPoint) {
+    pub async fn run(self, component: Component) {
         let _ = match self {
-            Unit::KeyManager(unit) => unit.run(component, gate, waitpoint).await,
-            Unit::ZoneLoader(unit) => unit.run(component, gate, waitpoint).await,
-            Unit::ZoneServer(unit) => unit.run(component, gate, waitpoint).await,
-            Unit::ZoneSigner(unit) => unit.run(component, gate, waitpoint).await,
+            Unit::ZoneLoader(unit) => unit.run(component).await,
+            Unit::KeyManager(unit) => unit.run(component).await,
+            Unit::ZoneServer(unit) => unit.run(component).await,
+            Unit::ZoneSigner(unit) => unit.run(component).await,
         };
     }
 
     pub fn type_name(&self) -> &'static str {
         match self {
-            Unit::KeyManager(_) => "key-manager",
             Unit::ZoneLoader(_) => "zone-loader",
+            Unit::KeyManager(_) => "key-manager",
             Unit::ZoneServer(_) => "zone-server",
             Unit::ZoneSigner(_) => "zone-signer",
         }
