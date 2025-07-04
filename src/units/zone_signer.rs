@@ -94,31 +94,21 @@ use tokio::time::{sleep, Instant};
 use tokio_rustls::rustls::ServerConfig;
 use url::Url;
 
-use crate::common::frim::FrimMap;
 use crate::common::light_weight_zone::LightWeightZone;
 use crate::common::net::{
     ListenAddr, StandardTcpListenerFactory, StandardTcpStream, TcpListener, TcpListenerFactory,
     TcpStreamWrapper,
 };
-use crate::common::status_reporter::{
-    sr_log, AnyStatusReporter, Chainable, Named, UnitStatusReporter,
-};
 use crate::common::tsig::{parse_key_strings, TsigKeyStore};
-use crate::common::unit::UnitActivity;
 use crate::common::xfr::parse_xfr_acl;
 use crate::comms::ApplicationCommand;
-use crate::comms::{
-    AnyDirectUpdate, DirectLink, DirectUpdate, Gate, GateMetrics, GateStatus, GraphStatus,
-    Terminated,
-};
+use crate::comms::{GraphStatus, Terminated};
 use crate::http::PercentDecodedPath;
 use crate::http::ProcessRequest;
 use crate::log::ExitError;
-use crate::manager::{Component, WaitPoint};
+use crate::manager::Component;
 use crate::metrics::{self, util::append_per_router_metric, Metric, MetricType, MetricUnit};
 use crate::payload::Update;
-use crate::tokio::TokioTaskMetrics;
-use crate::tracing::Tracer;
 use crate::units::Unit;
 use crate::zonemaintenance::maintainer::{Config, ZoneLookup};
 use crate::zonemaintenance::maintainer::{DefaultConnFactory, TypedZone, ZoneMaintainer};
@@ -128,38 +118,32 @@ use crate::zonemaintenance::types::{
     ZoneMaintainerKeyStore,
 };
 
-#[serde_as]
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Debug)]
 pub struct ZoneSignerUnit {
     /// The relative path at which we should listen for HTTP query API requests
-    #[serde(default = "ZoneSignerUnit::default_http_api_path")]
-    http_api_path: Arc<String>,
+    pub http_api_path: Arc<String>,
 
-    keys_path: PathBuf,
+    pub keys_path: PathBuf,
 
-    #[serde(default = "ZoneSignerUnit::default_rrsig_inception_offset_secs")]
-    rrsig_inception_offset_secs: u32,
+    pub rrsig_inception_offset_secs: u32,
 
-    #[serde(default = "ZoneSignerUnit::default_rrsig_expiration_offset_secs")]
-    rrsig_expiration_offset_secs: u32,
+    pub rrsig_expiration_offset_secs: u32,
 
-    #[serde(default)]
-    denial_config: TomlDenialConfig,
+    pub denial_config: TomlDenialConfig,
 
-    #[serde(default)]
-    treat_single_keys_as_csks: bool,
+    pub treat_single_keys_as_csks: bool,
 
-    #[serde(default)]
-    use_lightweight_zone_tree: bool,
+    pub use_lightweight_zone_tree: bool,
 
-    #[serde(default = "ZoneSignerUnit::default_max_concurrent_operations")]
-    max_concurrent_operations: usize,
+    pub max_concurrent_operations: usize,
 
-    #[serde(default = "ZoneSignerUnit::default_max_concurrent_rrsig_generation_tasks")]
-    max_concurrent_rrsig_generation_tasks: usize,
+    pub max_concurrent_rrsig_generation_tasks: usize,
 
-    #[serde(rename = "kmip_servers", default)]
-    kmip_server_conn_settings: Vec<KmipServerConnectionSettings>,
+    pub kmip_server_conn_settings: Vec<KmipServerConnectionSettings>,
+
+    pub update_tx: mpsc::Sender<Update>,
+
+    pub cmd_rx: mpsc::Receiver<ApplicationCommand>,
 }
 
 impl ZoneSignerUnit {
@@ -185,27 +169,15 @@ impl ZoneSignerUnit {
 }
 
 impl ZoneSignerUnit {
-    pub async fn run(
-        mut self,
-        mut component: Component,
-        gate: Gate,
-        mut waitpoint: WaitPoint,
-    ) -> Result<(), Terminated> {
-        let unit_name = component.name().clone();
-
-        // Setup our metrics
-        let metrics = Arc::new(ZoneSignerMetrics::new(&gate));
-        component.register_metrics(metrics.clone());
-
-        // Setup our status reporting
-        let status_reporter = Arc::new(ZoneSignerStatusReporter::new(&unit_name, metrics.clone()));
+    pub async fn run(self, component: Component) -> Result<(), Terminated> {
+        // TODO: metrics and status reporting
 
         // Create KMIP server connection pools.
         // Warning: This will block until the pools have established their
         // minimum number of connections or timed out.
         let expected_kmip_server_conn_pools = self.kmip_server_conn_settings.len();
 
-        let kmip_servers: HashMap<(String, u16), KmipConnPool> = self.kmip_server_conn_settings.drain(..).filter_map(|conn_settings| {
+        let kmip_servers: HashMap<(String, u16), KmipConnPool> = self.kmip_server_conn_settings.into_iter().filter_map(|conn_settings| {
             let host_and_port = (conn_settings.server_addr.clone(), conn_settings.server_port);
 
             match ConnectionManager::create_connection_pool(
@@ -251,24 +223,9 @@ impl ZoneSignerUnit {
             std::process::exit(1);
         }
 
-        // Wait for other components to be, and signal to other components
-        // that we are, ready to start. All units and targets start together,
-        // otherwise data passed from one component to another may be lost if
-        // the receiving component is not yet ready to accept it.
-        gate.process_until(waitpoint.ready()).await?;
-
-        // Signal again once we are out of the process_until() so that anyone
-        // waiting to send important gate status updates won't send them while
-        // we are in process_until() which will just eat them without handling
-        // them.
-        waitpoint.running().await;
-
         ZoneSigner::new(
             component,
             self.http_api_path,
-            gate,
-            metrics,
-            status_reporter,
             self.rrsig_inception_offset_secs,
             self.rrsig_expiration_offset_secs,
             self.denial_config,
@@ -276,10 +233,11 @@ impl ZoneSignerUnit {
             self.max_concurrent_operations,
             self.max_concurrent_rrsig_generation_tasks,
             self.treat_single_keys_as_csks,
+            self.update_tx,
             self.keys_path,
             kmip_servers,
         )
-        .run()
+        .run(self.cmd_rx)
         .await?;
 
         Ok(())
@@ -335,9 +293,6 @@ struct ZoneSigner {
     component: Component,
     #[allow(dead_code)]
     http_api_path: Arc<String>,
-    gate: Gate,
-    metrics: Arc<ZoneSignerMetrics>,
-    status_reporter: Arc<ZoneSignerStatusReporter>,
     inception_offset_secs: u32,
     expiration_offset: u32,
     denial_config: TomlDenialConfig,
@@ -346,6 +301,7 @@ struct ZoneSigner {
     max_concurrent_rrsig_generation_tasks: usize,
     signer_status: Arc<RwLock<ZoneSignerStatus>>,
     treat_single_keys_as_csks: bool,
+    update_tx: mpsc::Sender<Update>,
     keys_path: PathBuf,
     kmip_servers: HashMap<(String, u16), KmipConnPool>,
 }
@@ -355,9 +311,6 @@ impl ZoneSigner {
     fn new(
         component: Component,
         http_api_path: Arc<String>,
-        gate: Gate,
-        metrics: Arc<ZoneSignerMetrics>,
-        status_reporter: Arc<ZoneSignerStatusReporter>,
         inception_offset_secs: u32,
         expiration_offset: u32,
         denial_config: TomlDenialConfig,
@@ -365,15 +318,13 @@ impl ZoneSigner {
         max_concurrent_operations: usize,
         max_concurrent_rrsig_generation_tasks: usize,
         treat_single_keys_as_csks: bool,
+        update_tx: mpsc::Sender<Update>,
         keys_path: PathBuf,
         kmip_servers: HashMap<(String, u16), KmipConnPool>,
     ) -> Self {
         Self {
             component,
             http_api_path,
-            gate,
-            metrics,
-            status_reporter,
             inception_offset_secs,
             expiration_offset,
             denial_config,
@@ -382,14 +333,16 @@ impl ZoneSigner {
             max_concurrent_rrsig_generation_tasks,
             signer_status: Default::default(),
             treat_single_keys_as_csks,
+            update_tx,
             keys_path,
             kmip_servers,
         }
     }
 
-    async fn run(mut self) -> Result<(), crate::comms::Terminated> {
-        let component_name = self.component.name().clone();
-
+    async fn run(
+        mut self,
+        mut cmd_rx: mpsc::Receiver<ApplicationCommand>,
+    ) -> Result<(), crate::comms::Terminated> {
         // Setup REST API endpoint
         let http_processor = Arc::new(SigningHistoryApi::new(
             self.http_api_path.clone(),
@@ -398,82 +351,38 @@ impl ZoneSigner {
         self.component
             .register_http_resource(http_processor.clone(), &self.http_api_path);
 
-        loop {
-            match self.gate.process().await {
-                Err(Terminated) => {
-                    self.status_reporter.terminated();
+        while let Some(cmd) = cmd_rx.recv().await {
+            info!("[ZS]: Received command: {cmd:?}");
+            match &cmd {
+                ApplicationCommand::Terminate => {
+                    // self.status_reporter.terminated();
                     return Ok(());
                 }
 
-                Ok(status) => {
-                    self.status_reporter.gate_status_announced(&status);
-                    match status {
-                        GateStatus::Reconfiguring {
-                            new_config:
-                                Unit::ZoneSigner(ZoneSignerUnit {
-                                    http_api_path,
-                                    keys_path,
-                                    treat_single_keys_as_csks: treat_single_key_as_csk,
-                                    rrsig_inception_offset_secs: inception_offset_secs,
-                                    rrsig_expiration_offset_secs: expiration_offset_secs,
-                                    denial_config,
-                                    use_lightweight_zone_tree,
-                                    max_concurrent_operations,
-                                    max_concurrent_rrsig_generation_tasks,
-                                    kmip_server_conn_settings,
-                                }),
-                        } => {
-                            // Runtime reconfiguration of this unit has been
-                            // requested.
-
-                            // TODO
-
-                            // Report that we have finished handling the reconfigure command
-                            self.status_reporter.reconfigured();
-                        }
-
-                        GateStatus::ReportLinks { report } => {
-                            report.declare_source();
-                            report.set_graph_status(self.metrics.clone());
-                        }
-
-                        GateStatus::ApplicationCommand { cmd } => {
-                            info!("[{component_name}]: Received command: {cmd:?}");
-                            match &cmd {
-                                ApplicationCommand::SignZone {
-                                    zone_name,
-                                    zone_serial,
-                                } => {
-                                    if let Err(err) =
-                                        self.sign_zone(component_name.clone(), zone_name).await
-                                    {
-                                        error!("[{component_name}]: Signing of zone '{zone_name}' failed: {err}");
-                                    }
-                                }
-
-                                _ => { /* Not for us */ }
-                            }
-                        }
-
-                        _ => { /* Nothing to do */ }
+                ApplicationCommand::SignZone {
+                    zone_name,
+                    zone_serial,
+                } => {
+                    if let Err(err) = self.sign_zone(zone_name).await {
+                        error!("[ZS]: Signing of zone '{zone_name}' failed: {err}");
                     }
                 }
+
+                _ => { /* Not for us */ }
             }
         }
+
+        Ok(())
     }
 
-    async fn sign_zone(
-        &self,
-        component_name: Arc<str>,
-        zone_name: &StoredName,
-    ) -> Result<(), String> {
+    async fn sign_zone(&self, zone_name: &StoredName) -> Result<(), String> {
         // TODO: Implement serial bumping (per policy, e.g. ODS 'keep', 'counter', etc.?)
 
-        info!("[{component_name}]: Waiting to start signing operation for zone '{zone_name}'.");
+        info!("[ZS]: Waiting to start signing operation for zone '{zone_name}'.");
         self.signer_status.write().await.enqueue(zone_name.clone());
 
         let permit = self.concurrent_operation_permits.acquire().await.unwrap();
-        info!("[{component_name}]: Starting signing operation for zone '{zone_name}'");
+        info!("[ZS]: Starting signing operation for zone '{zone_name}'");
 
         //
         // Lookup the unsigned zone.
@@ -511,7 +420,7 @@ impl ZoneSigner {
         //
         // Convert zone records into a form we can sign.
         //
-        trace!("[{component_name}]: Collecting records to sign for zone '{zone_name}'.");
+        trace!("[ZS]: Collecting records to sign for zone '{zone_name}'.");
         let walk_start = Instant::now();
         let passed_zone = unsigned_zone.clone();
         let mut records = spawn_blocking(|| collect_zone(passed_zone)).await.unwrap();
@@ -580,8 +489,13 @@ impl ZoneSigner {
 
                         let public_key = ZoneSignerUnit::load_public_key(Path::new(pub_key_path))
                             .map_err(|_| format!("Failed to load public key from '{}'", pub_key_path))?;
+<<<<<<< HEAD
+        
+                        let key_pair = KeyPair::from_bytes(&private_key, public_key.data())
+=======
 
                         let key_pair = domain::crypto::sign::KeyPair::from_bytes(&private_key, &public_key.data())
+>>>>>>> main
                             .map_err(|err| format!("Failed to create key pair for zone {zone_name} using key files {pub_key_path} and {priv_key_path}: {err}"))?;
                         let signing_key =
                             SigningKey::new(zone_name.clone(), public_key.data().flags(), key_pair);
@@ -636,7 +550,7 @@ impl ZoneSigner {
         //
         // Sort them into DNSSEC order ready for NSEC(3) generation.
         //
-        trace!("[{component_name}]: Sorting collected records for zone '{zone_name}'.");
+        trace!("[ZS]: Sorting collected records for zone '{zone_name}'.");
         let sort_start = Instant::now();
         let mut records = spawn_blocking(|| {
             DefaultSorter::sort_by(&mut records, CanonicalOrd::canonical_cmp);
@@ -654,7 +568,7 @@ impl ZoneSigner {
         //
         // Generate NSEC(3) RRs.
         //
-        trace!("[{component_name}]: Generating denial records for zone '{zone_name}'.");
+        trace!("[ZS]: Generating denial records for zone '{zone_name}'.");
         let denial_start = Instant::now();
         let apex_owner = zone_name.clone();
         let unsigned_records = spawn_blocking(move || {
@@ -686,7 +600,7 @@ impl ZoneSigner {
         // async task which receives generated RRSIGs via a Tokio
         // mpsc::channel and accumulates them into the signed zone.
         //
-        trace!("[{component_name}]: Generating RRSIG records.");
+        trace!("[ZS]: Generating RRSIG records.");
         let rrsig_start = Instant::now();
 
         // Work out how many RRs have to be signed and how many concurrent
@@ -809,12 +723,13 @@ impl ZoneSigner {
         info!("[STATS] {zone_name} {zone_serial} RR[count={unsigned_rr_count} walk_time={walk_time}(sec) sort_time={sort_time}(sec)] DENIAL[count={denial_rr_count} time={denial_time}(sec)] RRSIG[new={rrsig_count} reused=0 time={rrsig_time}(sec) avg={rrsig_avg}(sig/sec)] INSERTION[time={insertion_time}(sec)] TOTAL[time={total_time}(sec)] with {parallelism} threads");
 
         // Notify Central Command that we have finished.
-        self.gate
-            .update_data(Update::ZoneSignedEvent {
+        self.update_tx
+            .send(Update::ZoneSignedEvent {
                 zone_name: zone_name.clone(),
                 zone_serial,
             })
-            .await;
+            .await
+            .unwrap();
 
         Ok(())
     }
@@ -1308,95 +1223,6 @@ impl Default for ZoneSignerStatus {
     }
 }
 
-//------------ ZoneSignerMetrics ---------------------------------------------
-
-#[derive(Debug, Default)]
-pub struct ZoneSignerMetrics {
-    gate: Option<Arc<GateMetrics>>, // optional to make testing easier
-}
-
-impl GraphStatus for ZoneSignerMetrics {
-    fn status_text(&self) -> String {
-        "TODO".to_string()
-    }
-
-    fn okay(&self) -> Option<bool> {
-        Some(false)
-    }
-}
-
-impl ZoneSignerMetrics {
-    // const LISTENER_BOUND_COUNT_METRIC: Metric = Metric::new(
-    //     "bmp_tcp_in_listener_bound_count",
-    //     "the number of times the TCP listen port was bound to",
-    //     MetricType::Counter,
-    //     MetricUnit::Total,
-    // );
-}
-
-impl ZoneSignerMetrics {
-    pub fn new(gate: &Gate) -> Self {
-        Self {
-            gate: Some(gate.metrics()),
-        }
-    }
-}
-
-impl metrics::Source for ZoneSignerMetrics {
-    fn append(&self, unit_name: &str, target: &mut metrics::Target) {
-        if let Some(gate) = &self.gate {
-            gate.append(unit_name, target);
-        }
-
-        // target.append_simple(
-        //     &Self::LISTENER_BOUND_COUNT_METRIC,
-        //     Some(unit_name),
-        //     self.listener_bound_count.load(SeqCst),
-        // );
-    }
-}
-
-//------------ ZoneSignerStatusReporter --------------------------------------
-
-#[derive(Debug, Default)]
-pub struct ZoneSignerStatusReporter {
-    name: String,
-    metrics: Arc<ZoneSignerMetrics>,
-}
-
-impl ZoneSignerStatusReporter {
-    pub fn new<T: Display>(name: T, metrics: Arc<ZoneSignerMetrics>) -> Self {
-        Self {
-            name: format!("{}", name),
-            metrics,
-        }
-    }
-
-    pub fn _typed_metrics(&self) -> Arc<ZoneSignerMetrics> {
-        self.metrics.clone()
-    }
-}
-
-impl UnitStatusReporter for ZoneSignerStatusReporter {}
-
-impl AnyStatusReporter for ZoneSignerStatusReporter {
-    fn metrics(&self) -> Option<Arc<dyn crate::metrics::Source>> {
-        Some(self.metrics.clone())
-    }
-}
-
-impl Chainable for ZoneSignerStatusReporter {
-    fn add_child<T: Display>(&self, child_name: T) -> Self {
-        Self::new(self.link_names(child_name), self.metrics.clone())
-    }
-}
-
-impl Named for ZoneSignerStatusReporter {
-    fn name(&self) -> &str {
-        &self.name
-    }
-}
-
 //------------ ZoneListApi ---------------------------------------------------
 
 struct SigningHistoryApi {
@@ -1475,7 +1301,7 @@ impl SigningHistoryApi {
 // See: domain::sign::denial::config::DenialConfig
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum TomlDenialConfig {
+pub enum TomlDenialConfig {
     #[default]
     Nsec,
 
@@ -1490,14 +1316,14 @@ enum TomlDenialConfig {
 // Note: We don't allow configuration of NSEC3 salt, iterations or algorithm
 // as they are fixed to best practice values.
 #[derive(Clone, Debug, Default, Deserialize)]
-struct TomlNsec3Config {
+pub struct TomlNsec3Config {
     pub opt_out: TomlNsec3OptOut,
     pub nsec3_param_ttl_mode: TomlNsec3ParamTtlMode,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum TomlNsec3OptOut {
+pub enum TomlNsec3OptOut {
     #[default]
     NoOptOut,
     OptOut,
@@ -1506,7 +1332,7 @@ enum TomlNsec3OptOut {
 
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum TomlNsec3ParamTtlMode {
+pub enum TomlNsec3ParamTtlMode {
     Fixed(Ttl),
     #[default]
     Soa,
@@ -1515,7 +1341,7 @@ enum TomlNsec3ParamTtlMode {
 
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum TomlNsecToNsec3TransitionState {
+pub enum TomlNsecToNsec3TransitionState {
     #[default]
     TransitioningDnsKeys,
     AddingNsec3Records,
@@ -1525,7 +1351,7 @@ enum TomlNsecToNsec3TransitionState {
 
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum TomlNsec3ToNsecTransitionState {
+pub enum TomlNsec3ToNsecTransitionState {
     #[default]
     AddingNsecRecords,
     RemovingNsec3ParamdRecord,
@@ -1554,45 +1380,37 @@ impl domain::dnssec::sign::records::Sorter for MultiThreadedSorter {
 
 //------------ KMIP related --------------------------------------------------
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug)]
 pub struct KmipServerConnectionSettings {
     /// Path to the client certificate file in PEM format
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    client_cert_path: Option<PathBuf>,
+    pub client_cert_path: Option<PathBuf>,
 
     /// Path to the client certificate key file in PEM format
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    client_key_path: Option<PathBuf>,
+    pub client_key_path: Option<PathBuf>,
 
     /// Path to the client certificate and key file in PKCS#12 format
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    client_pkcs12_path: Option<PathBuf>,
+    pub client_pkcs12_path: Option<PathBuf>,
 
     /// Disable secure checks (e.g. verification of the server certificate)
-    #[serde(default)]
-    server_insecure: bool,
+    pub server_insecure: bool,
 
     /// Path to the server certificate file in PEM format
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    server_cert_path: Option<PathBuf>,
+    pub server_cert_path: Option<PathBuf>,
 
     /// Path to the server CA certificate file in PEM format
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    ca_cert_path: Option<PathBuf>,
+    pub ca_cert_path: Option<PathBuf>,
 
     /// IP address, hostname or FQDN of the KMIP server
-    server_addr: String,
+    pub server_addr: String,
 
     /// The TCP port number on which the KMIP server listens
-    server_port: u16,
+    pub server_port: u16,
 
     /// The user name to authenticate with the KMIP server
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    server_username: Option<String>,
+    pub server_username: Option<String>,
 
     /// The password to authenticate with the KMIP server
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    server_password: Option<String>,
+    pub server_password: Option<String>,
 }
 
 impl Default for KmipServerConnectionSettings {
@@ -1699,7 +1517,7 @@ fn parse_kmip_key_url(
     for (k, v) in kmip_key_url.query_pairs() {
         match &*k {
             "flags" => flags = Some(v.parse::<u16>().map_err(|_| ())?),
-            "algorithm" => algorithm = Some(SecurityAlgorithm::from_str(&*v).map_err(|_| ())?),
+            "algorithm" => algorithm = Some(SecurityAlgorithm::from_str(&v).map_err(|_| ())?),
             _ => { /* ignore unknown URL query parameter */ }
         }
     }
@@ -1707,3 +1525,39 @@ fn parse_kmip_key_url(
     let algorithm = algorithm.ok_or(())?;
     Ok((key_id, algorithm, flags, host_and_port))
 }
+<<<<<<< HEAD
+
+// Like domain::crypto::sign::KeyPair but omits Ring which is currently not
+// thread safe, though it is expected that can be resolved and thus this type
+// would no longer be needed.
+#[derive(Debug)]
+enum ThreadSafeKeyPair {
+    OpenSSL(domain::crypto::openssl::sign::KeyPair),
+
+    Kmip(domain::crypto::kmip::sign::KeyPair),
+}
+
+impl SignRaw for ThreadSafeKeyPair {
+    fn algorithm(&self) -> SecurityAlgorithm {
+        match self {
+            ThreadSafeKeyPair::OpenSSL(key_pair) => key_pair.algorithm(),
+            ThreadSafeKeyPair::Kmip(key_pair) => key_pair.algorithm(),
+        }
+    }
+
+    fn dnskey(&self) -> Dnskey<Vec<u8>> {
+        match self {
+            ThreadSafeKeyPair::OpenSSL(key_pair) => key_pair.dnskey(),
+            ThreadSafeKeyPair::Kmip(key_pair) => key_pair.dnskey(),
+        }
+    }
+
+    fn sign_raw(&self, data: &[u8]) -> Result<domain::crypto::sign::Signature, domain::crypto::sign::SignError> {
+        match self {
+            ThreadSafeKeyPair::OpenSSL(key_pair) => key_pair.sign_raw(data),
+            ThreadSafeKeyPair::Kmip(key_pair) => key_pair.sign_raw(data),
+        }
+    }
+}
+=======
+>>>>>>> main

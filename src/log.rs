@@ -6,43 +6,47 @@
 //! The module also provides two error types [`Failed`] and [`ExitError`] that
 //! indicate that error information has been logged and a consumer can just
 //! return quietly.
-use crate::config::ConfigPath;
+
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use log::{error, LevelFilter, Log};
 use serde::Deserialize;
 use std::convert::TryFrom;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::{fmt, io};
 
 //------------ LogConfig -----------------------------------------------------
 
 /// Logging configuration.
-#[derive(Deserialize)]
 pub struct LogConfig {
     /// Where to log to?
-    #[serde(default)]
     pub log_target: LogTarget,
 
     /// If logging to a file, use this file.
     ///
     /// This isn’t part of `log_target` for deserialization reasons.
-    #[serde(default)]
-    pub log_file: ConfigPath,
+    pub log_file: PathBuf,
 
     /// The syslog facility when logging to syslog.
     ///
     /// This isn’t part of `log_target` for deserialization reasons.
     #[cfg(unix)]
-    #[serde(default)]
     pub log_facility: LogFacility,
 
     /// The minimum log level to actually log.
-    #[serde(default)]
     pub log_level: LogFilter,
 }
 
 impl LogConfig {
+    pub fn new() -> Self {
+        Self {
+            log_target: LogTarget::Stderr,
+            log_file: PathBuf::default(),
+            log_facility: LogFacility::default(),
+            log_level: LogFilter(LevelFilter::Info),
+        }
+    }
+
     /// Configures a clap app with the options for logging.
     pub fn config_args(app: Command) -> Command {
         app.next_help_heading("Options related to logging")
@@ -119,7 +123,7 @@ impl LogConfig {
                 self.log_target = LogTarget::Stderr
             } else {
                 self.log_target = LogTarget::File;
-                self.log_file = cur_dir.join(file).into();
+                self.log_file = cur_dir.join(file);
             }
         }
         Ok(())
@@ -284,10 +288,6 @@ impl LogConfig {
         //     Ok(_) => self.log_level.0.min(LevelFilter::Trace),
         //     Err(_) => self.log_level.0.min(LevelFilter::Warn),
         // };
-        // let roto_log_level = match std::env::var("ROTONDA_ROTO_LOG") {
-        //     Ok(_) => self.log_level.0.min(LevelFilter::Trace),
-        //     Err(_) => self.log_level.0.min(LevelFilter::Warn),
-        // };
 
         let debug_enabled = self.log_level.0 >= LevelFilter::Debug;
 
@@ -368,7 +368,6 @@ impl LogConfig {
         // res = res
         //     .level_for("rotonda_store", rotonda_store_log_level)
         //     .level_for("rumqttc", mqtt_log_level)
-        //     .level_for("roto", roto_log_level);
 
         if debug_enabled {
             // Don't enable too much logging for some modules even if the main
@@ -388,6 +387,12 @@ impl LogConfig {
         }
 
         res
+    }
+}
+
+impl Default for LogConfig {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
