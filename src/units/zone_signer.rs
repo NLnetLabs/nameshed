@@ -2,7 +2,6 @@ use core::fmt;
 use core::future::pending;
 use core::ops::{Add, ControlFlow};
 
-use std::io::Read;
 use std::any::Any;
 use std::cmp::Ordering;
 use std::collections::hash_map::Entry::{Occupied, Vacant};
@@ -10,6 +9,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
 use std::fmt::Display;
 use std::fs::File;
+use std::io::Read;
 use std::net::{IpAddr, SocketAddr};
 use std::ops::Sub;
 use std::path::{Path, PathBuf};
@@ -30,8 +30,17 @@ use domain::base::wire::Composer;
 use domain::base::{
     CanonicalOrd, Name, ParsedName, ParsedRecord, Record, Rtype, Serial, ToName, Ttl,
 };
-use domain::crypto::sign::{generate, FromBytesError, GenerateParams, SecretKeyBytes, SignRaw};
+use domain::crypto::kmip::{self, ClientCertificate, ConnectionSettings};
+use domain::crypto::kmip_pool::{ConnectionManager, KmipConnPool};
+use domain::crypto::sign::{
+    generate, FromBytesError, GenerateParams, KeyPair, SecretKeyBytes, SignRaw,
+};
 use domain::dnssec::common::parse_from_bind;
+use domain::dnssec::sign::denial::config::DenialConfig;
+use domain::dnssec::sign::denial::nsec::GenerateNsecConfig;
+use domain::dnssec::sign::denial::nsec3::{GenerateNsec3Config, Nsec3ParamTtlMode};
+use domain::dnssec::sign::error::SigningError;
+use domain::dnssec::sign::keys::keyset::{KeySet, KeyType};
 use domain::dnssec::sign::keys::SigningKey;
 use domain::dnssec::sign::records::{DefaultSorter, RecordsIter, Rrset, Sorter};
 use domain::dnssec::sign::signatures::rrsigs::{
@@ -55,12 +64,6 @@ use domain::net::server::ConnectionConfig;
 use domain::rdata::dnssec::Timestamp;
 use domain::rdata::nsec3::Nsec3Salt;
 use domain::rdata::{Dnskey, Nsec3param, Rrsig, Soa, ZoneRecordData};
-// Use openssl::KeyPair because ring::KeyPair is not Send.
-use domain::crypto::openssl::sign::KeyPair;
-use domain::dnssec::sign::denial::config::DenialConfig;
-use domain::dnssec::sign::denial::nsec::GenerateNsecConfig;
-use domain::dnssec::sign::denial::nsec3::{GenerateNsec3Config, Nsec3ParamTtlMode};
-use domain::dnssec::sign::error::SigningError;
 use domain::tsig::KeyStore;
 use domain::tsig::{Algorithm, Key, KeyName};
 use domain::utils::base64;
@@ -71,9 +74,6 @@ use domain::zonetree::{
     InMemoryZoneDiff, ReadableZone, StoredName, StoredRecord, WritableZone, WritableZoneNode, Zone,
     ZoneBuilder, ZoneStore, ZoneTree,
 };
-use domain::dnssec::sign::keys::keyset::{KeySet, KeyType};
-use domain::crypto::kmip::{self, ConnectionSettings};
-use domain::crypto::kmip_pool::{ConnectionManager, KmipConnPool};
 use futures::future::{select, Either};
 use futures::{pin_mut, Future, SinkExt};
 use indoc::formatdoc;
@@ -88,10 +88,10 @@ use serde_with::{serde_as, DeserializeFromStr, DisplayFromStr};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::sync::{Mutex, RwLock, Semaphore};
+use tokio::task::spawn_blocking;
 use tokio::time::{sleep, Instant};
 #[cfg(feature = "tls")]
 use tokio_rustls::rustls::ServerConfig;
-use tokio::task::spawn_blocking;
 use url::Url;
 
 use crate::common::light_weight_zone::LightWeightZone;
@@ -117,7 +117,6 @@ use crate::zonemaintenance::types::{
     CompatibilityMode, NotifyConfig, TransportStrategy, XfrConfig, XfrStrategy, ZoneConfig,
     ZoneMaintainerKeyStore,
 };
-
 
 #[derive(Debug)]
 pub struct ZoneSignerUnit {
@@ -176,7 +175,9 @@ impl ZoneSignerUnit {
         // Create KMIP server connection pools.
         // Warning: This will block until the pools have established their
         // minimum number of connections or timed out.
-        let kmip_servers = self.kmip_server_conn_settings.into_iter().filter_map(|conn_settings| {
+        let expected_kmip_server_conn_pools = self.kmip_server_conn_settings.len();
+
+        let kmip_servers: HashMap<(String, u16), KmipConnPool> = self.kmip_server_conn_settings.into_iter().filter_map(|conn_settings| {
             let host_and_port = (conn_settings.server_addr.clone(), conn_settings.server_port);
 
             match ConnectionManager::create_connection_pool(
@@ -186,15 +187,41 @@ impl ZoneSignerUnit {
                 Duration::from_secs(60),
             ) {
                 Ok(kmip_conn_pool) => {
-                    Some((host_and_port, kmip_conn_pool))
+                    match kmip_conn_pool.get() {
+                        Ok(conn) => {
+                            match conn.query() {
+                                Ok(q) => {
+                                    // TODO: Check if the server meets our
+                                    // needs. We can't assume domain will do
+                                    // that for us because domain doesn't know
+                                    // which functions we need.
+                                    info!("Established connection pool for KMIP server '{}:{}' reporting as '{}'", conn_settings.server_addr, conn_settings.server_port, q.vendor_identification.unwrap_or_default());
+                                    Some((host_and_port, kmip_conn_pool))
+                                }
+                                Err(err) => {
+                                    error!("Failed to create usable connection pool for KMIP server '{}:{}': {err}", conn_settings.server_addr, conn_settings.server_port);
+                                    None
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            error!("Failed to create usable connection pool for KMIP server '{}:{}': {err}", conn_settings.server_addr, conn_settings.server_port);
+                            None
+                        }
+                    }
                 }
 
                 Err(()) => {
-                    error!("Failed to create connection pool for KMIP server '{}:{}', disabling use of this KMIP server", conn_settings.server_addr, conn_settings.server_port);
+                    error!("Failed to create connection pool for KMIP server '{}:{}'", conn_settings.server_addr, conn_settings.server_port);
                     None
                 }
             }
         }).collect();
+
+        if kmip_servers.len() != expected_kmip_server_conn_pools {
+            // TODO: This is a bit severe. There should be a cleaner way to abort.
+            std::process::exit(1);
+        }
 
         ZoneSigner::new(
             component,
@@ -208,7 +235,7 @@ impl ZoneSignerUnit {
             self.treat_single_keys_as_csks,
             self.update_tx,
             self.keys_path,
-            kmip_servers
+            kmip_servers,
         )
         .run(self.cmd_rx)
         .await?;
@@ -453,22 +480,23 @@ impl ZoneSigner {
                     ("file", "file") => {
                         let priv_key_path = priv_url.path();
                         debug!("Attempting to load private key '{}'.", priv_key_path);
-        
+
                         let private_key = ZoneSignerUnit::load_private_key(Path::new(priv_key_path))
                             .map_err(|_| format!("Failed to load private key from '{}'", priv_key_path))?;
-        
+
                         let pub_key_path = pub_url.path();
                         debug!("Attempting to load public key '{}'.", pub_key_path);
-        
+
                         let public_key = ZoneSignerUnit::load_public_key(Path::new(pub_key_path))
                             .map_err(|_| format!("Failed to load public key from '{}'", pub_key_path))?;
+<<<<<<< HEAD
         
                         let key_pair = KeyPair::from_bytes(&private_key, public_key.data())
+=======
+
+                        let key_pair = domain::crypto::sign::KeyPair::from_bytes(&private_key, &public_key.data())
+>>>>>>> main
                             .map_err(|err| format!("Failed to create key pair for zone {zone_name} using key files {pub_key_path} and {priv_key_path}: {err}"))?;
-                        // We use OpenSSL rather than Ring as the Ring KeyPair
-                        // cannot be shared across threads which breaks the
-                        // parallel usage below via Rayon.
-                        let key_pair = ThreadSafeKeyPair::OpenSSL(key_pair);
                         let signing_key =
                             SigningKey::new(zone_name.clone(), public_key.data().flags(), key_pair);
                         signing_keys.push(signing_key);
@@ -493,14 +521,14 @@ impl ZoneSigner {
                             .get(&priv_host_and_port)
                             .ok_or(format!("No connection pool available for KMIP server '{}:{}'", priv_host_and_port.0, priv_host_and_port.1))?;
 
-                        let key_pair = ThreadSafeKeyPair::Kmip(kmip::sign::KeyPair::new(
+                        let key_pair = KeyPair::Kmip(kmip::sign::KeyPair::new(
                             priv_algorithm,
                             priv_flags,
                             &priv_key_id,
                             &pub_key_id,
                             kmip_conn_pool.clone(),
                         ));
-                    
+
                         let signing_key = SigningKey::new(zone_name.clone(), priv_flags, key_pair);
                         signing_keys.push(signing_key);
                     }
@@ -787,7 +815,7 @@ fn sign_rr_chunk(
     thread_idx: usize,
     rrsig_cfg: &GenerateRrsigConfig,
     tx: Sender<(Vec<Record<StoredName, Rrsig<Bytes, StoredName>>>, Duration)>,
-    keys: Arc<Vec<SigningKey<Bytes, ThreadSafeKeyPair>>>,
+    keys: Arc<Vec<SigningKey<Bytes, KeyPair>>>,
     zone_name: StoredName,
     treat_single_keys_as_csks: bool,
 ) {
@@ -1404,21 +1432,60 @@ impl Default for KmipServerConnectionSettings {
 
 impl From<KmipServerConnectionSettings> for ConnectionSettings {
     fn from(cfg: KmipServerConnectionSettings) -> Self {
+        let client_cert = load_client_cert(&cfg);
+        let server_cert = cfg.server_cert_path.map(|p| load_binary_file(&p));
+        let ca_cert = cfg.ca_cert_path.map(|p| load_binary_file(&p));
         ConnectionSettings {
             host: cfg.server_addr,
             port: cfg.server_port,
             username: cfg.server_username,
             password: cfg.server_password,
             insecure: cfg.server_insecure,
-            client_cert: None,        // TODO
-            server_cert: None,        // TODO
-            ca_cert: None,            // TODO
-            connect_timeout: None,    // TODO
-            read_timeout: None,       // TODO
-            write_timeout: None,      // TODO
-            max_response_bytes: None, // TODO
+            client_cert,
+            server_cert: None,                             // TOOD
+            ca_cert: None,                                 // TODO
+            connect_timeout: Some(Duration::from_secs(5)), // TODO
+            read_timeout: None,                            // TODO
+            write_timeout: None,                           // TODO
+            max_response_bytes: None,                      // TODO
         }
     }
+}
+
+fn load_client_cert(opt: &KmipServerConnectionSettings) -> Option<ClientCertificate> {
+    match (
+        &opt.client_cert_path,
+        &opt.client_key_path,
+        &opt.client_pkcs12_path,
+    ) {
+        (None, None, None) => None,
+        (None, None, Some(path)) => Some(ClientCertificate::CombinedPkcs12 {
+            cert_bytes: load_binary_file(path),
+        }),
+        (Some(path), None, None) => Some(ClientCertificate::SeparatePem {
+            cert_bytes: load_binary_file(path),
+            key_bytes: None,
+        }),
+        (None, Some(_), None) => {
+            panic!("Client certificate key path requires a client certificate path");
+        }
+        (_, Some(_), Some(_)) | (Some(_), _, Some(_)) => {
+            panic!("Use either but not both of: client certificate and key PEM file paths, or a PCKS#12 certficate file path");
+        }
+        (Some(cert_path), Some(key_path), None) => Some(ClientCertificate::SeparatePem {
+            cert_bytes: load_binary_file(cert_path),
+            key_bytes: Some(load_binary_file(key_path)),
+        }),
+    }
+}
+
+pub fn load_binary_file(path: &Path) -> Vec<u8> {
+    use std::{fs::File, io::Read};
+
+    let mut bytes = Vec::new();
+    File::open(path).unwrap().read_to_end(&mut bytes).unwrap();
+
+    bytes
 }
 
 fn parse_kmip_key_url(
@@ -1426,7 +1493,7 @@ fn parse_kmip_key_url(
 ) -> Result<(String, SecurityAlgorithm, u16, (String, u16)), ()> {
     let host_and_port = (
         kmip_key_url.host_str().ok_or(())?.to_string(),
-        kmip_key_url.port().unwrap_or(5696)
+        kmip_key_url.port().unwrap_or(5696),
     );
 
     // TODO: We ignore the username and password as we have all of the
@@ -1436,7 +1503,11 @@ fn parse_kmip_key_url(
     // this duplication somehow?
 
     let url_path = kmip_key_url.path().to_string();
-    let (keys, key_id) = url_path.strip_prefix('/').ok_or(())?.split_once('/').unwrap();
+    let (keys, key_id) = url_path
+        .strip_prefix('/')
+        .ok_or(())?
+        .split_once('/')
+        .unwrap();
     if keys != "keys" {
         return Err(());
     }
@@ -1454,6 +1525,7 @@ fn parse_kmip_key_url(
     let algorithm = algorithm.ok_or(())?;
     Ok((key_id, algorithm, flags, host_and_port))
 }
+<<<<<<< HEAD
 
 // Like domain::crypto::sign::KeyPair but omits Ring which is currently not
 // thread safe, though it is expected that can be resolved and thus this type
@@ -1487,3 +1559,5 @@ impl SignRaw for ThreadSafeKeyPair {
         }
     }
 }
+=======
+>>>>>>> main

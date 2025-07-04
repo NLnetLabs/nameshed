@@ -534,12 +534,32 @@ impl Manager {
                     denial_config: TomlDenialConfig::default(),
                     rrsig_inception_offset_secs: 60 * 90,
                     rrsig_expiration_offset_secs: 60 * 60 * 24 * 14,
-                    kmip_server_conn_settings: vec![KmipServerConnectionSettings {
-                        server_addr: "127.0.0.1".into(),
-                        server_port: 5696,
-                        server_insecure: true,
-                        ..Default::default()
-                    }],
+                    kmip_server_conn_settings: vec![
+                        KmipServerConnectionSettings {
+                            server_addr: "127.0.0.1".into(),
+                            server_port: 5696,
+                            server_insecure: true,
+                            client_cert_path: Some(
+                                "/home/ximon/docker_data/pykmip/pykmip-data/selfsigned.crt".into(),
+                            ),
+                            client_key_path: Some(
+                                "/home/ximon/docker_data/pykmip/pykmip-data/selfsigned.key".into(),
+                            ),
+                            ..Default::default()
+                        },
+                        KmipServerConnectionSettings {
+                            server_addr: "127.0.0.1".into(),
+                            server_port: 5697,
+                            server_insecure: true,
+                            ..Default::default()
+                        },
+                        KmipServerConnectionSettings {
+                            server_addr: "eu.smartkey.io".into(),
+                            server_username: "********".into(),
+                            server_password: "********".into(),
+                            ..Default::default()
+                        },
+                    ],
                     update_tx: update_tx.clone(),
                     cmd_rx: zs_rx,
                 }),
