@@ -127,6 +127,7 @@ use crate::zonemaintenance::types::{
     CompatibilityMode, NotifyConfig, TransportStrategy, XfrConfig, XfrStrategy, ZoneConfig,
     ZoneMaintainerKeyStore,
 };
+use core::sync::atomic::AtomicBool;
 
 #[serde_as]
 #[derive(Clone, Debug, Deserialize)]
@@ -159,7 +160,7 @@ pub struct ZoneSignerUnit {
     max_concurrent_rrsig_generation_tasks: usize,
 
     #[serde(rename = "kmip_servers", default)]
-    kmip_server_conn_settings: Vec<KmipServerConnectionSettings>,
+    kmip_server_conn_settings: HashMap<String, KmipServerConnectionSettings>,
 }
 
 impl ZoneSignerUnit {
@@ -205,14 +206,14 @@ impl ZoneSignerUnit {
         // minimum number of connections or timed out.
         let expected_kmip_server_conn_pools = self.kmip_server_conn_settings.len();
 
-        let kmip_servers: HashMap<(String, u16), KmipConnPool> = self.kmip_server_conn_settings.drain(..).filter_map(|conn_settings| {
+        let kmip_servers: HashMap<String, KmipConnPool> = self.kmip_server_conn_settings.drain().filter_map(|(server_id, conn_settings)| {
             let host_and_port = (conn_settings.server_addr.clone(), conn_settings.server_port);
 
             match ConnectionManager::create_connection_pool(
                 Arc::new(conn_settings.clone().into()),
                 10,
-                Duration::from_secs(60),
-                Duration::from_secs(60),
+                Some(Duration::from_secs(60)),
+                Some(Duration::from_secs(60)),
             ) {
                 Ok(kmip_conn_pool) => {
                     match kmip_conn_pool.get() {
@@ -223,24 +224,24 @@ impl ZoneSignerUnit {
                                     // needs. We can't assume domain will do
                                     // that for us because domain doesn't know
                                     // which functions we need.
-                                    info!("Established connection pool for KMIP server '{}:{}' reporting as '{}'", conn_settings.server_addr, conn_settings.server_port, q.vendor_identification.unwrap_or_default());
-                                    Some((host_and_port, kmip_conn_pool))
+                                    info!("Established connection pool for KMIP server '{server_id}' reporting as '{}'", q.vendor_identification.unwrap_or_default());
+                                    Some((server_id, kmip_conn_pool))
                                 }
                                 Err(err) => {
-                                    error!("Failed to create usable connection pool for KMIP server '{}:{}': {err}", conn_settings.server_addr, conn_settings.server_port);
+                                    error!("Failed to create usable connection pool for KMIP server '{server_id}': {err}");
                                     None
                                 }
                             }
                         }
                         Err(err) => {
-                            error!("Failed to create usable connection pool for KMIP server '{}:{}': {err}", conn_settings.server_addr, conn_settings.server_port);
+                            error!("Failed to create usable connection pool for KMIP server '{server_id}': {err}");
                             None
                         }
                     }
                 }
 
-                Err(()) => {
-                    error!("Failed to create connection pool for KMIP server '{}:{}'", conn_settings.server_addr, conn_settings.server_port);
+                Err(err) => {
+                    error!("Failed to create connection pool for KMIP server '{server_id}': {err}");
                     None
                 }
             }
@@ -347,7 +348,7 @@ struct ZoneSigner {
     signer_status: Arc<RwLock<ZoneSignerStatus>>,
     treat_single_keys_as_csks: bool,
     keys_path: PathBuf,
-    kmip_servers: HashMap<(String, u16), KmipConnPool>,
+    kmip_servers: HashMap<String, KmipConnPool>,
 }
 
 impl ZoneSigner {
@@ -366,7 +367,7 @@ impl ZoneSigner {
         max_concurrent_rrsig_generation_tasks: usize,
         treat_single_keys_as_csks: bool,
         keys_path: PathBuf,
-        kmip_servers: HashMap<(String, u16), KmipConnPool>,
+        kmip_servers: HashMap<String, KmipConnPool>,
     ) -> Self {
         Self {
             component,
@@ -589,23 +590,22 @@ impl ZoneSigner {
                     }
 
                     ("kmip", "kmip") => {
-                        let (priv_key_id, priv_algorithm, priv_flags, priv_host_and_port) = parse_kmip_key_url(&priv_url)
+                        let (priv_key_id, priv_algorithm, priv_flags, priv_server_id) = parse_kmip_key_url(&priv_url)
                             .map_err(|()| format!("Failed to parse KMIP key URL '{priv_url}'"))?;
-                        let (pub_key_id, pub_algorithm, pub_flags, pub_host_and_port) = parse_kmip_key_url(&pub_url)
+                        let (pub_key_id, pub_algorithm, pub_flags, pub_server_id) = parse_kmip_key_url(&pub_url)
                             .map_err(|()| format!("Failed to parse KMIP key URL '{pub_url}'"))?;
 
                         if priv_algorithm != pub_algorithm {
                             return Err(format!("Private and public key URLs have different algorithms: {priv_algorithm} vs {pub_algorithm}"));
                         } else if priv_flags != pub_flags {
                             return Err(format!("Private and public key URLs have different flags: {priv_flags} vs {pub_flags}"));
-                        } else if priv_host_and_port != pub_host_and_port {
-                            return Err(format!("Private and public key URLs have different host and port: {}:{} vs {}:{}",
-                            priv_host_and_port.0, priv_host_and_port.1, pub_host_and_port.0, pub_host_and_port.1));
+                        } else if priv_server_id != pub_server_id {
+                            return Err(format!("Private and public key URLs have different server IDs: {priv_server_id} vs {pub_server_id}"));
                         }
 
                         let kmip_conn_pool = self.kmip_servers
-                            .get(&priv_host_and_port)
-                            .ok_or(format!("No connection pool available for KMIP server '{}:{}'", priv_host_and_port.0, priv_host_and_port.1))?;
+                            .get(&priv_server_id)
+                            .ok_or(format!("No connection pool available for KMIP server '{priv_server_id}"))?;
 
                         let key_pair = KeyPair::Kmip(kmip::sign::KeyPair::new(
                             priv_algorithm,
@@ -725,10 +725,11 @@ impl ZoneSigner {
 
         // Use spawn_blocking() to prevent blocking the Tokio executor. Pass
         // the unsigned records in, we get them back out again at the end.
+        let signing_ok = Arc::new(AtomicBool::new(true));
+        let signing_ok_inner = signing_ok.clone();
         let rrsig_generation_complete = spawn_blocking(move || {
             let records_ref = &unsigned_records;
 
-            //
             rayon::scope(|scope| {
                 for thread_idx in 0..parallelism {
                     let is_last_chunk = thread_idx == parallelism - 1;
@@ -736,9 +737,10 @@ impl ZoneSigner {
                     let tx = tx.clone();
                     let keys = keys.clone();
                     let zone_name = passed_zone_name.clone();
+                    let signing_ok_inner = signing_ok_inner.clone();
 
                     scope.spawn(move |_| {
-                        sign_rr_chunk(
+                        if let Err(err) = sign_rr_chunk(
                             is_last_chunk,
                             chunk_size,
                             records_ref,
@@ -746,9 +748,14 @@ impl ZoneSigner {
                             rrsig_cfg,
                             tx,
                             keys,
-                            zone_name,
+                            &zone_name,
                             treat_single_keys_as_csks,
-                        );
+                        ) {
+                            error!(
+                                "Siging of zone {zone_name} failed in thread {thread_idx}: {err}"
+                            );
+                            signing_ok_inner.store(false, std::sync::atomic::Ordering::SeqCst);
+                        };
                     })
                 }
 
@@ -760,6 +767,10 @@ impl ZoneSigner {
 
         // Wait for RRSIG generation to complete.
         let unsigned_records = rrsig_generation_complete.await.unwrap();
+
+        if !signing_ok.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(format!("RRSIG generation error"));
+        }
 
         // Wait for RRSIG insertion to complete.
         let (mut updater, rrsig_time, insertion_time, rrsig_count) =
@@ -901,16 +912,16 @@ fn sign_rr_chunk(
     rrsig_cfg: &GenerateRrsigConfig,
     tx: Sender<(Vec<Record<StoredName, Rrsig<Bytes, StoredName>>>, Duration)>,
     keys: Arc<Vec<SigningKey<Bytes, KeyPair>>>,
-    zone_name: StoredName,
+    zone_name: &StoredName,
     treat_single_keys_as_csks: bool,
-) {
+) -> Result<(), String> {
     let mut iter = RecordsIter::new(records);
     let mut n = 0;
     let mut m = 0;
     for _ in 0..thread_idx * chunk_size {
         let Some(owner_rrs) = iter.next() else {
             trace!("SIGNER: Thread {thread_idx} ran out of data after skipping {n} owners covering {m} RRs!");
-            return;
+            return Ok(());
         };
         m += owner_rrs.into_inner().len();
         n += 1;
@@ -946,22 +957,22 @@ fn sign_rr_chunk(
             }
         }
 
-        let rrsigs =
-            sign_sorted_zone_records(&zone_name, RecordsIter::new(slice), &zsks, rrsig_cfg)
-                .unwrap();
+        let rrsigs = sign_sorted_zone_records(zone_name, RecordsIter::new(slice), &zsks, rrsig_cfg)
+            .map_err(|err| err.to_string())?;
         duration = duration.saturating_add(before.elapsed());
 
         if !rrsigs.is_empty() {
             // trace!("SIGNER: Thread {i}: sending {} DNSKEY RRs and {} RRSIG RRs to be stored", res.dnskeys.len(), res.rrsigs.len());
-            if tx.blocking_send((rrsigs, duration)).is_err() {
-                trace!("SIGNER: Thread {thread_idx}: unable to send RRs for storage, aborting.");
-                break;
+            if let Err(err) = tx.blocking_send((rrsigs, duration)) {
+                return Err(format!("Unable to send RRs for storage, aborting: {err}"));
             }
         } else {
             // trace!("SIGNER: Thread {i}: no DNSKEY RRs or RRSIG RRs to be stored");
         }
     }
+
     trace!("SIGNER: Thread {thread_idx} finished processing {n} owners covering {m} RRs.");
+    Ok(())
 }
 
 #[allow(clippy::type_complexity)]
@@ -1670,13 +1681,8 @@ pub fn load_binary_file(path: &Path) -> Vec<u8> {
     bytes
 }
 
-fn parse_kmip_key_url(
-    kmip_key_url: &Url,
-) -> Result<(String, SecurityAlgorithm, u16, (String, u16)), ()> {
-    let host_and_port = (
-        kmip_key_url.host_str().ok_or(())?.to_string(),
-        kmip_key_url.port().unwrap_or(5696),
-    );
+fn parse_kmip_key_url(kmip_key_url: &Url) -> Result<(String, SecurityAlgorithm, u16, String), ()> {
+    let server_id = kmip_key_url.host_str().ok_or(())?.to_string();
 
     // TODO: We ignore the username and password as we have all of the
     // connection details. We need our own KMIP server configs as the URL
@@ -1705,5 +1711,5 @@ fn parse_kmip_key_url(
     }
     let flags = flags.ok_or(())?;
     let algorithm = algorithm.ok_or(())?;
-    Ok((key_id, algorithm, flags, host_and_port))
+    Ok((key_id, algorithm, flags, server_id))
 }
