@@ -557,8 +557,8 @@ impl Manager {
                 Unit::ZoneServer(ZoneServerUnit {
                     http_api_path: Arc::new(String::from("/rs/")),
                     listen: vec![
-                        "tcp:127.0.0.1:8055".parse().unwrap(),
-                        "udp:127.0.0.1:8055".parse().unwrap(),
+                        "tcp:127.0.0.1:8056".parse().unwrap(),
+                        "udp:127.0.0.1:8056".parse().unwrap(),
                     ],
                     xfr_out: HashMap::from([(
                         "example.com".into(),
