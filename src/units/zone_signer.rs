@@ -33,7 +33,7 @@ use domain::base::{
 use domain::crypto::kmip::{self, ClientCertificate, ConnectionSettings};
 use domain::crypto::kmip_pool::{ConnectionManager, KmipConnPool};
 use domain::crypto::sign::{
-    generate, FromBytesError, GenerateParams, KeyPair, SecretKeyBytes, SignRaw,
+    generate, FromBytesError, GenerateParams, KeyPair, SecretKeyBytes, SignError, SignRaw
 };
 use domain::dnssec::common::parse_from_bind;
 use domain::dnssec::sign::denial::config::DenialConfig;
@@ -606,7 +606,7 @@ impl ZoneSigner {
         // threads to sign with and how big each chunk to be signed should be.
         let rr_count = RecordsIter::new(&unsigned_records).count();
         let (parallelism, chunk_size) = self.determine_signing_concurrency(rr_count);
-        trace!("SIGNER: Using {parallelism} threads to sign {rr_count} owners in chunks of {chunk_size}.",);
+        info!("SIGNER: Using {parallelism} threads to sign {rr_count} owners in chunks of {chunk_size}.",);
 
         self.signer_status.write().await.update(zone_name, |s| {
             s.threads_used = Some(parallelism);
