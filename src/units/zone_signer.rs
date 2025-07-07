@@ -523,7 +523,7 @@ impl ZoneSigner {
                             &priv_key_id,
                             &pub_key_id,
                             kmip_conn_pool.clone(),
-                        ));
+                        ).map_err(|err| format!("Failed to create keypair for KMIP key IDs: {priv_key_id}, {pub_key_id}: {err}"))?);
 
                         let signing_key = SigningKey::new(zone_name.clone(), priv_flags, key_pair);
 
