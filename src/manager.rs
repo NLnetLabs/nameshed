@@ -521,12 +521,20 @@ impl Manager {
                 "fortanix".to_string(),
                 KmipServerConnectionSettings {
                     server_addr: "eu.smartkey.io".into(),
+                    server_insecure: true,
                     server_username,
                     server_password,
                     ..Default::default()
                 },
             );
         }
+
+        let zone_name = std::env::var("ZL_IN_ZONE").unwrap_or("example.com.".into());
+        let zone_file = std::env::var("ZL_IN_ZONE_FILE").unwrap_or("".into());
+        let xfr_in = std::env::var("ZL_XFR_IN").unwrap_or("127.0.0.1:8055 KEY sec1-key".into());
+        let tsig_key_name = std::env::var("ZL_TSIG_KEY_NAME").unwrap_or("sec1-key".into());
+        let tsig_key = std::env::var("ZL_TSIG_KEY")
+            .unwrap_or("hmac-sha256:zlCZbVJPIhobIs1gJNQfrsS3xCxxsR9pMUrGwG8OgG8=".into());
 
         let units = [
             (
@@ -537,15 +545,9 @@ impl Manager {
                         "tcp:127.0.0.1:8054".parse().unwrap(),
                         "udp:127.0.0.1:8054".parse().unwrap(),
                     ],
-                    zones: Arc::new(HashMap::from([("example.com".into(), "".into())])),
-                    xfr_in: Arc::new(HashMap::from([(
-                        "example.com".into(),
-                        "127.0.0.1:8055 KEY sec1-key".into(),
-                    )])),
-                    tsig_keys: HashMap::from([(
-                        "sec1-key".into(),
-                        "hmac-sha256:zlCZbVJPIhobIs1gJNQfrsS3xCxxsR9pMUrGwG8OgG8=".into(),
-                    )]),
+                    zones: Arc::new(HashMap::from([(zone_name.clone(), zone_file)])),
+                    xfr_in: Arc::new(HashMap::from([(zone_name, xfr_in)])),
+                    tsig_keys: HashMap::from([(tsig_key_name, tsig_key)]),
                     update_tx: update_tx.clone(),
                     cmd_rx: zl_rx,
                 }),
@@ -555,8 +557,8 @@ impl Manager {
                 Unit::ZoneServer(ZoneServerUnit {
                     http_api_path: Arc::new(String::from("/rs/")),
                     listen: vec![
-                        "tcp:127.0.0.1:8056".parse().unwrap(),
-                        "udp:127.0.0.1:8056".parse().unwrap(),
+                        "tcp:127.0.0.1:8055".parse().unwrap(),
+                        "udp:127.0.0.1:8055".parse().unwrap(),
                     ],
                     xfr_out: HashMap::from([(
                         "example.com".into(),
