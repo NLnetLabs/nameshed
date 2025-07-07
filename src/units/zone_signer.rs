@@ -515,7 +515,7 @@ impl ZoneSigner {
 
                         let kmip_conn_pool = self.kmip_servers
                             .get(&priv_server_id)
-                            .ok_or(format!("No connection pool available for KMIP server '{priv_server_id}"))?;
+                            .ok_or(format!("No connection pool available for KMIP server '{priv_server_id}'"))?;
 
                         let key_pair = KeyPair::Kmip(kmip::sign::KeyPair::new(
                             priv_algorithm,
