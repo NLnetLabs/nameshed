@@ -16,6 +16,8 @@ mod targets;
 mod units;
 mod zonemaintenance;
 
+pub mod zone;
+
 pub mod path_monitor;
 
 #[cfg(test)]

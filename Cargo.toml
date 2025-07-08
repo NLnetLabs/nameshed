@@ -15,6 +15,7 @@ domain         = { git = "https://github.com/NLnetLabs/domain", branch = "patche
     "tsig",
     "unstable-client-transport",
     "unstable-crypto-sign",
+    "unstable-new",
     "unstable-server-transport",
     "unstable-sign",
     "unstable-zonetree",
