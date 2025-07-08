@@ -60,6 +60,21 @@ uuid               = { version = "1.4", features = ["v4", "fast-rng"] }
 indoc              = "2.0.5"
 rayon = "1.10.0"
 
+# Nameshed contains many performance-sensitive hashmaps and is not expected to
+# be accessible to attackers.  'std's default hasher, which is slow but secure
+# against HashDoS attacks, is not appropriate.  A performant, cryptographically
+# insecure hash function is needed.
+#
+# - 'foldhash' is a fast, insecure, general-purpose hash function.
+#
+#   TODO: Who maintains it, and how well?
+#
+# - 'rustc-hash' is the hash function used by 'rustc'.  It trades hash quality
+#   for performance, as best suites 'rustc'.
+#
+#   TODO: Who maintains it, and how well?
+[dependencies.foldhash]
+version = "0.1.5"
 
 # Nameshed sometimes requires filesystem paths to be encoded within UTF-8 texts.
 # To conveniently resolve the conversion between the OS filesystem encoding and
@@ -69,6 +84,13 @@ rayon = "1.10.0"
 [dependencies.camino]
 version = "1.1.0"
 features = ["serde1"]
+
+# Nameshed needs to monitor the filesystem for changes to configuration and
+# state, as well as for zones loaded from zonefiles.
+#
+# TODO
+[dependencies.notify]
+version = "8.1.0"
 
 [target.'cfg(unix)'.dependencies]
 nix         = "0.22.0"
