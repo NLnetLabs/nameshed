@@ -13,7 +13,7 @@ pub mod v1;
 
 /// A configuration file.
 #[derive(Clone, Debug, Deserialize)]
-#[serde(tag = "version")]
+#[serde(rename_all = "kebab-case", tag = "version")]
 pub enum FileSpec {
     /// The version 1 format.
     V1(v1::Spec),
