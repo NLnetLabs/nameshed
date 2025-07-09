@@ -8,10 +8,11 @@ use std::{
     collections::{HashMap, HashSet},
     fmt,
     net::SocketAddr,
-    str::FromStr,
 };
 
 use camino::Utf8Path;
+
+pub mod args;
 
 //----------- Config -----------------------------------------------------------
 
@@ -40,10 +41,13 @@ pub struct Config {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DaemonConfig {
     /// The minimum severity of messages to log.
-    pub log_level: LogLevel,
+    pub log_level: Setting<LogLevel>,
 
     /// The location logs are written to.
-    pub log_file: Box<Utf8Path>,
+    pub log_file: Setting<Box<Utf8Path>>,
+
+    /// The location of the configuration file.
+    pub config_file: Setting<Box<Utf8Path>>,
 }
 
 //----------- LoaderConfig -----------------------------------------------------
@@ -158,54 +162,66 @@ pub enum LogLevel {
     Critical,
 }
 
-impl fmt::Display for LogLevel {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
+impl LogLevel {
+    /// Represent a [`LogLevel`] as a string.
+    pub const fn as_str(&self) -> &'static str {
+        match self {
             LogLevel::Trace => "trace",
             LogLevel::Debug => "debug",
             LogLevel::Info => "info",
             LogLevel::Warning => "warning",
             LogLevel::Error => "error",
             LogLevel::Critical => "critical",
-        })
+        }
     }
 }
 
-impl FromStr for LogLevel {
-    type Err = LogLevelParseError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(match s {
-            "trace" => LogLevel::Trace,
-            "debug" => LogLevel::Debug,
-            "info" => LogLevel::Info,
-            "warning" => LogLevel::Warning,
-            "error" => LogLevel::Error,
-            "critical" => LogLevel::Critical,
-            _ => {
-                return Err(LogLevelParseError {
-                    specified: s.into(),
-                })
-            }
-        })
-    }
-}
-
-/// An error in parsing a [`LogLevel`].
-#[derive(Clone)]
-pub struct LogLevelParseError {
-    /// The specified (but invalid) log level.
-    specified: Box<str>,
-}
-
-impl fmt::Debug for LogLevelParseError {
+impl fmt::Display for LogLevel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "unrecognized log level '{}'", self.specified)
+        f.write_str(self.as_str())
     }
 }
 
-impl fmt::Display for LogLevelParseError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(self, f)
+//----------- Setting ----------------------------------------------------------
+
+/// A configured setting.
+#[derive(Debug, Clone, Copy)]
+pub struct Setting<T> {
+    /// The source of the value.
+    pub source: SettingSource,
+
+    /// The underlying value.
+    pub value: T,
+}
+
+impl<T> Setting<T> {
+    /// Merge two [`Setting`]s, keeping the highest-priority value.
+    pub fn merge(&mut self, other: Self) {
+        if self.source < other.source {
+            self.value = other.value;
+        }
     }
+}
+
+impl<T: PartialEq> PartialEq for Setting<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.value == other.value
+    }
+}
+
+impl<T: Eq> Eq for Setting<T> {}
+
+//----------- SettingSource ----------------------------------------------------
+
+/// The source of a configured setting.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SettingSource {
+    /// The configuration file.
+    File,
+
+    /// Environment variables.
+    Env,
+
+    /// Command-line arguments.
+    Args,
 }
