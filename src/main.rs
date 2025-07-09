@@ -1,126 +1,86 @@
-use clap::{crate_authors, crate_version, error::ErrorKind, Command};
-use log::{error, info, warn};
-use nameshed::{
-    log::{ExitError, LogConfig, Terminate},
-    manager::Manager,
-};
-use std::process::exit;
-use tokio::{
-    runtime::{self, Runtime},
-    signal::{self, unix::signal, unix::SignalKind},
-};
+use clap::{crate_authors, crate_version};
+use nameshed::{config::Config, log::LogConfig, manager::Manager};
+use std::process::ExitCode;
 
-fn run_with_cmdline_args() -> Result<(), Terminate> {
-    LogConfig::init_logging()?;
+fn main() -> ExitCode {
+    // TODO: Clean up
+    LogConfig::init_logging().unwrap();
 
-    let app = Command::new("nameshed")
+    // Set up the command-line interface.
+    let cmd = clap::Command::new("nameshed")
         .version(crate_version!())
         .author(crate_authors!())
-        .next_line_help(true);
+        .next_line_help(true)
+        .arg(
+            clap::Arg::new("check_config")
+                .long("check-config")
+                .action(clap::ArgAction::SetTrue)
+                .help("Check the configuration and exit"),
+        );
+    let cmd = Config::setup_cli(cmd);
 
-    let _matches = app.try_get_matches().map_err(|err| {
-        let _ = err.print();
-        match err.kind() {
-            ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => Terminate::normal(),
-            _ => Terminate::other(2),
+    // Process command-line arguments.
+    let matches = cmd.get_matches();
+
+    // Construct the configuration.
+    let _config = match Config::process(&matches) {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("Nameshed couldn't be configured: {error}");
+            return ExitCode::FAILURE;
         }
-    })?;
+    };
 
-    // TODO: Drop privileges, get listen fd from systemd, create PID file,
-    // fork, detach from the parent process, change user and group, etc. In a
-    // word: daemonize. Prior art:
-    //   - https://github.com/NLnetLabs/routinator/blob/main/src/operation.rs#L509
-    //   - https://github.com/NLnetLabs/routinator/blob/main/src/process.rs#L241
-    //   - https://github.com/NLnetLabs/routinator/blob/main/src/process.rs#L363
-
-    LogConfig::default().switch_logging(true)?;
-
-    let mut manager = Manager::new();
-    let runtime = run_with_config(&mut manager)?;
-    runtime.block_on(handle_signals(manager))?;
-    Ok(())
-}
-
-async fn handle_signals(mut manager: Manager) -> Result<(), ExitError> {
-    let mut hup_signals = signal(SignalKind::hangup()).map_err(|err| {
-        error!("Fatal: cannot listen for HUP signals ({}). Aborting.", err);
-        ExitError
-    })?;
-
-    loop {
-        // let ctrl_c = signal::ctrl_c();
-        // pin_mut!(ctrl_c);
-
-        // let hup = hup_signals.recv();
-        // pin_mut!(hup);
-
-        tokio::select! {
-            res = hup_signals.recv() => {
-                match res {
-                    None => {
-                        error!("Fatal: listening for SIGHUP signals failed. Aborting.");
-                        manager.terminate();
-                        return Err(ExitError);
-                    }
-                    Some(_) => {
-                        // HUP signal received
-                    }
-                }
-            }
-
-            res = signal::ctrl_c() => {
-                match res {
-                    Err(err) => {
-                        error!(
-                            "Fatal: listening for CTRL-C (SIGINT) signals failed \
-                            ({}). Aborting.",
-                            err
-                        );
-                        manager.terminate();
-                        return Err(ExitError);
-                    }
-                    Ok(_) => {
-                        // CTRL-C received
-                        warn!("CTRL-C (SIGINT) received, shutting down.");
-                        manager.terminate();
-                        return Ok(());
-                    }
-                }
-            }
-
-            _ = manager.accept_application_commands() => {
-
-            }
-        }
+    if matches.get_flag("check_config") {
+        return ExitCode::SUCCESS;
     }
-}
 
-fn run_with_config(manager: &mut Manager) -> Result<Runtime, ExitError> {
-    let runtime = runtime::Builder::new_multi_thread()
+    // TODO: daemonbase
+
+    // Set up an async runtime.
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .unwrap();
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("Couldn't start Tokio: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
 
-    // Make the runtime the default for Tokio related functions that assume a
-    // default runtime.
-    let _guard = runtime.enter();
+    // Enter the runtime.
+    runtime.block_on(async {
+        // TODO: Clean up.
 
-    nameshed::http::Server::new(vec!["0.0.0.0:8080".parse().unwrap()])
-        .run(manager.metrics(), manager.http_resources())?;
+        LogConfig::default().switch_logging(true).unwrap();
+        let mut manager = Manager::new();
+        nameshed::http::Server::new(vec!["0.0.0.0:8080".parse().unwrap()])
+            .run(manager.metrics(), manager.http_resources())
+            .unwrap();
+        manager.spawn();
 
-    manager.spawn();
+        // Let the manager run and handle external events.
+        let result = loop {
+            tokio::select! {
+                // Watch for CTRL-C (SIGINT).
+                res = tokio::signal::ctrl_c() => {
+                    if let Err(error) = res {
+                        log::error!(
+                            "Listening for CTRL-C (SIGINT) failed: {error}"
+                        );
+                        break ExitCode::FAILURE;
+                    }
+                    break ExitCode::SUCCESS;
+                }
 
-    Ok(runtime)
-}
+                // TODO: Clean up.
+                _ = manager.accept_application_commands() => {}
+            }
+        };
 
-fn main() {
-    let exit_code = match run_with_cmdline_args() {
-        Ok(_) => Terminate::normal(),
-        Err(terminate) => terminate,
-    }
-    .exit_code();
-
-    info!("Exiting with exit code {exit_code}");
-
-    exit(exit_code);
+        // Shut down Nameshed.
+        manager.terminate();
+        result
+    })
 }
