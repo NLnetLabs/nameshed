@@ -82,3 +82,37 @@ servers = ["127.0.0.1:8053"] # TODO: Pick a good default port.
 
 # Configuring cryptography.
 [crypto]
+
+# Configuring an HSM store.
+[crypto.hsm-store.softhsm]
+# The type of the HSM store.
+#
+# At the moment, only KMIP is supported.  To use HSMs via PKCS#11, launch a
+# 'nameshed-hsm-relay' [1] instance and connect to it over KMIP.
+#
+# [1]: https://github.com/NLnetLabs/nameshed-hsm-relay
+type = "kmip"
+#
+# The address of the HSM store.
+#
+# This specifies a TLS/TCP port to connect to, in '<hostname>:<port>' format.
+# If a port is not specified, 5696 will be used.
+address = "localhost:21467"
+#
+# How Nameshed should authenticate itself to the HSM.
+#
+# This specifies the TLS client certificates to use, if any.
+authentication.type = "none"
+#
+# How Nameshed should verify the identity of the HSM.
+#
+# This specifies the TLS certificates (or other verification path) the HSM is
+# expected to present.
+verification.type = "none"
+#
+# The KMIP credentials Nameshed should use during signing.
+#
+# These credentials will be passed over KMIP, and their semantics is defined by
+# the underlying HSM.  Check the HSM-specific documentation.
+credentials = { username = "foo", password = "1234" }
+

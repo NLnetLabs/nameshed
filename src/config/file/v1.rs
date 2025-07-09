@@ -6,8 +6,9 @@ use camino::Utf8Path;
 use serde::Deserialize;
 
 use crate::config::{
-    Config, CryptoConfig, DaemonConfig, HsmStoreConfig, KeyManagerConfig, LoaderConfig, LogLevel,
-    ReviewConfig, ServerConfig, Setting, SettingSource, SignerConfig, SocketConfig,
+    Config, CryptoConfig, DaemonConfig, HsmStoreConfig, KeyManagerConfig, KmipAddress,
+    KmipCredentials, KmipStoreConfig, KmipTlsAuthentication, KmipTlsVerification, LoaderConfig,
+    LogLevel, ReviewConfig, ServerConfig, Setting, SettingSource, SignerConfig, SocketConfig,
 };
 
 //----------- Spec -------------------------------------------------------------
@@ -251,7 +252,8 @@ impl ServerSpec {
 #[serde(rename_all = "kebab-case", deny_unknown_fields, default)]
 pub struct CryptoSpec {
     /// Configured HSM stores.
-    pub hsm_store: HashMap<Box<str>, HsmStoreSpec>,
+    #[serde(alias = "hsm-store")]
+    pub hsm_stores: HashMap<Box<str>, HsmStoreSpec>,
 }
 
 //--- Conversion
@@ -261,7 +263,7 @@ impl CryptoSpec {
     pub fn build(self) -> CryptoConfig {
         CryptoConfig {
             hsm_stores: self
-                .hsm_store
+                .hsm_stores
                 .into_iter()
                 .map(|(name, spec)| (name, spec.build()))
                 .collect(),
@@ -274,14 +276,190 @@ impl CryptoSpec {
 /// Configuration for an HSM store.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields, tag = "type")]
-pub enum HsmStoreSpec {}
+pub enum HsmStoreSpec {
+    /// A KMIP store.
+    Kmip(KmipStoreSpec),
+}
 
 //--- Conversion
 
 impl HsmStoreSpec {
     /// Build the internal configuration.
     pub fn build(self) -> HsmStoreConfig {
-        match self {}
+        match self {
+            HsmStoreSpec::Kmip(spec) => HsmStoreConfig::Kmip(spec.build()),
+        }
+    }
+}
+
+//----------- KmipStoreSpec --------------------------------------------------
+
+/// Configuration for a KMIP HSM store.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Hash)]
+pub struct KmipStoreSpec {
+    /// The address of the KMIP server.
+    address: KmipAddressSpec,
+
+    /// The credentials to authenticate the TLS connection with.
+    authentication: KmipTlsAuthenticationSpec,
+
+    /// The expected server identity to verify the TLS connection with.
+    verification: KmipTlsVerificationSpec,
+
+    /// The credentials to use within the KMIP protocol, if any.
+    credentials: Option<KmipCredentialsSpec>,
+}
+
+//--- Conversion
+
+impl KmipStoreSpec {
+    /// Build the internal configuration.
+    pub fn build(self) -> KmipStoreConfig {
+        KmipStoreConfig {
+            address: self.address.build(),
+            authentication: self.authentication.build(),
+            verification: self.verification.build(),
+            credentials: self.credentials.map(|s| s.build()),
+        }
+    }
+}
+
+//----------- KmipAddressSpec --------------------------------------------------
+
+/// The address of a KMIP server.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct KmipAddressSpec {
+    /// The host machine of the server.
+    pub host: Box<str>,
+
+    /// The TCP port number of the server.
+    pub port: u16,
+}
+
+//--- Deserialization
+
+impl FromStr for KmipAddressSpec {
+    type Err = ParseKmipAddressError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (host, port) = match s.split_once(":") {
+            Some((host, port)) => (host, port.parse().map_err(ParseKmipAddressError::Port)?),
+            None => (s, 5696),
+        };
+
+        Ok(Self {
+            host: host.into(),
+            port,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for KmipAddressSpec {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        s.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+//--- Conversion
+
+impl KmipAddressSpec {
+    /// Build the internal configuration.
+    pub fn build(self) -> KmipAddress {
+        KmipAddress::Unresolved {
+            hostname: self.host,
+            port: self.port,
+        }
+    }
+}
+
+//----------- KmipTlsAuthentication --------------------------------------------
+
+/// How Nameshed should authenticate itself to a KMIP server over TLS.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Hash)]
+#[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum KmipTlsAuthenticationSpec {
+    /// Don't authenticate to the server.
+    None,
+
+    /// Authenticate using a PEM keypair.
+    PEM {
+        /// The path to the certificate (i.e. public part).
+        certificate: Box<Utf8Path>,
+
+        /// The path to the key (i.e. private part).
+        key: Box<Utf8Path>,
+    },
+
+    /// Authenticate using a PKCS#12 keypair.
+    PKCS12 {
+        /// The path to the keypair.
+        path: Box<Utf8Path>,
+    },
+}
+
+//--- Conversion
+
+impl KmipTlsAuthenticationSpec {
+    /// Build the internal configuration.
+    pub fn build(self) -> KmipTlsAuthentication {
+        match self {
+            Self::None => KmipTlsAuthentication::None,
+            Self::PEM { certificate, key } => KmipTlsAuthentication::PEM { certificate, key },
+            Self::PKCS12 { path } => KmipTlsAuthentication::PKCS12(path),
+        }
+    }
+}
+
+//----------- KmipTlsVerification ----------------------------------------------
+
+/// How Nameshed should verify a KMIP server's identity over TLS.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields, tag = "type")]
+pub enum KmipTlsVerificationSpec {
+    /// Don't verify the server at all.
+    None,
+    //
+    // TODO: Support specifying the server and/or CA cert.
+}
+
+//--- Conversion
+
+impl KmipTlsVerificationSpec {
+    /// Build the internal configuration.
+    pub fn build(self) -> KmipTlsVerification {
+        match self {
+            Self::None => KmipTlsVerification::None,
+        }
+    }
+}
+
+//----------- KmipCredentials --------------------------------------------------
+
+/// Credentials for cryptographic operations over KMIP.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Hash)]
+pub struct KmipCredentialsSpec {
+    /// The username to log in with.
+    pub username: Box<str>,
+
+    /// The password to log in with.
+    pub password: Box<str>,
+    //
+    // TODO: A command to execute to retrieve the password?
+}
+
+//--- Conversion
+
+impl KmipCredentialsSpec {
+    /// Build the internal configuration.
+    pub fn build(self) -> KmipCredentials {
+        KmipCredentials {
+            username: self.username,
+            password: self.password,
+        }
     }
 }
 
@@ -350,7 +528,7 @@ pub enum ComplexSocketSpec {
 //--- Deserialization
 
 impl FromStr for SimpleSocketSpec {
-    type Err = ParseSimpleSocketSpecError;
+    type Err = ParseSimpleSocketError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let Some((protocol, address)) = s.split_once("://") else {
@@ -365,7 +543,7 @@ impl FromStr for SimpleSocketSpec {
             "tcp" => Ok(Self::TCP {
                 addr: address.parse()?,
             }),
-            _ => Err(ParseSimpleSocketSpecError::UnknownProtocol {
+            _ => Err(ParseSimpleSocketError::UnknownProtocol {
                 protocol: protocol.into(),
             }),
         }
@@ -420,7 +598,7 @@ impl ComplexSocketSpec {
 
 /// An error in parsing a [`SocketSpec`] URI string.
 #[derive(Clone, Debug)]
-pub enum ParseSimpleSocketSpecError {
+pub enum ParseSimpleSocketError {
     /// An unrecognized protocol was specified.
     UnknownProtocol {
         /// The specified protocol value.
@@ -431,7 +609,7 @@ pub enum ParseSimpleSocketSpecError {
     Address(std::net::AddrParseError),
 }
 
-impl fmt::Display for ParseSimpleSocketSpecError {
+impl fmt::Display for ParseSimpleSocketError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnknownProtocol { protocol } => {
@@ -442,8 +620,25 @@ impl fmt::Display for ParseSimpleSocketSpecError {
     }
 }
 
-impl From<std::net::AddrParseError> for ParseSimpleSocketSpecError {
+impl From<std::net::AddrParseError> for ParseSimpleSocketError {
     fn from(value: std::net::AddrParseError) -> Self {
         Self::Address(value)
+    }
+}
+
+//----------- ParseKmipAddressSpecError ----------------------------------------
+
+/// An error in parsing a [`KmipAddressSpec`] URI string.
+#[derive(Clone, Debug)]
+pub enum ParseKmipAddressError {
+    /// The port number could not be parsed.
+    Port(std::num::ParseIntError),
+}
+
+impl fmt::Display for ParseKmipAddressError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Port(error) => write!(f, "could not parse the port number: {error}"),
+        }
     }
 }

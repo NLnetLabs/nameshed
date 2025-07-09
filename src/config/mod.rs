@@ -164,13 +164,92 @@ pub struct CryptoConfig {
 /// Configuration for an HSM store.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum HsmStoreConfig {
-    /// A PKCS#11 store.
-    PKCS11 {
-        /// The location of the dynamic library to load.
-        library: Box<Utf8Path>,
+    /// A KMIP store.
+    Kmip(KmipStoreConfig),
+}
+
+//----------- KmipStoreConfig --------------------------------------------------
+
+/// Configuration for a KMIP HSM store.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct KmipStoreConfig {
+    /// The address of the KMIP server.
+    pub address: KmipAddress,
+
+    /// The credentials to authenticate the TLS connection with.
+    pub authentication: KmipTlsAuthentication,
+
+    /// The expected server identity to verify the TLS connection with.
+    pub verification: KmipTlsVerification,
+
+    /// The credentials to use within the KMIP protocol, if any.
+    pub credentials: Option<KmipCredentials>,
+}
+
+//----------- KmipAddress ------------------------------------------------------
+
+/// The address of a KMIP server.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum KmipAddress {
+    /// A hostname-port pair.
+    Unresolved {
+        /// The hostname of the server.
+        //
+        // TODO: Use 'Box<Name>' from 'domain::new::base::name'.
+        hostname: Box<str>,
+
+        /// The TCP port number of the server.
+        ///
+        /// The default port number is 5696.
+        port: u16,
     },
+
+    /// An IP address-port pair.
+    Resolved(SocketAddr),
+}
+
+//----------- KmipTlsAuthentication --------------------------------------------
+
+/// How Nameshed should authenticate itself to a KMIP server over TLS.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum KmipTlsAuthentication {
+    /// Don't authenticate to the server.
+    None,
+
+    /// Authenticate using a PEM keypair.
+    PEM {
+        /// The path to the certificate (i.e. public part).
+        certificate: Box<Utf8Path>,
+
+        /// The path to the key (i.e. private part).
+        key: Box<Utf8Path>,
+    },
+
+    /// Authenticate using a PKCS#12 keypair.
+    PKCS12(Box<Utf8Path>),
+}
+
+//----------- KmipTlsVerification ----------------------------------------------
+
+/// How Nameshed should verify a KMIP server's identity over TLS.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum KmipTlsVerification {
+    /// Don't verify the server at all.
+    None,
     //
-    // TODO: KMIP?
+    // TODO: Support specifying the server and/or CA cert.
+}
+
+//----------- KmipCredentials --------------------------------------------------
+
+/// Credentials for cryptographic operations over KMIP.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct KmipCredentials {
+    /// The username to log in with.
+    pub username: Box<str>,
+
+    /// The password to log in with.
+    pub password: Box<str>,
 }
 
 //----------- SocketConfig -----------------------------------------------------
@@ -282,6 +361,9 @@ impl<T: Eq> Eq for Setting<T> {}
 //----------- SettingSource ----------------------------------------------------
 
 /// The source of a configured setting.
+///
+/// There are four possible sources for a setting.  Each source has a designated
+/// priority, with which it can override settings from other sources.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SettingSource {
     /// A default.
