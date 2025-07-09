@@ -4,7 +4,7 @@ use std::fmt;
 
 use camino::{Utf8Path, Utf8PathBuf};
 
-use super::LogLevel;
+use super::{Config, LogLevel, SettingSource};
 
 //----------- EnvSpec ----------------------------------------------------------
 
@@ -66,12 +66,21 @@ impl EnvSpec {
             },
         })
     }
+
+    /// Merge this into a [`Config`].
+    pub fn merge(self, config: &mut Config) {
+        let daemon = &mut config.daemon;
+        let source = SettingSource::Env;
+        daemon.log_level.merge_value(self.log_level, source);
+        daemon.log_file.merge_value(self.log_file, source);
+        daemon.config_file.merge_value(self.config, source);
+    }
 }
 
 //----------- EnvError ---------------------------------------------------------
 
 /// An error in processing environment variables.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EnvError {
     /// A non-UTF-8 value was observed.
     NonUtf8 {
@@ -84,12 +93,6 @@ pub enum EnvError {
         /// The log level value.
         value: Box<str>,
     },
-}
-
-impl fmt::Debug for EnvError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(self, f)
-    }
 }
 
 impl fmt::Display for EnvError {
@@ -107,3 +110,5 @@ impl fmt::Display for EnvError {
         }
     }
 }
+
+impl std::error::Error for EnvError {}

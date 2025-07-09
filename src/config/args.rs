@@ -6,7 +6,7 @@ use clap::{
     Arg, ArgMatches, Command, ValueEnum, ValueHint,
 };
 
-use super::LogLevel;
+use super::{Config, LogLevel, SettingSource};
 
 //----------- ArgSpec ----------------------------------------------------------
 
@@ -14,7 +14,7 @@ use super::LogLevel;
 #[derive(Clone, Debug)]
 pub struct ArgsSpec {
     /// The configuration file to load.
-    pub config: Box<Utf8Path>,
+    pub config: Option<Box<Utf8Path>>,
 
     /// The minimum severity of messages to log.
     pub log_level: Option<LogLevel>,
@@ -35,8 +35,6 @@ impl ArgsSpec {
                     PathBufValueParser::new().try_map(Utf8PathBuf::try_from),
                 ))
                 .value_hint(ValueHint::FilePath)
-                // TODO: Import from 'config::file::default_path()'.
-                .default_value("/etc/nameshed/config.toml")
                 .help("The configuration file to load"),
             Arg::new("log_level")
                 .long("log-level")
@@ -59,14 +57,21 @@ impl ArgsSpec {
         Self {
             config: matches
                 .get_one::<Utf8PathBuf>("config")
-                .expect("'config' has a default value")
-                .as_path()
-                .into(),
+                .map(|p| p.as_path().into()),
             log_level: matches.get_one::<LogLevel>("log_level").copied(),
             log_file: matches
                 .get_one::<Utf8PathBuf>("log_file")
                 .map(|p| p.as_path().into()),
         }
+    }
+
+    /// Merge this into a [`Config`].
+    pub fn merge(self, config: &mut Config) {
+        let daemon = &mut config.daemon;
+        let source = SettingSource::Args;
+        daemon.log_level.merge_value(self.log_level, source);
+        daemon.log_file.merge_value(self.log_file, source);
+        daemon.config_file.merge_value(self.config, source);
     }
 }
 

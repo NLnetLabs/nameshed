@@ -4,16 +4,13 @@
 //! most specific): configuration files, environment variables, and command-line
 //! arguments.  This module defines and collects together these sources.
 
-use std::{
-    collections::{HashMap, HashSet},
-    fmt,
-    net::SocketAddr,
-};
+use std::{collections::HashMap, fmt, net::SocketAddr};
 
 use camino::Utf8Path;
 
 pub mod args;
 pub mod env;
+pub mod file;
 
 //----------- Config -----------------------------------------------------------
 
@@ -34,6 +31,60 @@ pub struct Config {
 
     /// Cryptography-related configuration.
     pub crypto: CryptoConfig,
+}
+
+//--- Processing
+
+impl Config {
+    /// Set up a [`clap::Command`] with config-related arguments.
+    pub fn setup_cli(cmd: clap::Command) -> clap::Command {
+        args::ArgsSpec::setup(cmd)
+    }
+
+    /// Process all configuration sources.
+    pub fn process(cli_matches: &clap::ArgMatches) -> Result<Self, ConfigError> {
+        // Process environment variables and command-line arguments.
+        let mut env = env::EnvSpec::process()?;
+        let mut args = args::ArgsSpec::process(cli_matches);
+
+        // Determine the location of the configuration file.
+        let config_file = args
+            .config
+            .take()
+            .map(|path| Setting {
+                source: SettingSource::Args,
+                value: path,
+            })
+            .or(env.config.take().map(|path| Setting {
+                source: SettingSource::Env,
+                value: path,
+            }))
+            .unwrap_or(Setting {
+                source: SettingSource::Default,
+                value: "/etc/nameshed/config.toml".into(),
+            });
+
+        // Load and parse the configuration file.
+        let file = match file::FileSpec::load(&config_file.value) {
+            Ok(file) => file,
+            Err(error) => {
+                return Err(ConfigError::File {
+                    path: config_file.value,
+                    error,
+                })
+            }
+        };
+
+        // Build the configuration.
+        let mut this = file.build(config_file);
+
+        // Include data from environment variables and command-line arguments.
+        args.merge(&mut this);
+        env.merge(&mut this);
+
+        // Return the prepared configuration.
+        Ok(this)
+    }
 }
 
 //----------- DaemonConfig -----------------------------------------------------
@@ -57,7 +108,7 @@ pub struct DaemonConfig {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LoaderConfig {
     /// Where to listen for zone update notifications.
-    pub notif_listeners: HashSet<SocketConfig>,
+    pub notif_listeners: Vec<SocketConfig>,
 
     /// Configuration for reviewing loaded zones.
     pub review: ReviewConfig,
@@ -78,7 +129,7 @@ pub struct SignerConfig {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReviewConfig {
     /// Where to serve zones for review.
-    pub servers: HashSet<SocketConfig>,
+    pub servers: Vec<SocketConfig>,
 }
 
 //----------- KeyManagerConfig -------------------------------------------------
@@ -93,7 +144,7 @@ pub struct KeyManagerConfig {}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServerConfig {
     /// Where to serve zones.
-    pub servers: HashSet<SocketConfig>,
+    pub servers: Vec<SocketConfig>,
 }
 
 //----------- CryptoConfig -----------------------------------------------------
@@ -202,6 +253,13 @@ impl<T> Setting<T> {
             self.value = other.value;
         }
     }
+
+    /// Merge a [`Setting`] with a value from a fixed source.
+    pub fn merge_value(&mut self, value: Option<T>, source: SettingSource) {
+        if let Some(value) = value {
+            self.merge(Setting { source, value });
+        }
+    }
 }
 
 impl<T: PartialEq> PartialEq for Setting<T> {
@@ -217,6 +275,9 @@ impl<T: Eq> Eq for Setting<T> {}
 /// The source of a configured setting.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SettingSource {
+    /// A default.
+    Default,
+
     /// The configuration file.
     File,
 
@@ -225,4 +286,57 @@ pub enum SettingSource {
 
     /// Command-line arguments.
     Args,
+}
+
+//----------- ConfigError ------------------------------------------------------
+
+/// An error in configuring Nameshed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ConfigError {
+    /// An error occurred regarding environment variables.
+    Env(env::EnvError),
+
+    /// An error occurred regarding the configuration file.
+    File {
+        /// The location of the config file.
+        path: Box<Utf8Path>,
+
+        /// The error that occurred.
+        error: file::FileError,
+    },
+}
+
+impl fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ConfigError::Env(error) => error.fmt(f),
+            ConfigError::File {
+                error: file::FileError::Load(error),
+                path,
+            } => {
+                write!(f, "could not load the config file '{path}': {error}")
+            }
+            ConfigError::File {
+                error: file::FileError::Parse(error),
+                path,
+            } => {
+                write!(f, "could not parse the config file '{path}': {error}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ConfigError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            ConfigError::Env(error) => Some(error),
+            ConfigError::File { error, .. } => Some(error),
+        }
+    }
+}
+
+impl From<env::EnvError> for ConfigError {
+    fn from(value: env::EnvError) -> Self {
+        Self::Env(value)
+    }
 }
