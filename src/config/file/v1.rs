@@ -19,14 +19,17 @@ pub struct Spec {
     /// Configuring the Nameshed daemon.
     pub daemon: DaemonSpec,
 
-    /// Configuring the zone loader.
+    /// Configuring how zones are loaded.
     pub loader: LoaderSpec,
 
-    /// Configuring the zone signer.
+    /// Configuring how zones are signed.
     pub signer: SignerSpec,
 
-    /// Configuring the key manager.
+    /// Configuring key management.
     pub key_manager: KeyManagerSpec,
+
+    /// Configuring zone serving.
+    pub server: ServerSpec,
 
     /// Configuring cryptography.
     pub crypto: CryptoSpec,
@@ -42,6 +45,7 @@ impl Spec {
             loader: self.loader.build(),
             signer: self.signer.build(),
             key_manager: self.key_manager.build(),
+            server: self.server.build(),
             crypto: self.crypto.build(),
         }
     }
@@ -51,7 +55,7 @@ impl Spec {
 
 /// Configuring the Nameshed daemon.
 #[derive(Clone, Debug, Default, Deserialize)]
-#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields, default)]
 pub struct DaemonSpec {
     /// The minimum severity of messages to log.
     pub log_level: Option<LogLevelSpec>,
@@ -109,10 +113,10 @@ pub enum LogLevelSpec {
     /// Something does not appear to be correct.
     Warning,
 
-    /// Something is wrong (but Nameshed can recover).
+    /// Something went wrong (but Nameshed can recover).
     Error,
 
-    /// Something is wrong and Nameshed can't function at all.
+    /// Something went wrong and Nameshed can't function at all.
     Critical,
 }
 
@@ -134,14 +138,14 @@ impl LogLevelSpec {
 
 //----------- LoaderSpec -------------------------------------------------------
 
-/// Configuring the zone loader.
+/// Configuring how zones are loaded.
 #[derive(Clone, Debug, Default, Deserialize)]
-#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields, default)]
 pub struct LoaderSpec {
     /// Where to listen for zone update notifications.
     pub notif_listeners: Vec<SocketSpec>,
 
-    /// Configuration for reviewing loaded zones.
+    /// Configuring whether and how loaded zones are reviewed.
     pub review: ReviewSpec,
 }
 
@@ -165,9 +169,9 @@ impl LoaderSpec {
 
 /// Configuring the zone signer.
 #[derive(Clone, Debug, Default, Deserialize)]
-#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields, default)]
 pub struct SignerSpec {
-    /// Configuration for reviewing loaded zones.
+    /// Configuring whether and how signed zones are reviewed.
     pub review: ReviewSpec,
 }
 
@@ -184,9 +188,9 @@ impl SignerSpec {
 
 //----------- ReviewSpec -------------------------------------------------------
 
-/// Configuring zone review.
+/// Configuring whether and how zones are reviewed.
 #[derive(Clone, Debug, Default, Deserialize)]
-#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields, default)]
 pub struct ReviewSpec {
     /// Where to serve zones for review.
     pub servers: Vec<SocketSpec>,
@@ -205,9 +209,9 @@ impl ReviewSpec {
 
 //----------- KeyManagerSpec ---------------------------------------------------
 
-/// Configuring the key manager.
+/// Configuring DNSSEC key management.
 #[derive(Clone, Debug, Default, Deserialize)]
-#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields, default)]
 pub struct KeyManagerSpec {}
 
 //--- Conversion
@@ -221,9 +225,9 @@ impl KeyManagerSpec {
 
 //----------- ServerSpec -------------------------------------------------------
 
-/// Configuring the zone server.
+/// Configuring how zones are published.
 #[derive(Clone, Debug, Default, Deserialize)]
-#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields, default)]
 pub struct ServerSpec {
     /// Where to serve zones.
     pub servers: Vec<SocketSpec>,
@@ -244,7 +248,7 @@ impl ServerSpec {
 
 /// Configuring cryptography.
 #[derive(Clone, Debug, Default, Deserialize)]
-#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields, default)]
 pub struct CryptoSpec {
     /// Configured HSM stores.
     pub hsm_store: HashMap<Box<str>, HsmStoreSpec>,
@@ -297,14 +301,20 @@ pub enum SocketSpec {
 /// A simple [`SocketSpec`] as a string.
 #[derive(Clone, Debug)]
 pub enum SimpleSocketSpec {
-    /// Listen over UDP.
+    /// Listen exclusively over UDP.
     UDP {
         /// The socket address to listen on.
         addr: SocketAddr,
     },
 
-    /// Listen over TCP.
+    /// Listen exclusively over TCP.
     TCP {
+        /// The socket address to listen on.
+        addr: SocketAddr,
+    },
+
+    /// Listen over both TCP and UDP.
+    TCPUDP {
         /// The socket address to listen on.
         addr: SocketAddr,
     },
@@ -316,14 +326,20 @@ pub enum SimpleSocketSpec {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields, tag = "type")]
 pub enum ComplexSocketSpec {
-    /// Listen over UDP.
+    /// Listen exclusively over UDP.
     UDP {
         /// The socket address to listen on.
         addr: SocketAddr,
     },
 
-    /// Listen over TCP.
+    /// Listen exclusively over TCP.
     TCP {
+        /// The socket address to listen on.
+        addr: SocketAddr,
+    },
+
+    /// Listen over both TCP and UDP.
+    TCPUDP {
         /// The socket address to listen on.
         addr: SocketAddr,
     },
@@ -338,8 +354,8 @@ impl FromStr for SimpleSocketSpec {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let Some((protocol, address)) = s.split_once("://") else {
-            // Default to UDP.
-            return Ok(Self::UDP { addr: s.parse()? });
+            // Default to TCP+UDP.
+            return Ok(Self::TCPUDP { addr: s.parse()? });
         };
 
         match protocol {
@@ -384,6 +400,7 @@ impl SimpleSocketSpec {
         match self {
             Self::UDP { addr } => SocketConfig::UDP { addr },
             Self::TCP { addr } => SocketConfig::TCP { addr },
+            Self::TCPUDP { addr } => SocketConfig::TCPUDP { addr },
         }
     }
 }
@@ -394,6 +411,7 @@ impl ComplexSocketSpec {
         match self {
             Self::UDP { addr } => SocketConfig::UDP { addr },
             Self::TCP { addr } => SocketConfig::TCP { addr },
+            Self::TCPUDP { addr } => SocketConfig::TCPUDP { addr },
         }
     }
 }

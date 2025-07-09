@@ -29,6 +29,9 @@ pub struct Config {
     /// The configuration of the key manager.
     pub key_manager: KeyManagerConfig,
 
+    /// The configuration of the zone server.
+    pub server: ServerConfig,
+
     /// Cryptography-related configuration.
     pub crypto: CryptoConfig,
 }
@@ -175,14 +178,20 @@ pub enum HsmStoreConfig {
 /// Configuration for serving / listening on a network socket.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum SocketConfig {
-    /// Listen over UDP.
+    /// Listen exclusively over UDP.
     UDP {
         /// The socket address to listen on.
         addr: SocketAddr,
     },
 
-    /// Listen over TCP.
+    /// Listen exclusively over TCP.
     TCP {
+        /// The socket address to listen on.
+        addr: SocketAddr,
+    },
+
+    /// Listen over both TCP and UDP.
+    TCPUDP {
         /// The socket address to listen on.
         addr: SocketAddr,
     },
