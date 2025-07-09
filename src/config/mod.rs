@@ -13,6 +13,7 @@ use std::{
 use camino::Utf8Path;
 
 pub mod args;
+pub mod env;
 
 //----------- Config -----------------------------------------------------------
 
