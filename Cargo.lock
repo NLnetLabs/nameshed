@@ -436,7 +436,7 @@ dependencies = [
 [[package]]
 name = "domain"
 version = "0.11.1-dev"
-source = "git+https://github.com/NLnetLabs/domain?branch=patches-for-nameshed-prototype#f817628e08ebee9245522cdb1a47c1a58c3f3647"
+source = "git+https://github.com/NLnetLabs/domain?branch=patches-for-nameshed-prototype#b6751b4ff40253de2904135c9ee60651e2219ed9"
 dependencies = [
  "arc-swap",
  "bcder",
@@ -470,7 +470,7 @@ dependencies = [
 [[package]]
 name = "domain-macros"
 version = "0.11.1-dev"
-source = "git+https://github.com/NLnetLabs/domain?branch=patches-for-nameshed-prototype#f817628e08ebee9245522cdb1a47c1a58c3f3647"
+source = "git+https://github.com/NLnetLabs/domain?branch=patches-for-nameshed-prototype#b6751b4ff40253de2904135c9ee60651e2219ed9"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1113,7 +1113,7 @@ dependencies = [
 [[package]]
 name = "kmip-protocol"
 version = "0.5.0"
-source = "git+https://github.com/NLnetLabs/kmip-protocol?branch=next#e7dc73910e91f2e0053a2b9c413cfbf2c4a36d51"
+source = "git+https://github.com/NLnetLabs/kmip-protocol?branch=next#2454c6bd29ff3c7e711724e67d50f374ec0c249b"
 dependencies = [
  "cfg-if",
  "enum-display-derive",
@@ -1134,7 +1134,7 @@ dependencies = [
 [[package]]
 name = "kmip-ttlv"
 version = "0.4.0"
-source = "git+https://github.com/NLnetLabs/kmip-ttlv?branch=next#38e72487d218f57649b5173483296be8946ef4d1"
+source = "git+https://github.com/NLnetLabs/kmip-ttlv?branch=next#ffe005638e150db0c1f1435a607f292d82b634b1"
 dependencies = [
  "cfg-if",
  "hex",
