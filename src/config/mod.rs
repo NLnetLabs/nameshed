@@ -235,7 +235,7 @@ pub enum KmipTlsAuthentication {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum KmipTlsVerification {
     /// Don't verify the server at all.
-    None,
+    Insecure,
     //
     // TODO: Support specifying the server and/or CA cert.
 }

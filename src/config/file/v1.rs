@@ -421,7 +421,7 @@ impl KmipTlsAuthenticationSpec {
 #[serde(rename_all = "kebab-case", deny_unknown_fields, tag = "type")]
 pub enum KmipTlsVerificationSpec {
     /// Don't verify the server at all.
-    None,
+    Insecure,
     //
     // TODO: Support specifying the server and/or CA cert.
 }
@@ -432,7 +432,7 @@ impl KmipTlsVerificationSpec {
     /// Build the internal configuration.
     pub fn build(self) -> KmipTlsVerification {
         match self {
-            Self::None => KmipTlsVerification::None,
+            Self::Insecure => KmipTlsVerification::Insecure,
         }
     }
 }

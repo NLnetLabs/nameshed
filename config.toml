@@ -108,7 +108,7 @@ authentication.type = "none"
 #
 # This specifies the TLS certificates (or other verification path) the HSM is
 # expected to present.
-verification.type = "none"
+verification.type = "insecure"
 #
 # The KMIP credentials Nameshed should use during signing.
 #
