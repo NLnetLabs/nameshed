@@ -1,14 +1,13 @@
 //! Version 1 of the configuration file.
 
-use std::{collections::HashMap, fmt, net::SocketAddr, str::FromStr};
+use std::{fmt, net::SocketAddr, str::FromStr};
 
 use camino::Utf8Path;
 use serde::Deserialize;
 
 use crate::config::{
-    Config, CryptoConfig, DaemonConfig, HsmConfig, KeyManagerConfig, KmipAddress, KmipCredentials,
-    KmipHsmConfig, KmipTlsAuthentication, KmipTlsVerification, LoaderConfig, LogLevel,
-    ReviewConfig, ServerConfig, Setting, SettingSource, SignerConfig, SocketConfig,
+    Config, DaemonConfig, KeyManagerConfig, LoaderConfig, LogLevel, ReviewConfig, ServerConfig,
+    Setting, SettingSource, SignerConfig, SocketConfig,
 };
 
 //----------- Spec -------------------------------------------------------------
@@ -31,9 +30,6 @@ pub struct Spec {
 
     /// Configuring zone serving.
     pub server: ServerSpec,
-
-    /// Configuring cryptography.
-    pub crypto: CryptoSpec,
 }
 
 //--- Conversion
@@ -47,7 +43,6 @@ impl Spec {
             signer: self.signer.build(),
             key_manager: self.key_manager.build(),
             server: self.server.build(),
-            crypto: self.crypto.build(),
         }
     }
 }
@@ -245,243 +240,6 @@ impl ServerSpec {
     }
 }
 
-//----------- CryptoSpec -------------------------------------------------------
-
-/// Configuring cryptography.
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(rename_all = "kebab-case", deny_unknown_fields, default)]
-pub struct CryptoSpec {
-    /// Configured HSMs.
-    #[serde(alias = "hsm")]
-    pub hsms: HashMap<Box<str>, HsmSpec>,
-}
-
-//--- Conversion
-
-impl CryptoSpec {
-    /// Build the internal configuration.
-    pub fn build(self) -> CryptoConfig {
-        CryptoConfig {
-            hsms: self
-                .hsms
-                .into_iter()
-                .map(|(name, spec)| (name, spec.build()))
-                .collect(),
-        }
-    }
-}
-
-//----------- HsmSpec ----------------------------------------------------------
-
-/// Configuration for an HSM.
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "kebab-case", deny_unknown_fields, tag = "type")]
-pub enum HsmSpec {
-    /// A KMIP HSM.
-    Kmip(KmipHsmSpec),
-}
-
-//--- Conversion
-
-impl HsmSpec {
-    /// Build the internal configuration.
-    pub fn build(self) -> HsmConfig {
-        match self {
-            HsmSpec::Kmip(spec) => HsmConfig::Kmip(spec.build()),
-        }
-    }
-}
-
-//----------- KmipHsmSpec ------------------------------------------------------
-
-/// Configuration for a KMIP HSM.
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Hash)]
-pub struct KmipHsmSpec {
-    /// The address of the KMIP server.
-    address: KmipAddressSpec,
-
-    /// The credentials to authenticate the TLS connection with.
-    authentication: KmipTlsAuthenticationSpec,
-
-    /// The expected server identity to verify the TLS connection with.
-    verification: KmipTlsVerificationSpec,
-
-    /// The credentials to use within the KMIP protocol, if any.
-    credentials: Option<KmipCredentialsSpec>,
-}
-
-//--- Conversion
-
-impl KmipHsmSpec {
-    /// Build the internal configuration.
-    pub fn build(self) -> KmipHsmConfig {
-        KmipHsmConfig {
-            address: self.address.build(),
-            authentication: self.authentication.build(),
-            verification: self.verification.build(),
-            credentials: self.credentials.map(|s| s.build()),
-        }
-    }
-}
-
-//----------- KmipAddressSpec --------------------------------------------------
-
-/// The address of a KMIP server.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum KmipAddressSpec {
-    /// A hostname-port pair.
-    Unresolved {
-        /// The hostname of the server.
-        //
-        // TODO: Use 'Box<Name>' from 'domain::new::base::name'.
-        hostname: Box<str>,
-
-        /// The TCP port number of the server.
-        ///
-        /// The default port number is 5696.
-        port: u16,
-    },
-
-    /// An IP address-port pair.
-    Resolved(SocketAddr),
-}
-
-//--- Deserialization
-
-impl FromStr for KmipAddressSpec {
-    type Err = ParseKmipAddressError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        // Try to parse this as a socket address.
-        match s.parse() {
-            Ok(addr) => Ok(Self::Resolved(addr)),
-            Err(error) => {
-                // Try to parse this as a '<hostname>:<port>' combo.
-                let (host, port) = match s.rsplit_once(":") {
-                    Some((host, port)) => {
-                        (host, port.parse().map_err(ParseKmipAddressError::Port)?)
-                    }
-                    None => (s, 5696),
-                };
-
-                Ok(Self::Unresolved {
-                    hostname: host.into(),
-                    port,
-                })
-            }
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for KmipAddressSpec {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        s.parse().map_err(serde::de::Error::custom)
-    }
-}
-
-//--- Conversion
-
-impl KmipAddressSpec {
-    /// Build the internal configuration.
-    pub fn build(self) -> KmipAddress {
-        match self {
-            Self::Unresolved { hostname, port } => KmipAddress::Unresolved { hostname, port },
-            Self::Resolved(addr) => KmipAddress::Resolved(addr),
-        }
-    }
-}
-
-//----------- KmipTlsAuthentication --------------------------------------------
-
-/// How Nameshed should authenticate itself to a KMIP server over TLS.
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Hash)]
-#[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
-pub enum KmipTlsAuthenticationSpec {
-    /// Don't authenticate to the server.
-    None,
-
-    /// Authenticate using a PEM keypair.
-    PEM {
-        /// The path to the certificate (i.e. public part).
-        certificate: Box<Utf8Path>,
-
-        /// The path to the key (i.e. private part).
-        key: Box<Utf8Path>,
-    },
-
-    /// Authenticate using a PKCS#12 keypair.
-    PKCS12 {
-        /// The path to the keypair.
-        path: Box<Utf8Path>,
-    },
-}
-
-//--- Conversion
-
-impl KmipTlsAuthenticationSpec {
-    /// Build the internal configuration.
-    pub fn build(self) -> KmipTlsAuthentication {
-        match self {
-            Self::None => KmipTlsAuthentication::None,
-            Self::PEM { certificate, key } => KmipTlsAuthentication::PEM { certificate, key },
-            Self::PKCS12 { path } => KmipTlsAuthentication::PKCS12(path),
-        }
-    }
-}
-
-//----------- KmipTlsVerification ----------------------------------------------
-
-/// How Nameshed should verify a KMIP server's identity over TLS.
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Hash)]
-#[serde(rename_all = "kebab-case", deny_unknown_fields, tag = "type")]
-pub enum KmipTlsVerificationSpec {
-    /// Don't verify the server at all.
-    Insecure,
-    //
-    // TODO: Support specifying the server and/or CA cert.
-}
-
-//--- Conversion
-
-impl KmipTlsVerificationSpec {
-    /// Build the internal configuration.
-    pub fn build(self) -> KmipTlsVerification {
-        match self {
-            Self::Insecure => KmipTlsVerification::Insecure,
-        }
-    }
-}
-
-//----------- KmipCredentials --------------------------------------------------
-
-/// Credentials for cryptographic operations over KMIP.
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Hash)]
-pub struct KmipCredentialsSpec {
-    /// The username to log in with.
-    pub username: Box<str>,
-
-    /// The password to log in with.
-    pub password: Box<str>,
-    //
-    // TODO: A command to execute to retrieve the password?
-}
-
-//--- Conversion
-
-impl KmipCredentialsSpec {
-    /// Build the internal configuration.
-    pub fn build(self) -> KmipCredentials {
-        KmipCredentials {
-            username: self.username,
-            password: self.password,
-        }
-    }
-}
-
 //----------- SocketSpec -------------------------------------------------------
 
 /// Configuration for serving / listening on a network socket.
@@ -642,22 +400,5 @@ impl fmt::Display for ParseSimpleSocketError {
 impl From<std::net::AddrParseError> for ParseSimpleSocketError {
     fn from(value: std::net::AddrParseError) -> Self {
         Self::Address(value)
-    }
-}
-
-//----------- ParseKmipAddressSpecError ----------------------------------------
-
-/// An error in parsing a [`KmipAddressSpec`] URI string.
-#[derive(Clone, Debug)]
-pub enum ParseKmipAddressError {
-    /// The port number could not be parsed.
-    Port(std::num::ParseIntError),
-}
-
-impl fmt::Display for ParseKmipAddressError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Port(error) => write!(f, "could not parse the port number: {error}"),
-        }
     }
 }
