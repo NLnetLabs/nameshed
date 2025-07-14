@@ -328,12 +328,22 @@ impl KmipStoreSpec {
 
 /// The address of a KMIP server.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct KmipAddressSpec {
-    /// The host machine of the server.
-    pub host: Box<str>,
+pub enum KmipAddressSpec {
+    /// A hostname-port pair.
+    Unresolved {
+        /// The hostname of the server.
+        //
+        // TODO: Use 'Box<Name>' from 'domain::new::base::name'.
+        hostname: Box<str>,
 
-    /// The TCP port number of the server.
-    pub port: u16,
+        /// The TCP port number of the server.
+        ///
+        /// The default port number is 5696.
+        port: u16,
+    },
+
+    /// An IP address-port pair.
+    Resolved(SocketAddr),
 }
 
 //--- Deserialization
@@ -342,15 +352,24 @@ impl FromStr for KmipAddressSpec {
     type Err = ParseKmipAddressError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (host, port) = match s.split_once(":") {
-            Some((host, port)) => (host, port.parse().map_err(ParseKmipAddressError::Port)?),
-            None => (s, 5696),
-        };
+        // Try to parse this as a socket address.
+        match s.parse() {
+            Ok(addr) => Ok(Self::Resolved(addr)),
+            Err(error) => {
+                // Try to parse this as a '<hostname>:<port>' combo.
+                let (host, port) = match s.rsplit_once(":") {
+                    Some((host, port)) => {
+                        (host, port.parse().map_err(ParseKmipAddressError::Port)?)
+                    }
+                    None => (s, 5696),
+                };
 
-        Ok(Self {
-            host: host.into(),
-            port,
-        })
+                Ok(Self::Unresolved {
+                    hostname: host.into(),
+                    port,
+                })
+            }
+        }
     }
 }
 
@@ -369,9 +388,9 @@ impl<'de> Deserialize<'de> for KmipAddressSpec {
 impl KmipAddressSpec {
     /// Build the internal configuration.
     pub fn build(self) -> KmipAddress {
-        KmipAddress::Unresolved {
-            hostname: self.host,
-            port: self.port,
+        match self {
+            Self::Unresolved { hostname, port } => KmipAddress::Unresolved { hostname, port },
+            Self::Resolved(addr) => KmipAddress::Resolved(addr),
         }
     }
 }
