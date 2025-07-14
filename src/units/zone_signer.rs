@@ -30,6 +30,7 @@ use domain::base::wire::Composer;
 use domain::base::{
     CanonicalOrd, Name, ParsedName, ParsedRecord, Record, Rtype, Serial, ToName, Ttl,
 };
+use domain::crypto::kmip::sign::KeyUrl;
 use domain::crypto::kmip::{self, ClientCertificate, ConnectionSettings};
 use domain::crypto::kmip_pool::{ConnectionManager, KmipConnPool};
 use domain::crypto::sign::{
@@ -182,6 +183,7 @@ impl ZoneSignerUnit {
             let host_and_port = (conn_settings.server_addr.clone(), conn_settings.server_port);
 
             match ConnectionManager::create_connection_pool(
+                server_id.clone(),
                 Arc::new(conn_settings.clone().into()),
                 10,
                 Some(Duration::from_secs(60)),
@@ -500,32 +502,22 @@ impl ZoneSigner {
                     }
 
                     ("kmip", "kmip") => {
-                        let (priv_key_id, priv_algorithm, priv_flags, priv_server_id) = parse_kmip_key_url(&priv_url)
-                            .map_err(|()| format!("Failed to parse KMIP key URL '{priv_url}'"))?;
-                        let (pub_key_id, pub_algorithm, pub_flags, pub_server_id) = parse_kmip_key_url(&pub_url)
-                            .map_err(|()| format!("Failed to parse KMIP key URL '{pub_url}'"))?;
-
-                        if priv_algorithm != pub_algorithm {
-                            return Err(format!("Private and public key URLs have different algorithms: {priv_algorithm} vs {pub_algorithm}"));
-                        } else if priv_flags != pub_flags {
-                            return Err(format!("Private and public key URLs have different flags: {priv_flags} vs {pub_flags}"));
-                        } else if priv_server_id != pub_server_id {
-                            return Err(format!("Private and public key URLs have different server IDs: {priv_server_id} vs {pub_server_id}"));
-                        }
+                        let priv_key_url = KeyUrl::try_from(priv_url).map_err(|err| format!("Invalid KMIP URL for private key: {err}"))?;
+                        let pub_key_url = KeyUrl::try_from(pub_url).map_err(|err| format!("Invalid KMIP URL for public key: {err}"))?;
 
                         let kmip_conn_pool = self.kmip_servers
-                            .get(&priv_server_id)
-                            .ok_or(format!("No connection pool available for KMIP server '{priv_server_id}'"))?;
+                            .get(priv_key_url.server_id())
+                            .ok_or(format!("No connection pool available for KMIP server '{}'", priv_key_url.server_id()))?;
 
-                        let key_pair = KeyPair::Kmip(kmip::sign::KeyPair::new(
-                            priv_algorithm,
-                            priv_flags,
-                            &priv_key_id,
-                            &pub_key_id,
+                        let flags = priv_key_url.flags();
+
+                        let key_pair = KeyPair::Kmip(kmip::sign::KeyPair::new_from_urls(
+                            priv_key_url,
+                            pub_key_url,
                             kmip_conn_pool.clone(),
-                        ).map_err(|err| format!("Failed to create keypair for KMIP key IDs: {priv_key_id}, {pub_key_id}: {err}"))?);
+                        ).map_err(|err| format!("Failed to create keypair for KMIP key IDs: {err}"))?);
 
-                        let signing_key = SigningKey::new(zone_name.clone(), priv_flags, key_pair);
+                        let signing_key = SigningKey::new(zone_name.clone(), key_pair.flags(), key_pair);
 
                         signing_keys.push(signing_key);
                     }
@@ -533,7 +525,7 @@ impl ZoneSigner {
                     (other1, other2) => return Err(format!("Using different key URI schemes ({other1} vs {other2}) for a public/private key pair is not supported.")),
                 }
 
-                debug!("Loaded key pair for zone {zone_name} from key pair: {priv_url} and {pub_url}");
+                debug!("Loaded key pair for zone {zone_name} from key pair");
             }
         }
 
@@ -1496,37 +1488,4 @@ pub fn load_binary_file(path: &Path) -> Vec<u8> {
     File::open(path).unwrap().read_to_end(&mut bytes).unwrap();
 
     bytes
-}
-
-fn parse_kmip_key_url(kmip_key_url: &Url) -> Result<(String, SecurityAlgorithm, u16, String), ()> {
-    let server_id = kmip_key_url.host_str().ok_or(())?.to_string();
-
-    // TODO: We ignore the username and password as we have all of the
-    // connection details. We need our own KMIP server configs as the URL
-    // doesn't contain everything we need, e.g. certificates... but having
-    // config both here AND in `dnst keyset` is annoying... can we get rid of
-    // this duplication somehow?
-
-    let url_path = kmip_key_url.path().to_string();
-    let (keys, key_id) = url_path
-        .strip_prefix('/')
-        .ok_or(())?
-        .split_once('/')
-        .unwrap();
-    if keys != "keys" {
-        return Err(());
-    }
-    let key_id = key_id.to_string();
-    let mut flags = None;
-    let mut algorithm = None;
-    for (k, v) in kmip_key_url.query_pairs() {
-        match &*k {
-            "flags" => flags = Some(v.parse::<u16>().map_err(|_| ())?),
-            "algorithm" => algorithm = Some(SecurityAlgorithm::from_str(&v).map_err(|_| ())?),
-            _ => { /* ignore unknown URL query parameter */ }
-        }
-    }
-    let flags = flags.ok_or(())?;
-    let algorithm = algorithm.ok_or(())?;
-    Ok((key_id, algorithm, flags, server_id))
 }

@@ -436,7 +436,7 @@ dependencies = [
 [[package]]
 name = "domain"
 version = "0.11.1-dev"
-source = "git+https://github.com/NLnetLabs/domain?branch=patches-for-nameshed-prototype#b6751b4ff40253de2904135c9ee60651e2219ed9"
+source = "git+https://github.com/NLnetLabs/domain?branch=patches-for-nameshed-prototype#b0e970fba782d0a17528b7220a52f08b95f74e30"
 dependencies = [
  "arc-swap",
  "bcder",
@@ -465,12 +465,13 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tracing",
+ "url",
 ]
 
 [[package]]
 name = "domain-macros"
 version = "0.11.1-dev"
-source = "git+https://github.com/NLnetLabs/domain?branch=patches-for-nameshed-prototype#b6751b4ff40253de2904135c9ee60651e2219ed9"
+source = "git+https://github.com/NLnetLabs/domain?branch=patches-for-nameshed-prototype#b0e970fba782d0a17528b7220a52f08b95f74e30"
 dependencies = [
  "proc-macro2",
  "quote",

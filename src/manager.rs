@@ -487,6 +487,8 @@ impl Manager {
                         server_addr,
                         server_port,
                         server_insecure: true,
+                        server_username: std::env::var("NAMESHED_HSM_RELAY_USERNAME").ok(),
+                        server_password: std::env::var("NAMESHED_HSM_RELAY_PASSWORD").ok(),
                         ..Default::default()
                     },
                 );
@@ -587,9 +589,9 @@ impl Manager {
                     keys_path: "/tmp/keys".into(),
                     treat_single_keys_as_csks: true,
                     max_concurrent_operations: 1,
-                    max_concurrent_rrsig_generation_tasks: 8,
+                    max_concurrent_rrsig_generation_tasks: 32,
                     use_lightweight_zone_tree: false,
-                    denial_config: TomlDenialConfig::default(),
+                    denial_config: TomlDenialConfig::default(), //Nsec3(NonEmpty::new(TomlNsec3Config::default())),
                     rrsig_inception_offset_secs: 60 * 90,
                     rrsig_expiration_offset_secs: 60 * 60 * 24 * 14,
                     kmip_server_conn_settings,
