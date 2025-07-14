@@ -25,16 +25,16 @@ impl EnvSpec {
     /// Process environment variables.
     pub fn process() -> Result<Self, EnvError> {
         Ok(Self {
-            config: match std::env::var("NAMESHED_CONFIG") {
+            config: match std::env::var("NAMESHED_CONFIG_PATH") {
                 Ok(value) => Some(Utf8PathBuf::from(value).into_boxed_path()),
                 Err(std::env::VarError::NotUnicode(_)) => {
                     return Err(EnvError::NonUtf8 {
-                        var: "NAMESHED_CONFIG",
+                        var: "NAMESHED_CONFIG_PATH",
                     });
                 }
                 Err(std::env::VarError::NotPresent) => None,
             },
-            log_level: match std::env::var("NAMESHED_CONFIG") {
+            log_level: match std::env::var("NAMESHED_LOG_LEVEL") {
                 Ok(value) => Some(match &*value {
                     "trace" => LogLevel::Trace,
                     "debug" => LogLevel::Debug,
@@ -50,7 +50,7 @@ impl EnvSpec {
                 }),
                 Err(std::env::VarError::NotUnicode(_)) => {
                     return Err(EnvError::NonUtf8 {
-                        var: "NAMESHED_CONFIG",
+                        var: "NAMESHED_LOG_LEVEL",
                     });
                 }
                 Err(std::env::VarError::NotPresent) => None,

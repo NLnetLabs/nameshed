@@ -363,7 +363,8 @@ impl<T: Eq> Eq for Setting<T> {}
 /// The source of a configured setting.
 ///
 /// There are four possible sources for a setting.  Each source has a designated
-/// priority, with which it can override settings from other sources.
+/// priority, with which it can override settings from other sources.  They are
+/// enumerated here from lowest to highest priority.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SettingSource {
     /// A default.

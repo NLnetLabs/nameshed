@@ -32,7 +32,7 @@ log-file = "/dev/stdout"
 
 # Configuring how zones are loaded.
 [loader]
-# Where to listen for zone update notifications.
+# Where to listen for zone change notifications.
 #
 # A DNS server will be bound to these addresses.  If a DNS NOTIFY message for a
 # known zone is received there, the zone will be reloaded appropriately.
