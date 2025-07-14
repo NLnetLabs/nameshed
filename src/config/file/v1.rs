@@ -6,9 +6,9 @@ use camino::Utf8Path;
 use serde::Deserialize;
 
 use crate::config::{
-    Config, CryptoConfig, DaemonConfig, HsmStoreConfig, KeyManagerConfig, KmipAddress,
-    KmipCredentials, KmipStoreConfig, KmipTlsAuthentication, KmipTlsVerification, LoaderConfig,
-    LogLevel, ReviewConfig, ServerConfig, Setting, SettingSource, SignerConfig, SocketConfig,
+    Config, CryptoConfig, DaemonConfig, HsmConfig, KeyManagerConfig, KmipAddress, KmipCredentials,
+    KmipHsmConfig, KmipTlsAuthentication, KmipTlsVerification, LoaderConfig, LogLevel,
+    ReviewConfig, ServerConfig, Setting, SettingSource, SignerConfig, SocketConfig,
 };
 
 //----------- Spec -------------------------------------------------------------
@@ -251,9 +251,9 @@ impl ServerSpec {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields, default)]
 pub struct CryptoSpec {
-    /// Configured HSM stores.
-    #[serde(alias = "hsm-store")]
-    pub hsm_stores: HashMap<Box<str>, HsmStoreSpec>,
+    /// Configured HSMs.
+    #[serde(alias = "hsm")]
+    pub hsms: HashMap<Box<str>, HsmSpec>,
 }
 
 //--- Conversion
@@ -262,8 +262,8 @@ impl CryptoSpec {
     /// Build the internal configuration.
     pub fn build(self) -> CryptoConfig {
         CryptoConfig {
-            hsm_stores: self
-                .hsm_stores
+            hsms: self
+                .hsms
                 .into_iter()
                 .map(|(name, spec)| (name, spec.build()))
                 .collect(),
@@ -271,32 +271,32 @@ impl CryptoSpec {
     }
 }
 
-//----------- HsmStoreSpec -----------------------------------------------------
+//----------- HsmSpec ----------------------------------------------------------
 
-/// Configuration for an HSM store.
+/// Configuration for an HSM.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields, tag = "type")]
-pub enum HsmStoreSpec {
-    /// A KMIP store.
-    Kmip(KmipStoreSpec),
+pub enum HsmSpec {
+    /// A KMIP HSM.
+    Kmip(KmipHsmSpec),
 }
 
 //--- Conversion
 
-impl HsmStoreSpec {
+impl HsmSpec {
     /// Build the internal configuration.
-    pub fn build(self) -> HsmStoreConfig {
+    pub fn build(self) -> HsmConfig {
         match self {
-            HsmStoreSpec::Kmip(spec) => HsmStoreConfig::Kmip(spec.build()),
+            HsmSpec::Kmip(spec) => HsmConfig::Kmip(spec.build()),
         }
     }
 }
 
-//----------- KmipStoreSpec --------------------------------------------------
+//----------- KmipHsmSpec ------------------------------------------------------
 
-/// Configuration for a KMIP HSM store.
+/// Configuration for a KMIP HSM.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Hash)]
-pub struct KmipStoreSpec {
+pub struct KmipHsmSpec {
     /// The address of the KMIP server.
     address: KmipAddressSpec,
 
@@ -312,10 +312,10 @@ pub struct KmipStoreSpec {
 
 //--- Conversion
 
-impl KmipStoreSpec {
+impl KmipHsmSpec {
     /// Build the internal configuration.
-    pub fn build(self) -> KmipStoreConfig {
-        KmipStoreConfig {
+    pub fn build(self) -> KmipHsmConfig {
+        KmipHsmConfig {
             address: self.address.build(),
             authentication: self.authentication.build(),
             verification: self.verification.build(),

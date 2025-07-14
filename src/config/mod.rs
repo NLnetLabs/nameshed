@@ -155,24 +155,24 @@ pub struct ServerConfig {
 /// Cryptography-related configuration for Nameshed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CryptoConfig {
-    /// Configured HSM stores.
-    pub hsm_stores: HashMap<Box<str>, HsmStoreConfig>,
+    /// Configured HSMs.
+    pub hsms: HashMap<Box<str>, HsmConfig>,
 }
 
-//----------- HsmStoreConfig ---------------------------------------------------
+//----------- HsmConfig --------------------------------------------------------
 
-/// Configuration for an HSM store.
+/// Configuration for an HSM.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum HsmStoreConfig {
-    /// A KMIP store.
-    Kmip(KmipStoreConfig),
+pub enum HsmConfig {
+    /// A KMIP HSM.
+    Kmip(KmipHsmConfig),
 }
 
-//----------- KmipStoreConfig --------------------------------------------------
+//----------- KmipHsmConfig ----------------------------------------------------
 
-/// Configuration for a KMIP HSM store.
+/// Configuration for a KMIP HSM.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct KmipStoreConfig {
+pub struct KmipHsmConfig {
     /// The address of the KMIP server.
     pub address: KmipAddress,
 
