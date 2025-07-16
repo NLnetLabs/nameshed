@@ -60,6 +60,16 @@ uuid               = { version = "1.4", features = ["v4", "fast-rng"] }
 indoc              = "2.0.5"
 rayon = "1.10.0"
 
+
+# Nameshed sometimes requires filesystem paths to be encoded within UTF-8 texts.
+# To conveniently resolve the conversion between the OS filesystem encoding and
+# UTF-8, 'camino' is used, which restricts filesystem paths to UTF-8.
+#
+# TODO: Who maintains it, and how well?
+[dependencies.camino]
+version = "1.1.0"
+features = ["serde1"]
+
 [target.'cfg(unix)'.dependencies]
 nix         = "0.22.0"
 syslog      = "6.1"
