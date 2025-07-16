@@ -6,8 +6,8 @@ use camino::Utf8Path;
 use serde::Deserialize;
 
 use crate::config::{
-    Config, DaemonConfig, KeyManagerConfig, LoaderConfig, LogLevel, ReviewConfig, ServerConfig,
-    Setting, SettingSource, SignerConfig, SocketConfig,
+    Config, DaemonConfig, KeyManagerConfig, LoaderConfig, LogLevel, LogTarget, ReviewConfig,
+    ServerConfig, Setting, SettingSource, SignerConfig, SocketConfig,
 };
 
 //----------- Spec -------------------------------------------------------------
@@ -56,8 +56,8 @@ pub struct DaemonSpec {
     /// The minimum severity of messages to log.
     pub log_level: Option<LogLevelSpec>,
 
-    /// The location logs are written to.
-    pub log_file: Option<Box<Utf8Path>>,
+    /// The target to log messages to.
+    pub log_target: Option<LogTargetSpec>,
 }
 
 //--- Conversion
@@ -76,15 +76,15 @@ impl DaemonSpec {
                     source: SettingSource::Default,
                     value: LogLevel::Info,
                 }),
-            log_file: self
-                .log_file
-                .map(|log_file| Setting {
+            log_target: self
+                .log_target
+                .map(|log_target| Setting {
                     source: SettingSource::File,
-                    value: log_file,
+                    value: log_target.build(),
                 })
                 .unwrap_or(Setting {
                     source: SettingSource::Default,
-                    value: "/var/log/nameshed.log".into(),
+                    value: LogTarget::File("/var/log/nameshed.log".into()),
                 }),
             config_file,
         }
@@ -128,6 +128,36 @@ impl LogLevelSpec {
             Self::Warning => LogLevel::Warning,
             Self::Error => LogLevel::Error,
             Self::Critical => LogLevel::Critical,
+        }
+    }
+}
+
+//----------- LogTargetSpec ----------------------------------------------------
+
+/// A logging target.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields, tag = "type")]
+pub enum LogTargetSpec {
+    /// Append logs to a file.
+    ///
+    /// If the file is a terminal, ANSI color codes may be used.
+    File {
+        /// The path to the file.
+        path: Box<Utf8Path>,
+    },
+
+    /// Write logs to the UNIX syslog.
+    Syslog,
+}
+
+//--- Conversion
+
+impl LogTargetSpec {
+    /// Build the internal configuration.
+    pub fn build(self) -> LogTarget {
+        match self {
+            Self::File { path } => LogTarget::File(path),
+            Self::Syslog => LogTarget::Syslog,
         }
     }
 }

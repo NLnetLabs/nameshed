@@ -95,8 +95,8 @@ pub struct DaemonConfig {
     /// The minimum severity of messages to log.
     pub log_level: Setting<LogLevel>,
 
-    /// The location logs are written to.
-    pub log_file: Setting<Box<Utf8Path>>,
+    /// Where to log messages to.
+    pub log_target: Setting<LogTarget>,
 
     /// The location of the configuration file.
     pub config_file: Setting<Box<Utf8Path>>,
@@ -215,6 +215,20 @@ impl fmt::Display for LogLevel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
     }
+}
+
+//----------- LogTarget --------------------------------------------------------
+
+/// A logging target.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LogTarget {
+    /// Append logs to a file.
+    ///
+    /// If the file is a terminal, ANSI color codes may be used.
+    File(Box<Utf8Path>),
+
+    /// Write logs to the UNIX syslog.
+    Syslog,
 }
 
 //----------- Setting ----------------------------------------------------------

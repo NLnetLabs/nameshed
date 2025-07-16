@@ -28,7 +28,7 @@ log-level = "info"
 # Logs are appended line-by-line to the specified file path.  It can be set to
 # '/dev/stdout' or '/dev/stderr' for standard output and error, respectively.
 # If it is a terminal, ANSI escape codes may be used to style the output.
-log-file = "/dev/stdout"
+log-target = { type = "file", path = "/dev/stdout" }
 
 # Configuring how zones are loaded.
 [loader]
