@@ -21,6 +21,9 @@ pub struct ArgsSpec {
 
     /// The target of log messages.
     pub log_target: Option<LogTargetSpec>,
+
+    /// Whether Nameshed should fork on startup.
+    pub daemonize: bool,
 }
 
 impl ArgsSpec {
@@ -55,6 +58,11 @@ impl ArgsSpec {
                 .hide(cfg!(not(unix)))
                 .action(clap::ArgAction::SetTrue)
                 .help("Whether to output to syslog"),
+            Arg::new("daemonize")
+                .short('d')
+                .long("daemonize")
+                .action(clap::ArgAction::SetTrue)
+                .help("Whether Nameshed should fork on startup"),
         ])
     }
 
@@ -69,6 +77,7 @@ impl ArgsSpec {
                 .get_one::<Utf8PathBuf>("log_file")
                 .map(|p| LogTargetSpec::File(p.as_path().into()))
                 .or_else(|| matches.get_flag("syslog").then_some(LogTargetSpec::Syslog)),
+            daemonize: matches.get_flag("daemonize"),
         }
     }
 
@@ -81,6 +90,9 @@ impl ArgsSpec {
             .log_target
             .merge_value(self.log_target.map(|t| t.build()), source);
         daemon.config_file.merge_value(self.config, source);
+        daemon
+            .daemonize
+            .merge_value(self.daemonize.then_some(true), source);
     }
 }
 

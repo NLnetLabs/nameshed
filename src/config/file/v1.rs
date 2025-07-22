@@ -1,13 +1,13 @@
 //! Version 1 of the configuration file.
 
-use std::{fmt, net::SocketAddr, str::FromStr};
+use std::{fmt, net::SocketAddr, num::IntErrorKind, str::FromStr};
 
 use camino::Utf8Path;
 use serde::Deserialize;
 
 use crate::config::{
-    Config, DaemonConfig, KeyManagerConfig, LoaderConfig, LogLevel, LogTarget, ReviewConfig,
-    ServerConfig, Setting, SettingSource, SignerConfig, SocketConfig,
+    Config, DaemonConfig, GroupId, KeyManagerConfig, LoaderConfig, LogLevel, LogTarget,
+    ReviewConfig, ServerConfig, Setting, SettingSource, SignerConfig, SocketConfig, UserId,
 };
 
 //----------- Spec -------------------------------------------------------------
@@ -58,6 +58,18 @@ pub struct DaemonSpec {
 
     /// The target to log messages to.
     pub log_target: Option<LogTargetSpec>,
+
+    /// Whether Nameshed should fork on startup.
+    pub daemonize: Option<bool>,
+
+    /// The path to a PID file to maintain.
+    pub pid_file: Option<Box<Utf8Path>>,
+
+    /// The directory to chroot into after startup.
+    pub chroot: Option<Box<Utf8Path>>,
+
+    /// The identity to assume after startup.
+    pub identity: Option<IdentitySpec>,
 }
 
 //--- Conversion
@@ -87,6 +99,19 @@ impl DaemonSpec {
                     value: LogTarget::File("/var/log/nameshed.log".into()),
                 }),
             config_file,
+            daemonize: self
+                .daemonize
+                .map(|daemonize| Setting {
+                    source: SettingSource::File,
+                    value: daemonize,
+                })
+                .unwrap_or(Setting {
+                    source: SettingSource::Default,
+                    value: false,
+                }),
+            pid_file: self.pid_file,
+            chroot: self.chroot,
+            identity: self.identity.map(|i| i.build()),
         }
     }
 }
@@ -158,6 +183,137 @@ impl LogTargetSpec {
         match self {
             Self::File { path } => LogTarget::File(path),
             Self::Syslog => LogTarget::Syslog,
+        }
+    }
+}
+
+//----------- IdentitySpec -----------------------------------------------------
+
+/// A user-group specification.
+#[derive(Clone, Debug)]
+pub struct IdentitySpec {
+    /// The user ID.
+    pub user: UserIdSpec,
+
+    /// The group Id.
+    pub group: GroupIdSpec,
+}
+
+//--- Deserialization
+
+impl FromStr for IdentitySpec {
+    type Err = ParseIdentityError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        // Allow '<user>:<group>', or interpret the single value as both.
+        let (user, group) = s.split_once(':').unwrap_or((s, s));
+
+        Ok(Self {
+            user: user.parse()?,
+            group: group.parse()?,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for IdentitySpec {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        s.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+//--- Conversion
+
+impl IdentitySpec {
+    /// Build the internal configuration.
+    pub fn build(self) -> (UserId, GroupId) {
+        (self.user.build(), self.group.build())
+    }
+}
+
+//----------- UserId -----------------------------------------------------------
+
+/// A numeric or named user ID.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UserIdSpec {
+    /// A numeric ID.
+    Numeric(nix::unistd::Uid),
+
+    /// A user name.
+    Named(Box<str>),
+}
+
+//--- Deserialization
+
+impl FromStr for UserIdSpec {
+    type Err = ParseIdentityError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.parse::<nix::libc::uid_t>() {
+            Ok(id) => Ok(Self::Numeric(nix::unistd::Uid::from_raw(id))),
+
+            Err(error) if *error.kind() == IntErrorKind::PosOverflow => {
+                Err(ParseIdentityError::NumericOverflow { value: s.into() })
+            }
+
+            _ => Ok(Self::Named(s.into())),
+        }
+    }
+}
+
+//--- Conversion
+
+impl UserIdSpec {
+    /// Build the internal configuration.
+    pub fn build(self) -> UserId {
+        match self {
+            Self::Numeric(id) => UserId::Numeric(id),
+            Self::Named(id) => UserId::Named(id),
+        }
+    }
+}
+
+//----------- GroupId ----------------------------------------------------------
+
+/// A numeric or named group ID.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GroupIdSpec {
+    /// A numeric ID.
+    Numeric(nix::unistd::Gid),
+
+    /// A group name.
+    Named(Box<str>),
+}
+
+//--- Deserialization
+
+impl FromStr for GroupIdSpec {
+    type Err = ParseIdentityError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.parse::<nix::libc::gid_t>() {
+            Ok(id) => Ok(Self::Numeric(nix::unistd::Gid::from_raw(id))),
+
+            Err(error) if *error.kind() == IntErrorKind::PosOverflow => {
+                Err(ParseIdentityError::NumericOverflow { value: s.into() })
+            }
+
+            _ => Ok(Self::Named(s.into())),
+        }
+    }
+}
+
+//--- Conversion
+
+impl GroupIdSpec {
+    /// Build the internal configuration.
+    pub fn build(self) -> GroupId {
+        match self {
+            Self::Numeric(id) => GroupId::Numeric(id),
+            Self::Named(id) => GroupId::Named(id),
         }
     }
 }
@@ -401,7 +557,27 @@ impl ComplexSocketSpec {
     }
 }
 
-//----------- ParseSimpleSocketSpecError ---------------------------------------
+//----------- ParseIdentityError -----------------------------------------------
+
+/// An error in parsing an [`IdentitySpec`].
+#[derive(Clone, Debug)]
+pub enum ParseIdentityError {
+    /// A numeric ID was out of bounds.
+    NumericOverflow {
+        /// The specified ID number.
+        value: Box<str>,
+    },
+}
+
+impl fmt::Display for ParseIdentityError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NumericOverflow { value } => write!(f, "numeric ID '{value}' too large"),
+        }
+    }
+}
+
+//----------- ParseSimpleSocketError -------------------------------------------
 
 /// An error in parsing a [`SocketSpec`] URI string.
 #[derive(Clone, Debug)]

@@ -22,6 +22,10 @@ fn main() -> ExitCode {
     // Process command-line arguments.
     let matches = cmd.get_matches();
 
+    // TODO: Load the state instead of the config file, and merge the args and
+    // env with whatever's in there.  Only load the config file when the user
+    // explicitly requests it.
+
     // Construct the configuration.
     let _config = match Config::process(&matches) {
         Ok(config) => config,

@@ -100,6 +100,42 @@ pub struct DaemonConfig {
 
     /// The location of the configuration file.
     pub config_file: Setting<Box<Utf8Path>>,
+
+    /// Whether Nameshed should fork on startup.
+    pub daemonize: Setting<bool>,
+
+    /// The path to a PID file to maintain.
+    pub pid_file: Option<Box<Utf8Path>>,
+
+    /// The directory to chroot into after startup.
+    pub chroot: Option<Box<Utf8Path>>,
+
+    /// The identity to assume after startup.
+    pub identity: Option<(UserId, GroupId)>,
+}
+
+//----------- UserId -----------------------------------------------------------
+
+/// A numeric or named user ID.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UserId {
+    /// A numeric ID.
+    Numeric(nix::unistd::Uid),
+
+    /// A user name.
+    Named(Box<str>),
+}
+
+//----------- GroupId ----------------------------------------------------------
+
+/// A numeric or named group ID.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GroupId {
+    /// A numeric ID.
+    Numeric(nix::unistd::Gid),
+
+    /// A group name.
+    Named(Box<str>),
 }
 
 //----------- LoaderConfig -----------------------------------------------------
