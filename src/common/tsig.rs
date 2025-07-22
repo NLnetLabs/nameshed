@@ -144,7 +144,7 @@ pub fn parse_key_strings(name: &str, alg_and_hex_key_bytes: &str) -> Result<Key,
         .collect();
 
     let (alg, base64) = match key_parts.len() {
-        1 => (Algorithm::Sha256, key_parts[1].clone()),
+        1 => (Algorithm::Sha256, key_parts[0].clone()),
         2 => {
             let alg = Algorithm::from_str(&key_parts[0])?;
             (alg, key_parts[1].clone())
