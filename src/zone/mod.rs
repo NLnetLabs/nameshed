@@ -1,5 +1,8 @@
 //! Zone-specific state and management.
 
+#![deny(dead_code)]
+#![deny(unused_variables)]
+
 use std::{
     borrow::Borrow,
     cmp::Ordering,
@@ -8,6 +11,9 @@ use std::{
 };
 
 use domain::new::base::name::RevName;
+
+pub mod loader;
+pub use loader::LoaderState;
 
 //----------- Zone -------------------------------------------------------------
 
@@ -28,6 +34,9 @@ pub struct Zone {
 /// The state of a zone.
 #[derive(Debug, Default)]
 pub struct ZoneState {
+    /// Loading new versions of the zone.
+    pub loader: LoaderState,
+    //
     // TODO:
     // - Policy
     // - A log?
