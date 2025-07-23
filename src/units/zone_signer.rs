@@ -892,6 +892,7 @@ async fn rrsig_inserter(
     let mut rrsig_count = 0usize;
     let mut max_rrsig_generation_time = Duration::ZERO;
     let mut insertion_time = Duration::ZERO;
+    let start = Instant::now();
 
     while let Some((rrsig_records, duration)) = rx.recv().await {
         max_rrsig_generation_time = std::cmp::max(max_rrsig_generation_time, duration);
@@ -907,6 +908,11 @@ async fn rrsig_inserter(
         }
 
         insertion_time = insertion_time.saturating_add(insert_start.elapsed());
+        if rrsig_count % 100 == 0 {
+            let elapsed = start.elapsed().as_secs();
+            let rate = if elapsed > 0 { rrsig_count / (elapsed as usize) } else { rrsig_count }; // TODO: Use floating point arithmetic?
+            info!("Inserted {rrsig_count} RRSIGs in {elapsed} seconds at a rate of {rate} RRSIGs/second");
+        }
     }
     trace!("SIGNER: Added {rrsig_count} RRSIG RRs to new/existing copy of signed zone.");
 
