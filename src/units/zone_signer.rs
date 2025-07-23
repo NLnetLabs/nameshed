@@ -711,6 +711,8 @@ impl ZoneSigner {
         let rrsig_avg = if rrsig_time == 0 {
             rrsig_count
         } else {
+            // TODO: Make this a floating point division?
+            // f64::try_from(usize) isn't possible.
             rrsig_count / rrsig_time as usize
         };
 
