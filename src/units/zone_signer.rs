@@ -32,7 +32,7 @@ use domain::base::{
 };
 use domain::crypto::kmip::sign::KeyUrl;
 use domain::crypto::kmip::{self, ClientCertificate, ConnectionSettings};
-use domain::crypto::kmip_pool::{ConnectionManager, KmipConnPool};
+use domain::crypto::kmip_pool::{ConnectionManager, SyncConnPool};
 use domain::crypto::sign::{
     generate, FromBytesError, GenerateParams, KeyPair, SecretKeyBytes, SignError, SignRaw
 };
@@ -179,7 +179,7 @@ impl ZoneSignerUnit {
         // minimum number of connections or timed out.
         let expected_kmip_server_conn_pools = self.kmip_server_conn_settings.len();
 
-        let kmip_servers: HashMap<String, KmipConnPool> = self.kmip_server_conn_settings.drain().filter_map(|(server_id, conn_settings)| {
+        let kmip_servers: HashMap<String, SyncConnPool> = self.kmip_server_conn_settings.drain().filter_map(|(server_id, conn_settings)| {
             let host_and_port = (conn_settings.server_addr.clone(), conn_settings.server_port);
 
             match ConnectionManager::create_connection_pool(
@@ -306,7 +306,7 @@ struct ZoneSigner {
     treat_single_keys_as_csks: bool,
     update_tx: mpsc::Sender<Update>,
     keys_path: PathBuf,
-    kmip_servers: HashMap<String, KmipConnPool>,
+    kmip_servers: HashMap<String, SyncConnPool>,
 }
 
 impl ZoneSigner {
@@ -323,7 +323,7 @@ impl ZoneSigner {
         treat_single_keys_as_csks: bool,
         update_tx: mpsc::Sender<Update>,
         keys_path: PathBuf,
-        kmip_servers: HashMap<String, KmipConnPool>,
+        kmip_servers: HashMap<String, SyncConnPool>,
     ) -> Self {
         Self {
             component,
