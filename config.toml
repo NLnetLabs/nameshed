@@ -1,0 +1,107 @@
+# Configuring Nameshed
+# ====================
+
+# The configuration file version.
+# - 'v1': This format.
+version = "v1"
+
+# Configuring the Nameshed daemon.
+#
+# This controls Nameshed's behaviour as a daemon, i.e. how it interacts with the
+# external system.
+[daemon]
+#
+# The minimum severity of the messages logged by the daemon.
+#
+# Messages at or above the specified severity level will be logged.  The
+# following levels are defined:
+# - 'trace': A function or variable was interacted with, for debugging.
+# - 'debug': Something occurred that may be relevant to debugging.
+# - 'info': Things are proceeding as expected.
+# - 'warning': Something does not appear to be correct.
+# - 'error': Something went wrong (but Nameshed can recover).
+# - 'critical': Something went wrong and Nameshed can't function at all.
+log-level = "info"
+#
+# The location the daemon writes logs to.
+#
+# Logs are appended line-by-line to the specified file path.  It can be set to
+# '/dev/stdout' or '/dev/stderr' for standard output and error, respectively.
+# If it is a terminal, ANSI escape codes may be used to style the output.
+log-target = { type = "file", path = "/dev/stdout" }
+#
+# The path to a PID file to maintain.
+#
+# If specified, Nameshed will maintain a PID file at this location; it will be a
+# simple plain-text file containing the PID number of the daemon process.
+#pid-file = "/var/run/nameshed.pid"
+#
+# A directory to chroot into after startup.
+#
+# Nameshed will chroot into the specified directory after initialization.  Note
+# that this will fail if Nameshed is started without administrator privileges.
+# 
+# TODO: How will this affect the paths Nameshed interacts with?  What if files
+# aren't within the chroot - do we just fail?  Or do we interpret all paths here
+# relative to the chroot?
+#chroot = "/var/run/nameshed"
+#
+# An identity (user and group) to assume after startup.
+#
+# Nameshed will assume the specified identity after initialization.  Note that
+# this will fail if Nameshed is started without administrator privileges.
+#
+# The identity can be specified as '<user>:<group>' or just '<user>'; in the
+# latter case, the identically named/numbered group will be used.  Both the user
+# and group can be specified as a numeric ID or a name.
+#identity = "nameshed:nameshed"
+
+# Configuring how zones are loaded.
+[loader]
+# Where to listen for zone change notifications.
+#
+# A DNS server will be bound to these addresses.  If a DNS NOTIFY message for a
+# known zone is received there, the zone will be reloaded appropriately.
+#
+# Unless explicitly specified (e.g. 'udp://localhost:0000'), each address will
+# be served over UDP and TCP.  An empty array will disable listening entirely.
+notif-listeners = ["127.0.0.1:8050"] # TODO: Pick a good default port
+
+# Configuring whether and how loaded zones are reviewed.
+[loader.review]
+# Where to serve loaded zones for review.
+#
+# A DNS server will be bound to these addresses, and will serve the contents of
+# all loaded zones.  This can be used to verify the consistency of these zones.
+#
+# Unless explicitly specified (e.g. 'udp://localhost:0000'), each address will
+# be served over UDP and TCP.  An empty array will disable serving entirely.
+servers = ["127.0.0.1:8051"] # TODO: Pick a good default port
+
+# Configuring how zones are signed.
+[signer]
+
+# Configuring whether and how signed zones are reviewed
+[signer.review]
+# Where to serve signed zones for review.
+#
+# A DNS server will be bound to these addresses, and will serve the contents of
+# all signed zones.  This can be used to check the correctness of the signer.
+#
+# Unless explicitly specified (e.g. 'udp://localhost:0000'), each address will
+# be served over UDP and TCP.  An empty array will disable serving entirely.
+servers = ["127.0.0.1:8052"] # TODO: Pick a good default port.
+
+# Configuring DNSSEC key management.
+[key-manager]
+
+# Configuring how zones are published.
+[server]
+# Where to serve published zones.
+# 
+# A DNS server will be bound to these addresses, and will serve the contents of
+# all published zones.  This is the final output from Nameshed.
+#
+# Unless explicitly specified (e.g. 'udp://localhost:0000'), each address will
+# be served over UDP and TCP.  At least one address must be specified.
+servers = ["127.0.0.1:8053"] # TODO: Pick a good default port.
