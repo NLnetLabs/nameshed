@@ -15,6 +15,8 @@ use domain::new::base::name::RevName;
 pub mod loader;
 pub use loader::LoaderState;
 
+pub mod contents;
+
 //----------- Zone -------------------------------------------------------------
 
 /// A zone.
