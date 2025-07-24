@@ -16,6 +16,7 @@ mod targets;
 mod units;
 mod zonemaintenance;
 
+pub mod loader;
 pub mod zone;
 
 pub mod path_monitor;
