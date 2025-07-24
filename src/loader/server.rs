@@ -37,7 +37,92 @@ use crate::zone::{
     Zone, ZoneContents,
 };
 
-use super::ReloadError;
+use super::{RefreshError, ReloadError};
+
+//----------- refresh() --------------------------------------------------------
+
+/// Refresh a zone from a DNS server.
+///
+/// See [`super::refresh()`].
+pub async fn refresh(
+    zone: &Arc<Zone>,
+    addr: &DnsServerAddr,
+    latest: Option<Arc<contents::Uncompressed>>,
+) -> Result<Option<Serial>, RefreshError> {
+    // Fetch the zone.
+    let (mut compressed, remote) = if let Some(latest) = latest {
+        // Fetch the zone relative to the latest local copy.
+        match ixfr(zone, addr, &latest.soa).await? {
+            Ixfr::UpToDate => {
+                // The local copy is up-to-date.
+                return Ok(None);
+            }
+
+            Ixfr::Compressed(compressed) => {
+                // Coalesce the diffs together.
+                let mut compressed = compressed.into_iter();
+                let initial = compressed.next().unwrap();
+                let compressed = compressed.try_fold(initial, |mut whole, sub| {
+                    whole.merge_from_next(&sub).map(|()| whole)
+                })?;
+
+                // Forward the local copy through the compressed diffs.
+                let remote = latest.forward(&compressed)?;
+
+                (Some((compressed, latest)), remote)
+            }
+
+            Ixfr::Uncompressed(remote) => {
+                // Compress the local copy using the remote copy.
+                let compressed = latest.compress(&remote);
+
+                (Some((compressed, latest)), remote)
+            }
+        }
+    } else {
+        // Fetch the whole zone.
+        let remote = axfr(zone, addr).await?;
+
+        (None, remote)
+    };
+
+    // Loop while the zone contents change from under us.
+    loop {
+        // Load the latest local copy of the zone.
+        let mut data = zone.data.lock().unwrap();
+        let Some(contents) = &mut data.contents else {
+            // Update the zone contents.
+            let remote_serial = remote.soa.rdata.serial;
+            data.contents = Some(ZoneContents {
+                latest: Arc::new(remote),
+                previous: Default::default(),
+            });
+
+            return Ok(Some(remote_serial));
+        };
+
+        // Check whether a compressed copy (of the right version) is available.
+        let Some((compressed, _)) = compressed
+            .take()
+            .filter(|(_, latest)| Arc::ptr_eq(&contents.latest, latest))
+        else {
+            let latest = contents.latest.clone();
+            std::mem::drop(data);
+
+            // Compress the local copy using the remote copy.
+            compressed = Some((latest.compress(&remote), latest));
+
+            continue;
+        };
+
+        // Update the zone contents.
+        let remote_serial = remote.soa.rdata.serial;
+        contents.latest = Arc::new(remote);
+        contents.previous.push_back(Arc::new(compressed));
+
+        return Ok(Some(remote_serial));
+    }
+}
 
 //----------- reload() ---------------------------------------------------------
 
@@ -49,7 +134,8 @@ pub async fn reload(zone: &Arc<Zone>, addr: &DnsServerAddr) -> Result<Option<Ser
     let remote = axfr(zone, addr).await?;
     let remote_serial = remote.soa.rdata.serial;
 
-    let mut compressed_local = None::<contents::Compressed>;
+    // A compressed copy of the local version of the zone.
+    let mut compressed_local: Option<(contents::Compressed, Arc<contents::Uncompressed>)> = None;
 
     // Loop while the zone contents change from under us.
     loop {
@@ -75,13 +161,19 @@ pub async fn reload(zone: &Arc<Zone>, addr: &DnsServerAddr) -> Result<Option<Ser
                 // We need to compress the local copy.  Check if we
                 // have already done so.
 
-                let Some(local) = compressed_local.take_if(|l| l.soa.rdata.serial == local_serial)
-                else {
-                    // We need to perform the compression.  Unlock
-                    // the zone, as this is an expensive operation.
+                let local = if let Some((local, _)) = compressed_local
+                    .take()
+                    .filter(|(_, uncompressed)| Arc::ptr_eq(&contents.latest, uncompressed))
+                {
+                    // Use the cached result.
+                    local
+                } else {
                     let local = contents.latest.clone();
                     std::mem::drop(data);
-                    compressed_local = Some(local.compress(&remote));
+
+                    // Compress the local copy using the remote copy.
+                    compressed_local = Some((local.compress(&remote), local));
+
                     continue;
                 };
 
@@ -403,11 +495,7 @@ fn process_ixfr(
                 assert!(this_soa.is_some() == next_soa.is_some());
                 if let Some((soa, next_soa)) = this_soa.take().zip(next_soa.take()) {
                     // Sort the contents of the batch addition.
-                    only_next.sort_unstable_by(|l, r| {
-                        (&l.rname, l.rtype)
-                            .cmp(&(&r.rname, r.rtype))
-                            .then_with(|| l.rdata.cmp_canonical(&r.rdata))
-                    });
+                    only_next.sort_unstable();
 
                     let only_this = mem::take(only_this).into_boxed_slice();
                     let only_next = mem::take(only_next).into_boxed_slice();
@@ -463,11 +551,7 @@ fn process_ixfr(
                 assert!(*next_soa == Some(make_soa_record(&mut bytes, record)));
 
                 // Sort the contents of the batch addition.
-                only_next.sort_unstable_by(|l, r| {
-                    (&l.rname, l.rtype)
-                        .cmp(&(&r.rname, r.rtype))
-                        .then_with(|| l.rdata.cmp_canonical(&r.rdata))
-                });
+                only_next.sort_unstable();
 
                 let only_this = mem::take(only_this).into_boxed_slice();
                 let only_next = mem::take(only_next).into_boxed_slice();
@@ -684,13 +768,13 @@ pub async fn query_soa(zone: &Arc<Zone>, addr: &DnsServerAddr) -> Result<SoaReco
         return Err(QuerySoaError::MismatchedResponse);
     };
 
-    Ok(SoaRecord {
+    Ok(SoaRecord(Record {
         rname: zone.name.unsized_copy_into(),
         rtype,
         rclass,
         ttl,
         rdata: rdata.map_names(|n| n.unsized_copy_into()),
-    })
+    }))
 }
 
 //============ Helpers =========================================================
@@ -699,11 +783,11 @@ pub async fn query_soa(zone: &Arc<Zone>, addr: &DnsServerAddr) -> Result<SoaReco
 fn make_regular_record(bytes: &mut Vec<u8>, record: ParsedRecord) -> RegularRecord {
     bytes.clear();
     record.compose(bytes).unwrap();
-    let record = Record::parse_bytes(&bytes)
+    let record = Record::parse_bytes(bytes)
         .expect("'Record' serializes records correctly")
         .transform(|name: RevNameBuf| name.unsized_copy_into(), |data| data);
     bytes.clear();
-    record
+    RegularRecord(record)
 }
 
 /// Convert an old-base record into a [`SoaRecord`].
@@ -712,14 +796,14 @@ fn make_soa_record(bytes: &mut Vec<u8>, record: ParsedRecord) -> SoaRecord {
 
     bytes.clear();
     record.compose(bytes).unwrap();
-    let record = Record::parse_bytes(&bytes)
+    let record = Record::parse_bytes(bytes)
         .expect("'Record' serializes records correctly")
         .transform(
             |name: RevNameBuf| name.unsized_copy_into(),
             |data: Soa<NameBuf>| data.map_names(|name| name.unsized_copy_into()),
         );
     bytes.clear();
-    record
+    SoaRecord(record)
 }
 
 //============ Errors ==========================================================

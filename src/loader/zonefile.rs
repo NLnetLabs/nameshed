@@ -5,7 +5,7 @@ use std::{cmp::Ordering, fs::File, io::BufReader, sync::Arc};
 use camino::Utf8Path;
 use domain::{
     new::{
-        base::{CanonicalRecordData, RClass, RType, Record, Serial},
+        base::{RClass, RType, Record, Serial},
         rdata::RecordData,
         zonefile::simple::{Entry, ZonefileError, ZonefileScanner},
     },
@@ -17,19 +17,77 @@ use crate::zone::{
     Zone, ZoneContents,
 };
 
-use super::ReloadError;
+use super::{RefreshError, ReloadError};
 
-//----------- reload() ---------------------------------------------------------
+//----------- refresh() --------------------------------------------------------
 
-/// Reload a zone from a zonefile.
+/// Refresh a zone from a zonefile.
 ///
-/// See [`super::reload()`].
-pub fn reload(zone: &Arc<Zone>, path: &Utf8Path) -> Result<Option<Serial>, ReloadError> {
-    // Load the complete zone.
-    let remote = load(zone, path)?;
-    let remote_serial = remote.soa.rdata.serial;
+/// See [`super::refresh()`].
+pub fn refresh(
+    zone: &Arc<Zone>,
+    path: &Utf8Path,
+    latest: Option<Arc<Uncompressed>>,
+) -> Result<Option<Serial>, RefreshError> {
+    // Open the zonefile.
+    let file =
+        BufReader::new(File::open(path).map_err(|err| RefreshError::Zonefile(Error::Open(err)))?);
+    let mut scanner = ZonefileScanner::new(file, Some(&zone.name));
 
-    let mut compressed_local = None::<contents::Compressed>;
+    // Assume the first record is the SOA.
+    let soa = match scanner.scan().map_err(Error::Misformatted)? {
+        Some(Entry::Record(Record {
+            rname,
+            rtype: rtype @ RType::SOA,
+            rclass: rclass @ RClass::IN,
+            ttl,
+            rdata: RecordData::Soa(rdata),
+        })) => {
+            if rname != &*zone.name {
+                return Err(Error::MismatchedOrigin.into());
+            }
+
+            SoaRecord(Record {
+                rname: zone.name.unsized_copy_into(),
+                rtype,
+                rclass,
+                ttl,
+                rdata: rdata.map_names(|n| n.unsized_copy_into()),
+            })
+        }
+
+        Some(Entry::Include { .. }) => return Err(Error::UnsupportedInclude.into()),
+        _ => return Err(Error::MissingStartSoa.into()),
+    };
+
+    // Check whether the SOA has changed.
+    let local_serial = latest.map(|l| l.soa.rdata.serial);
+    let remote_serial = soa.rdata.serial;
+    if local_serial.partial_cmp(&Some(remote_serial)) != Some(Ordering::Less) {
+        // The local copy is up-to-date.
+        return Ok(None);
+    }
+
+    // Fetch the rest of the zonefile.
+    let mut all = Vec::<RegularRecord>::new();
+    while let Some(entry) = scanner.scan().map_err(Error::Misformatted)? {
+        let record = match entry {
+            Entry::Record(record) => record,
+            Entry::Include { .. } => return Err(Error::UnsupportedInclude.into()),
+        };
+
+        all.push(RegularRecord(
+            record.transform(|name| name.unsized_copy_into(), |data| data.into()),
+        ));
+    }
+
+    // Finalize the remote copy.
+    all.sort_unstable();
+    let all = all.into_boxed_slice();
+    let remote = Uncompressed { soa, all };
+
+    // A compressed copy of the local version of the zone.
+    let mut compressed_local: Option<(contents::Compressed, Arc<contents::Uncompressed>)> = None;
 
     // Loop while the zone contents change from under us.
     loop {
@@ -55,13 +113,79 @@ pub fn reload(zone: &Arc<Zone>, path: &Utf8Path) -> Result<Option<Serial>, Reloa
                 // We need to compress the local copy.  Check if we
                 // have already done so.
 
-                let Some(local) = compressed_local.take_if(|l| l.soa.rdata.serial == local_serial)
+                let Some((local, _)) = compressed_local
+                    .take()
+                    .filter(|(_, latest)| Arc::ptr_eq(&contents.latest, latest))
+                else {
+                    let local = contents.latest.clone();
+                    std::mem::drop(data);
+
+                    // Compress the local copy using the remote copy.
+                    compressed_local = Some((local.compress(&remote), local));
+
+                    continue;
+                };
+
+                // Update the zone contents.
+                contents.latest = Arc::new(remote);
+                contents.previous.push_back(Arc::new(local));
+                return Ok(Some(remote_serial));
+            }
+
+            _ => {
+                // The local copy is up-to-date.
+                return Ok(None);
+            }
+        }
+    }
+}
+
+//----------- reload() ---------------------------------------------------------
+
+/// Reload a zone from a zonefile.
+///
+/// See [`super::reload()`].
+pub fn reload(zone: &Arc<Zone>, path: &Utf8Path) -> Result<Option<Serial>, ReloadError> {
+    // Load the complete zone.
+    let remote = load(zone, path)?;
+    let remote_serial = remote.soa.rdata.serial;
+
+    // A compressed copy of the local version of the zone.
+    let mut compressed_local: Option<(contents::Compressed, Arc<contents::Uncompressed>)> = None;
+
+    // Loop while the zone contents change from under us.
+    loop {
+        // Load the latest local copy of the zone.
+        let mut data = zone.data.lock().unwrap();
+        let Some(contents) = &mut data.contents else {
+            // There were no previous contents to the zone.
+            //
+            // Save the freshly loaded version and return.
+
+            data.contents = Some(ZoneContents {
+                latest: Arc::new(remote),
+                previous: Default::default(),
+            });
+
+            return Ok(Some(remote_serial));
+        };
+
+        // Compare the local and remote copies.
+        let local_serial = contents.latest.soa.rdata.serial;
+        match local_serial.partial_cmp(&remote_serial) {
+            Some(Ordering::Less) => {
+                // We need to compress the local copy.  Check if we
+                // have already done so.
+
+                let Some((local, _)) = compressed_local
+                    .take()
+                    .filter(|(_, latest)| Arc::ptr_eq(&contents.latest, latest))
                 else {
                     // We need to perform the compression.  Unlock
                     // the zone, as this is an expensive operation.
                     let local = contents.latest.clone();
                     std::mem::drop(data);
-                    compressed_local = Some(local.compress(&remote));
+                    compressed_local = Some((local.compress(&remote), local));
                     continue;
                 };
 
@@ -93,8 +217,6 @@ pub fn reload(zone: &Arc<Zone>, path: &Utf8Path) -> Result<Option<Serial>, Reloa
     }
 }
 
-//----------- refresh() --------------------------------------------------------
-
 //----------- load() -----------------------------------------------------------
 
 /// Load a zone from a zonefile.
@@ -116,13 +238,13 @@ pub fn load(zone: &Arc<Zone>, path: &Utf8Path) -> Result<Uncompressed, Error> {
                 return Err(Error::MismatchedOrigin);
             }
 
-            SoaRecord {
+            SoaRecord(Record {
                 rname: zone.name.unsized_copy_into(),
                 rtype,
                 rclass,
                 ttl,
                 rdata: rdata.map_names(|n| n.unsized_copy_into()),
-            }
+            })
         }
 
         Some(Entry::Include { .. }) => return Err(Error::UnsupportedInclude),
@@ -137,15 +259,13 @@ pub fn load(zone: &Arc<Zone>, path: &Utf8Path) -> Result<Uncompressed, Error> {
             Entry::Include { .. } => return Err(Error::UnsupportedInclude),
         };
 
-        all.push(record.transform(|name| name.unsized_copy_into(), |data| data.into()));
+        all.push(RegularRecord(
+            record.transform(|name| name.unsized_copy_into(), |data| data.into()),
+        ));
     }
 
     // Sort the records.
-    all.sort_unstable_by(|l, r| {
-        (&l.rname, l.rtype)
-            .cmp(&(&r.rname, r.rtype))
-            .then_with(|| l.rdata.cmp_canonical(&r.rdata))
-    });
+    all.sort_unstable();
 
     let all = all.into_boxed_slice();
     Ok(Uncompressed { soa, all })

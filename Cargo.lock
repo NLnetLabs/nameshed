@@ -445,7 +445,7 @@ dependencies = [
 [[package]]
 name = "domain"
 version = "0.11.1-dev"
-source = "git+https://github.com/NLnetLabs/domain?branch=aryas-nameshed-patches#9e67c523d5731f51436272ba5d710ff59ed361ff"
+source = "git+https://github.com/NLnetLabs/domain?branch=aryas-nameshed-patches#3a59edd0fb071867746394862d6035dedf757af7"
 dependencies = [
  "arc-swap",
  "bcder",
@@ -480,7 +480,7 @@ dependencies = [
 [[package]]
 name = "domain-macros"
 version = "0.11.1-dev"
-source = "git+https://github.com/NLnetLabs/domain?branch=aryas-nameshed-patches#9e67c523d5731f51436272ba5d710ff59ed361ff"
+source = "git+https://github.com/NLnetLabs/domain?branch=aryas-nameshed-patches#3a59edd0fb071867746394862d6035dedf757af7"
 dependencies = [
  "proc-macro2",
  "quote",
