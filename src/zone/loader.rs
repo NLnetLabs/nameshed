@@ -1,6 +1,6 @@
 //! Zone-specific loader state.
 
-use std::{net::SocketAddr, sync::Arc};
+use std::{net::IpAddr, sync::Arc};
 
 use camino::Utf8Path;
 
@@ -80,7 +80,7 @@ impl LoaderState {
 /// The source of a zone.
 //
 // TODO: Support multiple sources for a zone?
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub enum Source {
     /// The lack of a source.
     ///
@@ -145,30 +145,13 @@ pub struct Reloads {
 
 /// How to connect to a DNS server.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum DnsServerAddr {
-    /// Connect over UDP.
-    UDP {
-        /// The network address to connect to.
-        addr: SocketAddr,
-        //
-        // TODO: TSIG
-    },
+pub struct DnsServerAddr {
+    /// The Internet address.
+    pub ip: IpAddr,
 
-    /// Connect over TCP.
-    TCP {
-        /// The network address to connect to.
-        addr: SocketAddr,
-        //
-        // TODO: TSIG
-    },
+    /// The TCP port number.
+    pub tcp_port: u16,
 
-    /// Connect over UDP or TCP.
-    TCPUDP {
-        /// The network address to connect to.
-        addr: SocketAddr,
-        //
-        // TODO: TSIG
-    },
-    //
-    // TODO: TLS
+    /// The UDP port number, if it's supported.
+    pub udp_port: Option<u16>,
 }
