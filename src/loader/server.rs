@@ -1,10 +1,10 @@
 //! Loading zones from DNS servers.
 
-use std::{iter::Peekable, mem, net::SocketAddr, sync::Arc};
+use std::{cmp::Ordering, iter::Peekable, mem, net::SocketAddr, sync::Arc};
 
 use bytes::Bytes;
 use domain::{
-    base::Rtype,
+    base::{iana::Rcode, Rtype},
     net::{
         client::{
             self,
@@ -19,10 +19,11 @@ use domain::{
         base::{
             build::MessageBuilder,
             name::{NameBuf, NameCompressor, RevNameBuf},
-            wire::{AsBytes, ParseBytes},
-            CanonicalRecordData, HeaderFlags, QClass, QType, Question, Record, Serial,
+            wire::{AsBytes, ParseBytes, ParseBytesZC, ParseError},
+            CanonicalRecordData, HeaderFlags, Message, MessageItem, QClass, QType, Question,
+            RClass, RType, Record, Serial,
         },
-        rdata::Soa,
+        rdata::{RecordData, Soa},
     },
     rdata::ZoneRecordData,
     utils::dst::UnsizedCopy,
@@ -33,8 +34,84 @@ use tokio::net::TcpStream;
 use crate::zone::{
     contents::{self, RegularRecord, SoaRecord},
     loader::DnsServerAddr,
-    Zone,
+    Zone, ZoneContents,
 };
+
+use super::ReloadError;
+
+//----------- reload() ---------------------------------------------------------
+
+/// Reload a zone from a DNS server.
+///
+/// See [`super::reload()`].
+pub async fn reload(zone: &Arc<Zone>, addr: &DnsServerAddr) -> Result<Option<Serial>, ReloadError> {
+    // Load the full remote zone with an AXFR.
+    let remote = axfr(zone, addr).await?;
+    let remote_serial = remote.soa.rdata.serial;
+
+    let mut compressed_local = None::<contents::Compressed>;
+
+    // Loop while the zone contents change from under us.
+    loop {
+        // Load the latest local copy of the zone.
+        let mut data = zone.data.lock().unwrap();
+        let Some(contents) = &mut data.contents else {
+            // There were no previous contents to the zone.
+            //
+            // Save the freshly loaded version and return.
+
+            data.contents = Some(ZoneContents {
+                latest: Arc::new(remote),
+                previous: Default::default(),
+            });
+
+            return Ok(Some(remote_serial));
+        };
+
+        // Compare the local and remote copies.
+        let local_serial = contents.latest.soa.rdata.serial;
+        match local_serial.partial_cmp(&remote_serial) {
+            Some(Ordering::Less) => {
+                // We need to compress the local copy.  Check if we
+                // have already done so.
+
+                let Some(local) = compressed_local.take_if(|l| l.soa.rdata.serial == local_serial)
+                else {
+                    // We need to perform the compression.  Unlock
+                    // the zone, as this is an expensive operation.
+                    let local = contents.latest.clone();
+                    std::mem::drop(data);
+                    compressed_local = Some(local.compress(&remote));
+                    continue;
+                };
+
+                // Update the zone contents.
+                contents.latest = Arc::new(remote);
+                contents.previous.push_back(Arc::new(local));
+                return Ok(Some(remote_serial));
+            }
+
+            Some(Ordering::Equal) => {
+                // Verify the consistency of the two copies.
+                let local = contents.latest.clone();
+                std::mem::drop(data);
+                if local.eq_unsigned(&remote) {
+                    return Ok(None);
+                } else {
+                    return Err(ReloadError::Inconsistent);
+                }
+            }
+
+            _ => {
+                // The remote copy is outdated.
+                return Err(ReloadError::OutdatedRemote {
+                    local_serial,
+                    remote_serial,
+                });
+            }
+        }
+    }
+}
 
 //----------- ixfr() -----------------------------------------------------------
 
@@ -82,6 +159,21 @@ pub async fn ixfr(
         // Attempt the IXFR.
         let request = RequestMessage::new(message.clone()).unwrap();
         let response = client.send_request(request).get_response().await?;
+
+        // If the server does not support IXFR, fall back to an AXFR.
+        if response.header().rcode() == Rcode::NOTIMP {
+            // Query the server for its SOA record only.
+            let remote_soa = query_soa(zone, addr).await?;
+
+            if local_soa.rdata.serial.partial_cmp(&remote_soa.rdata.serial) != Some(Ordering::Less)
+            {
+                // The local copy is up-to-date.
+                return Ok(Ixfr::UpToDate);
+            }
+
+            // Perform a full AXFR.
+            return Ok(Ixfr::Uncompressed(axfr(zone, addr).await?));
+        }
 
         // Process the transfer data.
         let mut interpreter = XfrResponseInterpreter::new();
@@ -171,6 +263,21 @@ pub async fn ixfr(
         .get_response()
         .await?
         .ok_or(IxfrError::IncompleteResponse)?;
+
+    // If the server does not support IXFR, fall back to an AXFR.
+    if initial.header().rcode() == Rcode::NOTIMP {
+        // Query the server for its SOA record only.
+        let remote_soa = query_soa(zone, addr).await?;
+
+        if local_soa.rdata.serial.partial_cmp(&remote_soa.rdata.serial) != Some(Ordering::Less) {
+            // The local copy is up-to-date.
+            return Ok(Ixfr::UpToDate);
+        }
+
+        // Perform a full AXFR.
+        return Ok(Ixfr::Uncompressed(axfr(zone, addr).await?));
+    }
+
     let mut updates = interpreter.interpret_response(initial)?.peekable();
 
     match updates.peek().unwrap() {
@@ -486,6 +593,106 @@ fn process_axfr(
     Ok(None)
 }
 
+//----------- query_soa() ------------------------------------------------------
+
+/// Query a DNS server for the SOA record of a zone.
+pub async fn query_soa(zone: &Arc<Zone>, addr: &DnsServerAddr) -> Result<SoaRecord, QuerySoaError> {
+    // Prepare the SOA query message.
+    let mut buffer = [0u8; 512];
+    let mut compressor = NameCompressor::default();
+    let mut builder = MessageBuilder::new(
+        &mut buffer,
+        &mut compressor,
+        0u16.into(),
+        *HeaderFlags::default().set_qr(false),
+    );
+    builder
+        .push_question(&Question {
+            qname: &zone.name,
+            qtype: QType::SOA,
+            qclass: QClass::IN,
+        })
+        .unwrap();
+    let message = Bytes::copy_from_slice(builder.finish().as_bytes());
+    let message =
+        domain::base::Message::from_octets(message).expect("'Message' is at least 12 bytes long");
+
+    let tcp_addr: SocketAddr = (addr.ip, addr.tcp_port).into();
+
+    // Send the query.
+    let response = if let Some(udp_port) = addr.udp_port {
+        // Prepare a UDP+TCP client.
+        let udp_addr: SocketAddr = (addr.ip, udp_port).into();
+        let udp_conn = client::protocol::UdpConnect::new(udp_addr);
+        let tcp_conn = client::protocol::TcpConnect::new(tcp_addr);
+        let (client, transport) = client::dgram_stream::Connection::new(udp_conn, tcp_conn);
+        tokio::task::spawn(transport.run());
+
+        // Send the query.
+        let request = RequestMessage::new(message.clone()).unwrap();
+        client.send_request(request).get_response().await?
+    } else {
+        // Prepare a TCP client.
+        let tcp_conn = TcpStream::connect(tcp_addr)
+            .await
+            .map_err(QuerySoaError::Connection)?;
+        let (client, transport) = client::stream::Connection::<
+            RequestMessage<Bytes>,
+            RequestMessageMulti<Bytes>,
+        >::new(tcp_conn);
+        tokio::task::spawn(transport.run());
+
+        // Send the query.
+        let request = RequestMessage::new(message.clone()).unwrap();
+        SendRequest::send_request(&client, request)
+            .get_response()
+            .await?
+    };
+
+    // Parse the response message.
+    let response = Message::parse_bytes_by_ref(response.as_slice())
+        .expect("'Message' is at least 12 bytes long");
+    if response.header.flags.rcode() != 0 {
+        return Err(QuerySoaError::MismatchedResponse);
+    }
+    let mut parser = response.parse();
+    let Some(MessageItem::Question(Question {
+        qname,
+        qtype: QType::SOA,
+        qclass: QClass::IN,
+    })) = parser.next().transpose()?
+    else {
+        return Err(QuerySoaError::MismatchedResponse);
+    };
+    if *qname != *zone.name {
+        return Err(QuerySoaError::MismatchedResponse);
+    }
+    let Some(MessageItem::Answer(Record {
+        rname,
+        rtype: rtype @ RType::SOA,
+        rclass: rclass @ RClass::IN,
+        ttl,
+        rdata: RecordData::Soa(rdata),
+    })) = parser.next().transpose()?
+    else {
+        return Err(QuerySoaError::MismatchedResponse);
+    };
+    if *rname != *zone.name {
+        return Err(QuerySoaError::MismatchedResponse);
+    }
+    let None = parser.next() else {
+        return Err(QuerySoaError::MismatchedResponse);
+    };
+
+    Ok(SoaRecord {
+        rname: zone.name.unsized_copy_into(),
+        rtype,
+        rclass,
+        ttl,
+        rdata: rdata.map_names(|n| n.unsized_copy_into()),
+    })
+}
+
 //============ Helpers =========================================================
 
 /// Convert an old-base record into a [`RegularRecord`].
@@ -516,6 +723,67 @@ fn make_soa_record(bytes: &mut Vec<u8>, record: ParsedRecord) -> SoaRecord {
 }
 
 //============ Errors ==========================================================
+
+//----------- IxfrError --------------------------------------------------------
+
+/// An error when performing an incremental zone transfer.
+//
+// TODO: Expand into less opaque variants.
+pub enum IxfrError {
+    /// A DNS client error occurred.
+    Client(client::request::Error),
+
+    /// Could not connect to the server.
+    Connection(std::io::Error),
+
+    /// An XFR interpretation error occurred.
+    Xfr(xfr::protocol::Error),
+
+    /// An XFR interpretation error occurred.
+    XfrIter(xfr::protocol::IterationError),
+
+    /// An incomplete response was received.
+    IncompleteResponse,
+
+    /// An inconsistent [`Ixfr::UpToDate`] response was received.
+    InconsistentUpToDate,
+
+    /// A query for a SOA record failed.
+    QuerySoa(QuerySoaError),
+
+    /// An AXFR related error occurred.
+    Axfr(AxfrError),
+}
+
+impl From<client::request::Error> for IxfrError {
+    fn from(value: client::request::Error) -> Self {
+        Self::Client(value)
+    }
+}
+
+impl From<xfr::protocol::Error> for IxfrError {
+    fn from(value: xfr::protocol::Error) -> Self {
+        Self::Xfr(value)
+    }
+}
+
+impl From<xfr::protocol::IterationError> for IxfrError {
+    fn from(value: xfr::protocol::IterationError) -> Self {
+        Self::XfrIter(value)
+    }
+}
+
+impl From<QuerySoaError> for IxfrError {
+    fn from(v: QuerySoaError) -> Self {
+        Self::QuerySoa(v)
+    }
+}
+
+impl From<AxfrError> for IxfrError {
+    fn from(value: AxfrError) -> Self {
+        Self::Axfr(value)
+    }
+}
 
 //----------- AxfrError --------------------------------------------------------
 
@@ -555,54 +823,31 @@ impl From<xfr::protocol::IterationError> for AxfrError {
     }
 }
 
-//----------- IxfrError --------------------------------------------------------
+//----------- QuerySoaError ----------------------------------------------------
 
-/// An error when performing an incremental zone transfer.
-//
-// TODO: Expand into less opaque variants.
-pub enum IxfrError {
+/// An error when querying a DNS server for a SOA record.
+pub enum QuerySoaError {
     /// A DNS client error occurred.
     Client(client::request::Error),
 
     /// Could not connect to the server.
     Connection(std::io::Error),
 
-    /// An XFR interpretation error occurred.
-    Xfr(xfr::protocol::Error),
+    /// The response could not be parsed.
+    Parse(ParseError),
 
-    /// An XFR interpretation error occurred.
-    XfrIter(xfr::protocol::IterationError),
-
-    /// An incomplete response was received.
-    IncompleteResponse,
-
-    /// An inconsistent [`Ixfr::UpToDate`] response was received.
-    InconsistentUpToDate,
-
-    /// An AXFR related error occurred.
-    Axfr(AxfrError),
+    /// The response did not match the query.
+    MismatchedResponse,
 }
 
-impl From<client::request::Error> for IxfrError {
-    fn from(value: client::request::Error) -> Self {
-        Self::Client(value)
+impl From<client::request::Error> for QuerySoaError {
+    fn from(v: client::request::Error) -> Self {
+        Self::Client(v)
     }
 }
 
-impl From<xfr::protocol::Error> for IxfrError {
-    fn from(value: xfr::protocol::Error) -> Self {
-        Self::Xfr(value)
-    }
-}
-
-impl From<xfr::protocol::IterationError> for IxfrError {
-    fn from(value: xfr::protocol::IterationError) -> Self {
-        Self::XfrIter(value)
-    }
-}
-
-impl From<AxfrError> for IxfrError {
-    fn from(value: AxfrError) -> Self {
-        Self::Axfr(value)
+impl From<ParseError> for QuerySoaError {
+    fn from(v: ParseError) -> Self {
+        Self::Parse(v)
     }
 }
