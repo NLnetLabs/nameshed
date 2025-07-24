@@ -1,6 +1,6 @@
 //! Storing the contents of a zone.
 
-use std::{cmp::Ordering, collections::VecDeque, sync::Arc};
+use std::{cmp::Ordering, collections::VecDeque, fmt, sync::Arc};
 
 use domain::{
     new::{
@@ -13,6 +13,8 @@ use domain::{
     utils::dst::UnsizedCopy,
 };
 
+//----------- ZoneContents -----------------------------------------------------
+
 /// The contents of a zone.
 ///
 /// This stores the resource records making up the zone, across different
@@ -20,6 +22,7 @@ use domain::{
 ///
 /// Internally, only the latest version of the zone is stored in full.  All
 /// previous versions are stored as diffs, to improve memory efficiency.
+#[derive(Debug)]
 pub struct ZoneContents {
     /// The latest version of the zone.
     pub latest: Arc<Uncompressed>,
@@ -32,15 +35,17 @@ pub struct ZoneContents {
     pub previous: VecDeque<Arc<Compressed>>,
 }
 
+//----------- Uncompressed -----------------------------------------------------
+
 /// An uncompressed representation of the contents of a version of a zone.
 pub struct Uncompressed {
     /// The SOA record of the zone.
-    pub soa: Record<Box<RevName>, Soa<Box<Name>>>,
+    pub soa: SoaRecord,
 
     /// The resource records of the zone.
     ///
     /// The records are in ascending order of owner name and record type.
-    pub all: Box<[Record<Box<RevName>, BoxedRecordData>]>,
+    pub all: Box<[RegularRecord]>,
     //
     // TODO: Separate storage for DNSSEC-related records.
     // TODO: Separate storage for glue records.
@@ -55,9 +60,7 @@ impl Uncompressed {
     /// the current version (as per serial number arithmetic).
     pub fn compress(&self, next: &Uncompressed) -> Compressed {
         #[inline]
-        fn clone_record(
-            record: &Record<Box<RevName>, BoxedRecordData>,
-        ) -> Record<Box<RevName>, BoxedRecordData> {
+        fn clone_record(record: &RegularRecord) -> RegularRecord {
             record.transform_ref(|name| (*name).unsized_copy_into(), |data| data.clone())
         }
 
@@ -113,26 +116,53 @@ impl Uncompressed {
     }
 }
 
+impl fmt::Debug for Uncompressed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Uncompressed")
+            .field("serial", &self.soa.rdata.serial)
+            .finish()
+    }
+}
+
+//----------- Compressed -------------------------------------------------------
+
 /// A compressed representation of a zone.
 pub struct Compressed {
     /// The SOA record of this version of the zone.
-    pub soa: Record<Box<RevName>, Soa<Box<Name>>>,
+    pub soa: SoaRecord,
 
     /// The SOA record of the next version of the zone.
-    pub next_soa: Record<Box<RevName>, Soa<Box<Name>>>,
+    pub next_soa: SoaRecord,
 
     /// The resource records only present in this version of the zone.
     ///
     /// These records are present in this version of the zone and not in the
     /// next version.
-    pub only_this: Box<[Record<Box<RevName>, BoxedRecordData>]>,
+    pub only_this: Box<[RegularRecord]>,
 
     /// The resource records only present in the next version of the zone.
     ///
     /// These records are present in the next version of the zone and not in
     /// this version.
-    pub only_next: Box<[Record<Box<RevName>, BoxedRecordData>]>,
+    pub only_next: Box<[RegularRecord]>,
     //
     // TODO: Separate storage for DNSSEC-related records.
     // TODO: Separate storage for glue records.
 }
+
+impl fmt::Debug for Compressed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Compressed")
+            .field("serial", &self.soa.rdata.serial)
+            .field("next_serial", &self.next_soa.rdata.serial)
+            .finish()
+    }
+}
+
+//----------- Common types -----------------------------------------------------
+
+/// A SOA record.
+pub type SoaRecord = Record<Box<RevName>, Soa<Box<Name>>>;
+
+/// A regular record.
+pub type RegularRecord = Record<Box<RevName>, BoxedRecordData>;

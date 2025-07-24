@@ -16,6 +16,7 @@ pub mod loader;
 pub use loader::LoaderState;
 
 pub mod contents;
+pub use contents::ZoneContents;
 
 //----------- Zone -------------------------------------------------------------
 
@@ -38,6 +39,9 @@ pub struct Zone {
 pub struct ZoneState {
     /// Loading new versions of the zone.
     pub loader: LoaderState,
+
+    /// The contents of the zone.
+    pub contents: Option<ZoneContents>,
     //
     // TODO:
     // - Policy
