@@ -8,3 +8,4 @@
 #![deny(unused_variables)]
 
 mod server;
+mod zonefile;
