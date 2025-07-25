@@ -1,13 +1,13 @@
-use core::fmt;
 use core::future::pending;
 use core::ops::{Add, ControlFlow};
+use core::{fmt, slice};
 
 use std::any::Any;
 use std::cmp::Ordering;
 use std::collections::hash_map::Entry::{Occupied, Vacant};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
-use std::fmt::Display;
+use std::fmt::{Debug, Display};
 use std::fs::File;
 use std::io::Read;
 use std::net::{IpAddr, SocketAddr};
@@ -25,16 +25,17 @@ use bytes::{Bytes, BytesMut};
 use chrono::{DateTime, Utc};
 use domain::base::iana::{Class, SecurityAlgorithm};
 use domain::base::name::FlattenInto;
+use domain::base::rdata::ComposeRecordData;
 use domain::base::record::ComposeRecord;
 use domain::base::wire::Composer;
 use domain::base::{
-    CanonicalOrd, Name, ParsedName, ParsedRecord, Record, Rtype, Serial, ToName, Ttl,
+    CanonicalOrd, Name, ParsedName, ParsedRecord, Record, RecordData, Rtype, Serial, ToName, Ttl,
 };
-use domain::crypto::kmip::sign::KeyUrl;
+use domain::crypto::kmip::sign::{KeyUrl, SignQueue};
 use domain::crypto::kmip::{self, ClientCertificate, ConnectionSettings};
 use domain::crypto::kmip_pool::{ConnectionManager, SyncConnPool};
 use domain::crypto::sign::{
-    generate, FromBytesError, GenerateParams, KeyPair, SecretKeyBytes, SignError, SignRaw
+    generate, FromBytesError, GenerateParams, KeyPair, SecretKeyBytes, SignError, SignRaw,
 };
 use domain::dnssec::common::parse_from_bind;
 use domain::dnssec::sign::denial::config::DenialConfig;
@@ -45,7 +46,8 @@ use domain::dnssec::sign::keys::keyset::{KeySet, KeyType};
 use domain::dnssec::sign::keys::SigningKey;
 use domain::dnssec::sign::records::{DefaultSorter, RecordsIter, Rrset, Sorter};
 use domain::dnssec::sign::signatures::rrsigs::{
-    sign_rrset, sign_sorted_zone_records, GenerateRrsigConfig,
+    sign_rrset, sign_sorted_rrset_in_pre, sign_sorted_zone_records, sign_sorted_zone_records_with,
+    signature_to_record, GenerateRrsigConfig,
 };
 use domain::dnssec::sign::traits::SignableZoneInPlace;
 use domain::dnssec::sign::SigningConfig;
@@ -62,7 +64,7 @@ use domain::net::server::service::{CallResult, Service, ServiceError, ServiceRes
 use domain::net::server::stream::{self, StreamServer};
 use domain::net::server::util::{mk_error_response, service_fn};
 use domain::net::server::ConnectionConfig;
-use domain::rdata::dnssec::Timestamp;
+use domain::rdata::dnssec::{ProtoRrsig, Timestamp};
 use domain::rdata::nsec3::Nsec3Salt;
 use domain::rdata::{Dnskey, Nsec3param, Rrsig, Soa, ZoneRecordData};
 use domain::tsig::KeyStore;
@@ -81,7 +83,7 @@ use indoc::formatdoc;
 use log::warn;
 use log::{debug, error, info, trace};
 use non_empty_vec::NonEmpty;
-use octseq::{EmptyBuilder, OctetsInto, Parser};
+use octseq::{EmptyBuilder, OctetsFrom, OctetsInto, Parser};
 use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelExtend};
 use rayon::slice::ParallelSliceMut;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -492,7 +494,7 @@ impl ZoneSigner {
 
                         let public_key = ZoneSignerUnit::load_public_key(Path::new(pub_key_path))
                             .map_err(|_| format!("Failed to load public key from '{}'", pub_key_path))?;
-        
+
                         let key_pair = KeyPair::from_bytes(&private_key, public_key.data())
                             .map_err(|err| format!("Failed to create key pair for zone {zone_name} using key files {pub_key_path} and {priv_key_path}: {err}"))?;
                         let signing_key =
@@ -839,6 +841,10 @@ fn sign_rr_chunk(
     let mut duration = Duration::ZERO;
     n = 0;
     m = 0;
+    let mut rrsigs = vec![];
+    let mut queue = SignQueue::new();
+    let mut sigs = vec![];
+    let mut saved = vec![];
     loop {
         if !is_last_chunk && n == chunk_size {
             trace!("SIGNER: Thread {thread_idx} reached the end of the chunk.");
@@ -865,22 +871,149 @@ fn sign_rr_chunk(
             }
         }
 
-        let rrsigs = sign_sorted_zone_records(zone_name, RecordsIter::new(slice), &zsks, rrsig_cfg)
-            .map_err(|err| err.to_string())?;
-        duration = duration.saturating_add(before.elapsed());
+        let data_to_sign = sign_sorted_zone_records_with(
+            zone_name,
+            RecordsIter::new(slice),
+            &zsks,
+            rrsig_cfg,
+            prep_data_to_sign,
+        )
+        .map_err(|err| err.to_string())?;
 
-        if !rrsigs.is_empty() {
-            // trace!("SIGNER: Thread {i}: sending {} DNSKEY RRs and {} RRSIG RRs to be stored", res.dnskeys.len(), res.rrsigs.len());
-            if let Err(err) = tx.blocking_send((rrsigs, duration)) {
-                return Err(format!("Unable to send RRs for storage, aborting: {err}"));
+        for (rrsig, key, rrset_owner, rrset_class, rrset_ttl, data) in data_to_sign {
+            match key.raw_secret_key() {
+                KeyPair::Ring(key_pair) => {
+                    let signature = key_pair.sign_raw(&data).unwrap();
+                    let rrsig =
+                        signature_to_record(signature, rrsig, rrset_owner, rrset_class, rrset_ttl)
+                            .map_err(|err| err.to_string())?;
+                    rrsigs.push(rrsig);
+                }
+                KeyPair::OpenSSL(key_pair) => {
+                    let signature = key_pair.sign_raw(&data).unwrap();
+                    let rrsig =
+                        signature_to_record(signature, rrsig, rrset_owner, rrset_class, rrset_ttl)
+                            .map_err(|err| err.to_string())?;
+                    rrsigs.push(rrsig);
+                }
+                KeyPair::Kmip(key_pair) => {
+                    key_pair.sign_raw_enqueue(&mut queue, &data).unwrap();
+                    saved.push((rrsig, rrset_owner, rrset_class, rrset_ttl));
+                }
             }
-        } else {
-            // trace!("SIGNER: Thread {i}: no DNSKEY RRs or RRSIG RRs to be stored");
         }
+
+        if let KeyPair::Kmip(key_pair) = keys[0].raw_secret_key() {
+            if saved.len() > 1000 {
+                sigs.append(&mut key_pair.sign_raw_submit_queue(&mut queue).unwrap());
+                // trace!("SIGNER: Thread {i}: sending {} DNSKEY RRs and {} RRSIG RRs to be stored", res.dnskeys.len(), res.rrsigs.len());
+                // TODO: Use the right key.
+                // TODO: Don't require the saved vec.
+                if let KeyPair::Kmip(key_pair) = zsks[0].raw_secret_key() {
+                    let mut other_saved = Vec::with_capacity(saved.capacity());
+                    let mut other_sigs = Vec::with_capacity(sigs.capacity());
+                    std::mem::swap(&mut saved, &mut other_saved);
+                    std::mem::swap(&mut sigs, &mut other_sigs);
+                    if !other_sigs.is_empty() {
+                        debug!("Post-processing batch of {} signatures", other_sigs.len());
+                        for (signature, (rrsig, rrset_owner, rrset_class, rrset_ttl)) in
+                            other_sigs.into_iter().zip(other_saved.into_iter())
+                        {
+                            let rrsig = signature_to_record(
+                                signature,
+                                rrsig,
+                                rrset_owner,
+                                rrset_class,
+                                rrset_ttl,
+                            )
+                            .map_err(|err| err.to_string())?;
+                            rrsigs.push(rrsig);
+                        }
+                    }
+                }
+                duration = duration.saturating_add(before.elapsed());
+                let mut other_rrsigs = Vec::with_capacity(rrsigs.capacity());
+                std::mem::swap(&mut rrsigs, &mut other_rrsigs);
+                if let Err(err) = tx.blocking_send((other_rrsigs, duration)) {
+                    return Err(format!("Unable to send RRs for storage, aborting: {err}"));
+                }
+            }
+        }
+    }
+
+    // trace!("SIGNER: Thread {i}: sending {} DNSKEY RRs and {} RRSIG RRs to be stored", res.dnskeys.len(), res.rrsigs.len());
+    let before = Instant::now();
+    if let KeyPair::Kmip(key_pair) = keys[0].raw_secret_key() {
+        let sigs = key_pair.sign_raw_submit_queue(&mut queue).unwrap();
+        let mut other_saved = Vec::with_capacity(saved.capacity());
+        std::mem::swap(&mut saved, &mut other_saved);
+        if !sigs.is_empty() {
+            debug!("Post-processing batch of {} signatures", sigs.len());
+            for (signature, (rrsig, rrset_owner, rrset_class, rrset_ttl)) in
+                sigs.into_iter().zip(other_saved.into_iter())
+            {
+                let rrsig =
+                    signature_to_record(signature, rrsig, rrset_owner, rrset_class, rrset_ttl)
+                        .map_err(|err| err.to_string())?;
+                rrsigs.push(rrsig);
+            }
+        }
+    }
+    duration = duration.saturating_add(before.elapsed());
+    if let Err(err) = tx.blocking_send((rrsigs, duration)) {
+        return Err(format!("Unable to send RRs for storage, aborting: {err}"));
     }
 
     trace!("SIGNER: Thread {thread_idx} finished processing {n} owners covering {m} RRs.");
     Ok(())
+}
+
+pub fn prep_data_to_sign<'a, 'b, N, Octs, Inner>(
+    key: &'a SigningKey<Octs, Inner>,
+    rrset_rtype: Rtype,
+    rrset_class: Class,
+    rrset_owner: N,
+    rrset_ttl: Ttl,
+    rrset_iter: slice::Iter<Record<N, ZoneRecordData<Octs, N>>>,
+    inception: Timestamp,
+    expiration: Timestamp,
+    scratch: &mut Vec<u8>,
+) -> Result<
+    (
+        ProtoRrsig<N>,
+        &'a SigningKey<Octs, Inner>,
+        N,
+        Class,
+        Ttl,
+        Vec<u8>,
+    ),
+    SigningError,
+>
+where
+    N: ToName + Clone + Debug + From<Name<Octs>> + CanonicalOrd,
+    Inner: Debug + SignRaw,
+    Octs: AsRef<[u8]> + Clone + Debug + OctetsFrom<Vec<u8>>,
+{
+    let rrsig = sign_sorted_rrset_in_pre(
+        key,
+        rrset_rtype,
+        rrset_owner.rrsig_label_count(),
+        rrset_ttl,
+        rrset_iter,
+        inception,
+        expiration,
+        scratch,
+    )?;
+    let mut data_to_sign = Vec::with_capacity(scratch.capacity());
+    std::mem::swap(scratch, &mut data_to_sign);
+    Ok((
+        rrsig,
+        key,
+        rrset_owner,
+        rrset_class,
+        rrset_ttl,
+        data_to_sign,
+    ))
 }
 
 #[allow(clippy::type_complexity)]
@@ -910,7 +1043,11 @@ async fn rrsig_inserter(
         insertion_time = insertion_time.saturating_add(insert_start.elapsed());
         if rrsig_count % 100 == 0 {
             let elapsed = start.elapsed().as_secs();
-            let rate = if elapsed > 0 { rrsig_count / (elapsed as usize) } else { rrsig_count }; // TODO: Use floating point arithmetic?
+            let rate = if elapsed > 0 {
+                rrsig_count / (elapsed as usize)
+            } else {
+                rrsig_count
+            }; // TODO: Use floating point arithmetic?
             info!("Inserted {rrsig_count} RRSIGs in {elapsed} seconds at a rate of {rate} RRSIGs/second");
         }
     }
@@ -987,7 +1124,7 @@ fn parse_nsec3_config(config: &TomlNsec3Config) -> GenerateNsec3Config<Bytes, Mu
     nsec3_config
 }
 
-impl std::fmt::Debug for ZoneSigner {
+impl Debug for ZoneSigner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ZoneSigner").finish()
     }
