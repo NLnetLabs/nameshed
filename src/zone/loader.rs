@@ -1,8 +1,10 @@
 //! Zone-specific loader state.
 
-use std::{net::IpAddr, sync::Arc};
+use std::{net::IpAddr, sync::Arc, time::Instant};
 
 use camino::Utf8Path;
+
+use crate::loader;
 
 use super::{Zone, ZoneState};
 
@@ -14,8 +16,8 @@ pub struct LoaderState {
     /// The source of the zone.
     pub source: Source,
 
-    /// Ongoing and enqueued reloads of the zone.
-    pub reloads: Option<Reloads>,
+    /// Ongoing and enqueued refreshes of the zone.
+    pub refreshes: Option<Refreshes>,
     //
     // TODO:
     // - File monitoring state
@@ -35,16 +37,18 @@ impl LoaderState {
         state.loader.source = source;
     }
 
-    /// Enqueue a reload of this zone.
+    /// Enqueue a refresh of this zone.
     ///
-    /// If the zone is not being reloaded already, a new reload will be
-    /// initiated.  Otherwise, a reload will be enqueued; if one is enqueued
-    /// already, it will be merged.
+    /// If the zone is not being refreshed already, a new refresh will be
+    /// initiated.  Otherwise, a refresh will be enqueued; if one is enqueued
+    /// already, the two will be merged.  If `reload` is true, the refresh will
+    /// verify the local copy of the zone by loading the entire zone from
+    /// scratch.
     ///
     /// # Standards
     ///
     /// Complies with [RFC 1996, section 4.4], when this is used to enqueue a
-    /// reload in response to a `QTYPE=SOA` NOTIFY message.
+    /// refresh in response to a `QTYPE=SOA` NOTIFY message.
     ///
     /// > 4.4. A slave which receives a valid NOTIFY should defer action on any
     /// > subsequent NOTIFY with the same \<QNAME,QCLASS,QTYPE\> until it has
@@ -53,25 +57,70 @@ impl LoaderState {
     /// > pummeling the master server.
     ///
     /// [RFC 1996, section 4.4]: https://datatracker.ietf.org/doc/html/rfc1996#section-4
-    pub fn enqueue_reload(state: &mut ZoneState, zone: Arc<Zone>) {
+    pub fn enqueue_refresh(state: &mut ZoneState, zone: Arc<Zone>, reload: bool) {
         // TODO: Log
 
-        // Determine whether a reload is ongoing.
-        match &mut state.loader.reloads {
-            Some(reloads) => {
-                // There is an ongoing reload.  Enqueue a new one, which will
-                // start when the ongoing one finishes.  If a reload is already
-                // enqueued, the two will be merged.
-                reloads.enqueued = true;
-            }
-
-            None => {
-                // There is no ongoing reload.  Initiate one immediately.
-
-                let _ = zone;
-                todo!()
-            }
+        // Determine whether a refresh is ongoing.
+        if let Some(refreshes) = &mut state.loader.refreshes {
+            // There is an ongoing refresh.  Enqueue a new one, which will
+            // start when the ongoing one finishes.  If a refresh is already
+            // enqueued, the two will be merged.
+            refreshes.enqueue(if reload {
+                EnqueuedRefresh::Reload
+            } else {
+                EnqueuedRefresh::Refresh
+            });
+            return;
         }
+
+        // There is no ongoing refresh.  Initiate one immediately.
+        let start = Instant::now();
+        let source = state.loader.source.clone();
+        let ongoing = if reload {
+            let handle = tokio::task::spawn(async move {
+                // Reload the zone.
+                let serial = match loader::reload(&zone, &source).await {
+                    Ok(serial) => serial,
+                    Err(error) => {
+                        // Update the zone refresh timers.
+                        let _ = error;
+                        todo!()
+                    }
+                };
+
+                if let Some(serial) = serial {
+                    // TODO: Inform the central command.
+                    let _ = serial;
+                }
+                // TODO: Update the zone refresh timers.
+            });
+            OngoingRefresh::Reload { start, handle }
+        } else {
+            let latest = state
+                .contents
+                .as_ref()
+                .map(|contents| contents.latest.clone());
+
+            let handle = tokio::task::spawn(async move {
+                // Refresh the zone.
+                let serial = match loader::refresh(&zone, &source, latest).await {
+                    Ok(serial) => serial,
+                    Err(error) => {
+                        // Update the zone refresh timers.
+                        let _ = error;
+                        todo!()
+                    }
+                };
+
+                if let Some(serial) = serial {
+                    // TODO: Inform the central command.
+                    let _ = serial;
+                }
+                // TODO: Update the zone refresh timers.
+            });
+            OngoingRefresh::Refresh { start, handle }
+        };
+        state.loader.refreshes = Some(Refreshes::new(ongoing));
     }
 }
 
@@ -84,14 +133,11 @@ impl LoaderState {
 pub enum Source {
     /// The lack of a source.
     ///
-    /// The zone will not be loaded from any external source.  Nameshed will
-    /// consider itself authoritative for this zone, including for any versions
-    /// of the zone that have been loaded already (through other sources).
-    ///
-    /// This is the default state for new zones.
+    /// The zone will not be loaded from any external source.  This is the
+    /// default state for new zones.
     //
     // TODO: When DNS UPDATE messages are supported, the zone contents can be
-    //   changed, making this a valid way to host a zone authoritatively.
+    //   changed, making this a valid way to host a zone.
     #[default]
     None,
 
@@ -101,9 +147,9 @@ pub enum Source {
     /// symlinks, as per OS limitations) containing the contents of the zone in
     /// the conventional "DNS zonefile" format.
     ///
-    /// In addition to the default zone reload triggers, the zonefile will also
+    /// In addition to the default zone refresh triggers, the zonefile will also
     /// be monitored for changes (through OS-specific mechanisms), and will be
-    /// reloaded when a change is detected.
+    /// refreshed when a change is detected.
     Zonefile {
         /// The path to the zonefile.
         path: Box<Utf8Path>,
@@ -119,26 +165,71 @@ pub enum Source {
     },
 }
 
-//----------- Reloads ----------------------------------------------------------
+//----------- Refreshes --------------------------------------------------------
 
-/// Ongoing and enqueued reloads of a zone.
+/// Ongoing and enqueued refreshes of a zone.
 #[derive(Debug)]
-pub struct Reloads {
-    /// A handle to an ongoing reload.
-    ///
-    /// The reload is processed in a new Tokio task, whose handle is attached
-    /// here.  This can be used to detect completion and retrieve the result.
-    //
-    // TODO: Consider how to respond to a reload error.  Perhaps that should
-    //   simply log an error and update the refresh timers.
-    pub ongoing: tokio::task::JoinHandle<()>,
+pub struct Refreshes {
+    /// A handle to an ongoing refresh.
+    pub ongoing: OngoingRefresh,
 
-    /// Whether a reload is enqueued.
+    /// An enqueued refresh.
     ///
-    /// If this is `true`, a new reload will be started when the current one
-    /// finishes.  Note that at most one reload can be enqueued; if a new reload
-    /// is requested, it will be merged with this one.
-    pub enqueued: bool,
+    /// If multiple refreshes/reloads are enqueued, they are merged together.
+    pub enqueued: Option<EnqueuedRefresh>,
+}
+
+impl Refreshes {
+    /// Construct a new [`Refreshes`].
+    pub fn new(ongoing: OngoingRefresh) -> Self {
+        Self {
+            ongoing,
+            enqueued: None,
+        }
+    }
+
+    /// Enqueue a refresh/reload.
+    ///
+    /// If one is already enqueued, the two will be merged.
+    pub fn enqueue(&mut self, refresh: EnqueuedRefresh) {
+        self.enqueued = self.enqueued.take().max(Some(refresh));
+    }
+}
+
+//----------- OngoingRefresh ---------------------------------------------------
+
+/// An ongoing refresh or reload of a zone.
+#[derive(Debug)]
+pub enum OngoingRefresh {
+    /// An ongoing refresh.
+    Refresh {
+        /// When the refresh started.
+        start: Instant,
+
+        /// A handle to the refresh.
+        handle: tokio::task::JoinHandle<()>,
+    },
+
+    /// An ongoing reload.
+    Reload {
+        /// When the reload started.
+        start: Instant,
+
+        /// A handle to the reload.
+        handle: tokio::task::JoinHandle<()>,
+    },
+}
+
+//----------- EnqueuedRefresh --------------------------------------------------
+
+/// An enqueued refresh or reload of a zone.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum EnqueuedRefresh {
+    /// An enqueued refresh.
+    Refresh,
+
+    /// An enqueued reload.
+    Reload,
 }
 
 //----------- DnsServerAddr ----------------------------------------------------
