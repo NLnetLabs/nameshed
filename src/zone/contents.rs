@@ -9,12 +9,17 @@ use std::{
     sync::Arc,
 };
 
-use domain::new::{
-    base::{
-        name::{Name, RevName},
-        CanonicalRecordData, Record,
+use domain::{
+    new::{
+        base::{
+            name::{Name, NameBuf, RevName, RevNameBuf},
+            wire::{BuildBytes, ParseBytes},
+            CanonicalRecordData, Record,
+        },
+        rdata::{BoxedRecordData, Soa},
     },
-    rdata::{BoxedRecordData, Soa},
+    utils::dst::UnsizedCopy,
+    zonetree::{self, types::ZoneUpdate, update::ZoneUpdater},
 };
 
 //----------- ZoneContents -----------------------------------------------------
@@ -177,6 +182,24 @@ impl Uncompressed {
         self.all = next.into_boxed_slice();
         Ok(())
     }
+
+    /// Write these contents into the given zonetree.
+    pub async fn write_into_zonetree(&self, zone: &zonetree::Zone) {
+        let mut updater = ZoneUpdater::new(zone.clone(), false).await.unwrap();
+
+        // Clear all existing records.
+        updater.apply(ZoneUpdate::DeleteAllRecords).await.unwrap();
+
+        // Add every record in turn.
+        for record in &self.all {
+            let record: OldRecord = record.clone().into();
+            updater.apply(ZoneUpdate::AddRecord(record)).await.unwrap();
+        }
+
+        // Commit the update with the SOA record.
+        let soa: OldRecord = self.soa.clone().into();
+        updater.apply(ZoneUpdate::Finished(soa)).await.unwrap();
+    }
 }
 
 impl fmt::Debug for Uncompressed {
@@ -278,6 +301,40 @@ impl Compressed {
         self.only_next = only_next.into_boxed_slice();
         Ok(())
     }
+
+    /// Write these changes into the given zonetree.
+    pub async fn write_into_zonetree(&self, zone: &zonetree::Zone) {
+        let mut updater = ZoneUpdater::new(zone.clone(), false).await.unwrap();
+
+        // First remove the 'only-this' records.
+        let this_soa: OldRecord = self.soa.clone().into();
+        updater
+            .apply(ZoneUpdate::BeginBatchDelete(this_soa))
+            .await
+            .unwrap();
+        for record in &self.only_this {
+            let record: OldRecord = record.clone().into();
+            updater
+                .apply(ZoneUpdate::DeleteRecord(record))
+                .await
+                .unwrap();
+        }
+
+        // Then add the 'only-next' records.
+        let next_soa: OldRecord = self.next_soa.clone().into();
+        updater
+            .apply(ZoneUpdate::BeginBatchAdd(next_soa))
+            .await
+            .unwrap();
+        for record in &self.only_next {
+            let record: OldRecord = record.clone().into();
+            updater.apply(ZoneUpdate::AddRecord(record)).await.unwrap();
+        }
+
+        // Commit the update with the new SOA record.
+        let next_soa: OldRecord = self.next_soa.clone().into();
+        updater.apply(ZoneUpdate::Finished(next_soa)).await.unwrap();
+    }
 }
 
 impl fmt::Debug for Compressed {
@@ -290,6 +347,10 @@ impl fmt::Debug for Compressed {
 }
 
 //============ Helpers =========================================================
+
+pub type OldName = domain::base::ParsedName<bytes::Bytes>;
+pub type OldRecordData = domain::rdata::ZoneRecordData<bytes::Bytes, OldName>;
+pub type OldRecord = domain::base::Record<OldName, OldRecordData>;
 
 //----------- SoaRecord --------------------------------------------------------
 
@@ -334,6 +395,30 @@ impl DerefMut for SoaRecord {
     }
 }
 
+impl From<OldRecord> for SoaRecord {
+    fn from(value: OldRecord) -> Self {
+        let mut bytes = Vec::new();
+        value.compose(&mut bytes).unwrap();
+        let record = Record::parse_bytes(&bytes)
+            .expect("'Record' serializes records correctly")
+            .transform(
+                |name: RevNameBuf| name.unsized_copy_into(),
+                |data: Soa<NameBuf>| data.map_names(|name| name.unsized_copy_into()),
+            );
+        SoaRecord(record)
+    }
+}
+
+impl From<SoaRecord> for OldRecord {
+    fn from(value: SoaRecord) -> Self {
+        let mut bytes = vec![0u8; value.0.built_bytes_size()];
+        value.0.build_bytes(&mut bytes).unwrap();
+        let bytes = bytes::Bytes::from(bytes);
+        let mut parser = octseq::Parser::from_ref(&bytes);
+        OldRecord::parse(&mut parser).unwrap().unwrap()
+    }
+}
+
 //----------- RegularRecord ----------------------------------------------------
 
 /// A regular record.
@@ -374,6 +459,27 @@ impl Deref for RegularRecord {
 impl DerefMut for RegularRecord {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
+    }
+}
+
+impl From<OldRecord> for RegularRecord {
+    fn from(value: OldRecord) -> Self {
+        let mut bytes = Vec::new();
+        value.compose(&mut bytes).unwrap();
+        let record = Record::parse_bytes(&bytes)
+            .expect("'Record' serializes records correctly")
+            .transform(|name: RevNameBuf| name.unsized_copy_into(), |data| data);
+        RegularRecord(record)
+    }
+}
+
+impl From<RegularRecord> for OldRecord {
+    fn from(value: RegularRecord) -> Self {
+        let mut bytes = vec![0u8; value.0.built_bytes_size()];
+        value.0.build_bytes(&mut bytes).unwrap();
+        let bytes = bytes::Bytes::from(bytes);
+        let mut parser = octseq::Parser::from_ref(&bytes);
+        OldRecord::parse(&mut parser).unwrap().unwrap()
     }
 }
 

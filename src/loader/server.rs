@@ -4,7 +4,7 @@ use std::{cmp::Ordering, iter::Peekable, mem, net::SocketAddr, sync::Arc};
 
 use bytes::Bytes;
 use domain::{
-    base::{iana::Rcode, Rtype},
+    base::iana::Rcode,
     net::{
         client::{
             self,
@@ -12,18 +12,18 @@ use domain::{
         },
         xfr::{
             self,
-            protocol::{ParsedRecord, XfrResponseInterpreter, XfrZoneUpdateIterator},
+            protocol::{XfrResponseInterpreter, XfrZoneUpdateIterator},
         },
     },
     new::{
         base::{
             build::MessageBuilder,
-            name::{NameBuf, NameCompressor, RevNameBuf},
-            wire::{AsBytes, ParseBytes, ParseBytesZC, ParseError},
+            name::NameCompressor,
+            wire::{AsBytes, ParseBytesZC, ParseError},
             CanonicalRecordData, HeaderFlags, Message, MessageItem, QClass, QType, Question,
             RClass, RType, Record, Serial,
         },
-        rdata::{RecordData, Soa},
+        rdata::RecordData,
     },
     rdata::ZoneRecordData,
     utils::dst::UnsizedCopy,
@@ -486,8 +486,6 @@ fn process_ixfr(
     only_next: &mut Vec<RegularRecord>,
     updates: Peekable<XfrZoneUpdateIterator<'_, '_>>,
 ) -> Result<(), IxfrError> {
-    let mut bytes = Vec::new();
-
     for update in updates {
         match update? {
             ZoneUpdate::BeginBatchDelete(record) => {
@@ -512,14 +510,14 @@ fn process_ixfr(
                 assert!(only_this.is_empty());
                 assert!(only_next.is_empty());
 
-                *this_soa = Some(make_soa_record(&mut bytes, record));
+                *this_soa = Some(record.into());
             }
 
             ZoneUpdate::DeleteRecord(record) => {
                 assert!(this_soa.is_some());
                 assert!(next_soa.is_none());
 
-                only_this.push(make_regular_record(&mut bytes, record));
+                only_this.push(record.into());
             }
 
             ZoneUpdate::BeginBatchAdd(record) => {
@@ -534,21 +532,21 @@ fn process_ixfr(
                         .then_with(|| l.rdata.cmp_canonical(&r.rdata))
                 });
 
-                *next_soa = Some(make_soa_record(&mut bytes, record));
+                *next_soa = Some(record.into());
             }
 
             ZoneUpdate::AddRecord(record) => {
                 assert!(this_soa.is_some());
                 assert!(next_soa.is_some());
 
-                only_this.push(make_regular_record(&mut bytes, record));
+                only_next.push(record.into());
             }
 
             ZoneUpdate::Finished(record) => {
                 assert!(this_soa.is_some());
                 assert!(next_soa.is_some());
 
-                assert!(*next_soa == Some(make_soa_record(&mut bytes, record)));
+                assert!(*next_soa == Some(record.into()));
 
                 // Sort the contents of the batch addition.
                 only_next.sort_unstable();
@@ -650,13 +648,11 @@ fn process_axfr(
     all: &mut Vec<RegularRecord>,
     updates: Peekable<XfrZoneUpdateIterator<'_, '_>>,
 ) -> Result<Option<SoaRecord>, AxfrError> {
-    let mut bytes = Vec::new();
-
     // Process the updates.
     for update in updates {
         match update? {
             ZoneUpdate::AddRecord(record) => {
-                all.push(make_regular_record(&mut bytes, record));
+                all.push(record.into());
             }
 
             ZoneUpdate::Finished(record) => {
@@ -667,7 +663,7 @@ fn process_axfr(
                         .then_with(|| l.rdata.cmp_canonical(&r.rdata))
                 });
 
-                return Ok(Some(make_soa_record(&mut bytes, record)));
+                return Ok(Some(record.into()));
             }
 
             _ => unreachable!(),
@@ -775,35 +771,6 @@ pub async fn query_soa(zone: &Arc<Zone>, addr: &DnsServerAddr) -> Result<SoaReco
         ttl,
         rdata: rdata.map_names(|n| n.unsized_copy_into()),
     }))
-}
-
-//============ Helpers =========================================================
-
-/// Convert an old-base record into a [`RegularRecord`].
-fn make_regular_record(bytes: &mut Vec<u8>, record: ParsedRecord) -> RegularRecord {
-    bytes.clear();
-    record.compose(bytes).unwrap();
-    let record = Record::parse_bytes(bytes)
-        .expect("'Record' serializes records correctly")
-        .transform(|name: RevNameBuf| name.unsized_copy_into(), |data| data);
-    bytes.clear();
-    RegularRecord(record)
-}
-
-/// Convert an old-base record into a [`SoaRecord`].
-fn make_soa_record(bytes: &mut Vec<u8>, record: ParsedRecord) -> SoaRecord {
-    assert!(record.rtype() == Rtype::SOA);
-
-    bytes.clear();
-    record.compose(bytes).unwrap();
-    let record = Record::parse_bytes(bytes)
-        .expect("'Record' serializes records correctly")
-        .transform(
-            |name: RevNameBuf| name.unsized_copy_into(),
-            |data: Soa<NameBuf>| data.map_names(|name| name.unsized_copy_into()),
-        );
-    bytes.clear();
-    SoaRecord(record)
 }
 
 //============ Errors ==========================================================
