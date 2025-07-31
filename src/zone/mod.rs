@@ -10,7 +10,11 @@ use std::{
     sync::{Arc, Mutex, RwLock},
 };
 
-use domain::new::base::name::RevName;
+use domain::{
+    base::iana::Class,
+    new::base::{name::RevName, wire::BuildBytes},
+    zonetree::{self, ZoneBuilder},
+};
 
 pub mod loader;
 pub use loader::LoaderState;
@@ -32,6 +36,9 @@ pub struct Zone {
     /// consistent with each other, and that changes to the zone happen in a
     /// single (sequentially consistent) order.
     pub data: Mutex<ZoneState>,
+
+    /// The old-base loaded contents.
+    pub loaded: zonetree::Zone,
 }
 
 /// The state of a zone.
@@ -60,9 +67,16 @@ impl Zone {
     /// The zone is initialized to an empty state, where nothing is known about
     /// it and Nameshed won't act on it.
     pub fn new(name: Box<RevName>) -> Self {
+        let mut apex_name = vec![0u8; name.built_bytes_size()];
+        name.build_bytes(&mut apex_name).unwrap();
+        let apex_name = bytes::Bytes::from(apex_name);
+        let apex_name =
+            domain::base::Name::from_octets(apex_name).expect("'Name' produces valid domain names");
+
         Self {
             name,
             data: Default::default(),
+            loaded: ZoneBuilder::new(apex_name, Class::IN).build(),
         }
     }
 }

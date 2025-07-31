@@ -93,6 +93,16 @@ impl LoaderState {
                     let _ = serial;
                 }
                 // TODO: Update the zone refresh timers.
+
+                // Update the old-base contents.
+                if let Some(latest) = zone.data.lock().ok().and_then(|state| {
+                    state
+                        .contents
+                        .as_ref()
+                        .map(|contents| contents.latest.clone())
+                }) {
+                    latest.write_into_zonetree(&zone.loaded).await;
+                }
             });
             OngoingRefresh::Reload { start, handle }
         } else {
@@ -100,7 +110,6 @@ impl LoaderState {
                 .contents
                 .as_ref()
                 .map(|contents| contents.latest.clone());
-
             let handle = tokio::task::spawn(async move {
                 // Refresh the zone.
                 let serial = match loader::refresh(&zone, &source, latest).await {
@@ -117,9 +126,20 @@ impl LoaderState {
                     let _ = serial;
                 }
                 // TODO: Update the zone refresh timers.
+
+                // Update the old-base contents.
+                if let Some(latest) = zone.data.lock().ok().and_then(|state| {
+                    state
+                        .contents
+                        .as_ref()
+                        .map(|contents| contents.latest.clone())
+                }) {
+                    latest.write_into_zonetree(&zone.loaded).await;
+                }
             });
             OngoingRefresh::Refresh { start, handle }
         };
+
         state.loader.refreshes = Some(Refreshes::new(ongoing));
     }
 }
