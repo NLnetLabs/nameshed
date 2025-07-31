@@ -1,6 +1,6 @@
 //! Loading zones from zonefiles.
 
-use std::{cmp::Ordering, fs::File, io::BufReader, sync::Arc};
+use std::{cmp::Ordering, fmt, fs::File, io::BufReader, sync::Arc};
 
 use camino::Utf8Path;
 use domain::{
@@ -274,6 +274,7 @@ pub fn load(zone: &Arc<Zone>, path: &Utf8Path) -> Result<Uncompressed, Error> {
 //----------- Error ------------------------------------------------------------
 
 /// An error in loading a zone from a zonefile.
+#[derive(Debug)]
 pub enum Error {
     /// The zonefile could not be opened.
     Open(std::io::Error),
@@ -290,6 +291,32 @@ pub enum Error {
     /// Zonefile include directories are not supported.
     UnsupportedInclude,
 }
+
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Error::Open(error) => Some(error),
+            Error::Misformatted(error) => Some(error),
+            Error::MismatchedOrigin => None,
+            Error::MissingStartSoa => None,
+            Error::UnsupportedInclude => None,
+        }
+    }
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Error::Open(error) => error.fmt(f),
+            Error::Misformatted(error) => error.fmt(f),
+            Error::MismatchedOrigin => write!(f, "the zonefile has the wrong origin name"),
+            Error::MissingStartSoa => write!(f, "the zonefile does not start with a SOA record"),
+            Error::UnsupportedInclude => write!(f, "zonefile include directives are not supported"),
+        }
+    }
+}
+
+//--- Conversion
 
 impl From<ZonefileError> for Error {
     fn from(value: ZonefileError) -> Self {

@@ -1,6 +1,6 @@
 //! Loading zones from DNS servers.
 
-use std::{cmp::Ordering, iter::Peekable, mem, net::SocketAddr, sync::Arc};
+use std::{cmp::Ordering, fmt, iter::Peekable, mem, net::SocketAddr, sync::Arc};
 
 use bytes::Bytes;
 use domain::{
@@ -780,6 +780,7 @@ pub async fn query_soa(zone: &Arc<Zone>, addr: &DnsServerAddr) -> Result<SoaReco
 /// An error when performing an incremental zone transfer.
 //
 // TODO: Expand into less opaque variants.
+#[derive(Debug)]
 pub enum IxfrError {
     /// A DNS client error occurred.
     Client(client::request::Error),
@@ -805,6 +806,46 @@ pub enum IxfrError {
     /// An AXFR related error occurred.
     Axfr(AxfrError),
 }
+
+impl std::error::Error for IxfrError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            IxfrError::Client(error) => Some(error),
+            IxfrError::Connection(error) => Some(error),
+            IxfrError::Xfr(_) => None,
+            IxfrError::XfrIter(_) => None,
+            IxfrError::IncompleteResponse => None,
+            IxfrError::InconsistentUpToDate => None,
+            IxfrError::QuerySoa(error) => Some(error),
+            IxfrError::Axfr(error) => Some(error),
+        }
+    }
+}
+
+impl fmt::Display for IxfrError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            IxfrError::Client(error) => write!(f, "could not communicate with the server: {error}"),
+            IxfrError::Connection(error) => write!(f, "could not connect to the server: {error}"),
+            IxfrError::Xfr(error) => write!(
+                f,
+                "the server's response was semantically incorrect: {error}"
+            ),
+            IxfrError::XfrIter(_) => write!(f, "the server's response was semantically incorrect"),
+            IxfrError::IncompleteResponse => {
+                write!(f, "the server's response appears to be incomplete")
+            }
+            IxfrError::InconsistentUpToDate => write!(
+                f,
+                "the server incorrectly reported that the local copy is up-to-date"
+            ),
+            IxfrError::QuerySoa(error) => write!(f, "could not query for the SOA record: {error}"),
+            IxfrError::Axfr(error) => write!(f, "the fallback AXFR failed: {error}"),
+        }
+    }
+}
+
+//--- Conversion
 
 impl From<client::request::Error> for IxfrError {
     fn from(value: client::request::Error) -> Self {
@@ -839,6 +880,7 @@ impl From<AxfrError> for IxfrError {
 //----------- AxfrError --------------------------------------------------------
 
 /// An error when performing an authoritative zone transfer.
+#[derive(Debug)]
 pub enum AxfrError {
     /// A DNS client error occurred.
     Client(client::request::Error),
@@ -855,6 +897,39 @@ pub enum AxfrError {
     /// An incomplete response was received.
     IncompleteResponse,
 }
+
+impl std::error::Error for AxfrError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            AxfrError::Client(error) => Some(error),
+            AxfrError::Connection(error) => Some(error),
+            AxfrError::Xfr(_) => None,
+            AxfrError::XfrIter(_) => None,
+            AxfrError::IncompleteResponse => None,
+        }
+    }
+}
+
+impl fmt::Display for AxfrError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AxfrError::Client(error) => write!(f, "could not communicate with the server: {error}"),
+            AxfrError::Connection(error) => write!(f, "could not connect to the server: {error}"),
+            AxfrError::Xfr(error) => write!(
+                f,
+                "the server's response was semantically incorrect: {error}"
+            ),
+            AxfrError::XfrIter(_) => {
+                write!(f, "the server's response was semantically incorrect")
+            }
+            AxfrError::IncompleteResponse => {
+                write!(f, "the server's response appears to be incomplete")
+            }
+        }
+    }
+}
+
+//--- Conversion
 
 impl From<client::request::Error> for AxfrError {
     fn from(value: client::request::Error) -> Self {
@@ -877,6 +952,7 @@ impl From<xfr::protocol::IterationError> for AxfrError {
 //----------- QuerySoaError ----------------------------------------------------
 
 /// An error when querying a DNS server for a SOA record.
+#[derive(Debug)]
 pub enum QuerySoaError {
     /// A DNS client error occurred.
     Client(client::request::Error),
@@ -890,6 +966,36 @@ pub enum QuerySoaError {
     /// The response did not match the query.
     MismatchedResponse,
 }
+
+impl std::error::Error for QuerySoaError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            QuerySoaError::Client(error) => Some(error),
+            QuerySoaError::Connection(error) => Some(error),
+            QuerySoaError::Parse(_) => None,
+            QuerySoaError::MismatchedResponse => None,
+        }
+    }
+}
+
+impl fmt::Display for QuerySoaError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            QuerySoaError::Client(error) => {
+                write!(f, "could not communicate with the server: {error}")
+            }
+            QuerySoaError::Connection(error) => {
+                write!(f, "could not connect to the server: {error}")
+            }
+            QuerySoaError::Parse(_) => write!(f, "could not parse the server's response"),
+            QuerySoaError::MismatchedResponse => {
+                write!(f, "the server's response did not match the query")
+            }
+        }
+    }
+}
+
+//--- Conversion
 
 impl From<client::request::Error> for QuerySoaError {
     fn from(v: client::request::Error) -> Self {

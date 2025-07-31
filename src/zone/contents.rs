@@ -355,7 +355,7 @@ pub type OldRecord = domain::base::Record<OldName, OldRecordData>;
 //----------- SoaRecord --------------------------------------------------------
 
 /// A SOA record.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SoaRecord(pub Record<Box<RevName>, Soa<Box<Name>>>);
 
 impl PartialEq for SoaRecord {
@@ -422,7 +422,7 @@ impl From<SoaRecord> for OldRecord {
 //----------- RegularRecord ----------------------------------------------------
 
 /// A regular record.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct RegularRecord(pub Record<Box<RevName>, BoxedRecordData>);
 
 impl PartialEq for RegularRecord {
@@ -515,6 +515,7 @@ fn merge<T: Ord, I: IntoIterator<Item = T>, const N: usize>(
 //----------- ForwardError -----------------------------------------------------
 
 /// An error when forwarding a zone using a [`Compressed`].
+#[derive(Debug)]
 pub enum ForwardError {
     /// The [`Compressed`] covers a different zone.
     MismatchedZones,
@@ -526,9 +527,29 @@ pub enum ForwardError {
     Inconsistent,
 }
 
+impl std::error::Error for ForwardError {}
+
+impl fmt::Display for ForwardError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ForwardError::MismatchedZones => write!(
+                f,
+                "the uncompressed contents and the diff belong to different zones"
+            ),
+            ForwardError::MismatchedVersions => {
+                write!(f, "the diff applies to a different zone serial")
+            }
+            ForwardError::Inconsistent => {
+                write!(f, "the diff expects different records in the zone")
+            }
+        }
+    }
+}
+
 //----------- MergeError -------------------------------------------------------
 
 /// An error when merging consecutive [`Compressed`] zones.
+#[derive(Debug)]
 pub enum MergeError {
     /// The two versions cover different zones.
     MismatchedZones,
@@ -544,4 +565,19 @@ pub enum MergeError {
 
     /// The zones are inconsistent with each other.
     Inconsistent,
+}
+
+impl std::error::Error for MergeError {}
+
+impl fmt::Display for MergeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MismatchedZones => write!(f, "the diffs belong to different zones"),
+            Self::NotAdjacentVersions => write!(f, "the diffs have incompatible serials"),
+            Self::SerialDiffOverflow => write!(f, "merging these diffs would overflow the serial"),
+            Self::MismatchedSoa | Self::Inconsistent => {
+                write!(f, "the diffs expected different records of each other")
+            }
+        }
+    }
 }
