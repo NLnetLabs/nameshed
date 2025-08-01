@@ -6,6 +6,7 @@
 use std::{
     borrow::Borrow,
     cmp::Ordering,
+    fmt,
     hash::{Hash, Hasher},
     sync::{Arc, Mutex, RwLock},
 };
@@ -162,6 +163,12 @@ impl Hash for ZoneByName {
     }
 }
 
+impl fmt::Debug for ZoneByName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 //----------- ZoneByPtr --------------------------------------------------------
 
 /// A [`Zone`] keyed by its address in memory.
@@ -193,5 +200,11 @@ impl Ord for ZoneByPtr {
 impl Hash for ZoneByPtr {
     fn hash<H: Hasher>(&self, state: &mut H) {
         Arc::as_ptr(&self.0).cast::<()>().hash(state)
+    }
+}
+
+impl fmt::Debug for ZoneByPtr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
     }
 }

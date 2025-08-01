@@ -13,10 +13,21 @@ use domain::new::base::Serial;
 
 use crate::zone::{self, contents, Zone};
 
+mod refresh;
 mod server;
 mod zonefile;
 
-//------------------------------------------------------------------------------
+pub use refresh::RefreshMonitor;
+
+//----------- Loader -----------------------------------------------------------
+
+/// The loader.
+pub struct Loader {
+    /// The refresh monitor.
+    pub refresh_monitor: RefreshMonitor,
+}
+
+//----------- refresh() --------------------------------------------------------
 
 /// Refresh a zone from DNS server.
 ///
@@ -44,6 +55,8 @@ pub async fn refresh(
         zone::loader::Source::Server { addr } => server::refresh(zone, addr, latest).await,
     }
 }
+
+//----------- reload() ---------------------------------------------------------
 
 /// Reload a zone.
 ///
