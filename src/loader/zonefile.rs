@@ -63,9 +63,20 @@ pub fn refresh(
     // Check whether the SOA has changed.
     let local_serial = latest.map(|l| l.soa.rdata.serial);
     let remote_serial = soa.rdata.serial;
-    if local_serial.partial_cmp(&Some(remote_serial)) != Some(Ordering::Less) {
+    match local_serial.partial_cmp(&Some(remote_serial)) {
+        // The local copy is outdated.
+        Some(Ordering::Less) => {}
+
         // The local copy is up-to-date.
-        return Ok(None);
+        Some(Ordering::Equal) => return Ok(None),
+
+        // The remote copy is outdated.
+        _ => {
+            return Err(RefreshError::OutdatedRemote {
+                local_serial: local_serial.unwrap(),
+                remote_serial,
+            })
+        }
     }
 
     // Fetch the rest of the zonefile.

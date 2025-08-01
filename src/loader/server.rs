@@ -58,6 +58,14 @@ pub async fn refresh(
                 return Ok(None);
             }
 
+            Ixfr::OutdatedRemote(remote_serial) => {
+                // The remote copy is outdated.
+                return Err(RefreshError::OutdatedRemote {
+                    local_serial: latest.soa.rdata.serial,
+                    remote_serial,
+                });
+            }
+
             Ixfr::Compressed(compressed) => {
                 // Coalesce the diffs together.
                 let mut compressed = compressed.into_iter();
@@ -100,6 +108,9 @@ pub async fn refresh(
 
             return Ok(Some(remote_serial));
         };
+
+        // TODO: What if the local copy _now_ exceeds the remote copy?
+        //   Do we perform another XFR, or do we assume the remote is outdated?
 
         // Check whether a compressed copy (of the right version) is available.
         let Some((compressed, _)) = compressed
@@ -257,14 +268,18 @@ pub async fn ixfr(
             // Query the server for its SOA record only.
             let remote_soa = query_soa(zone, addr).await?;
 
-            if local_soa.rdata.serial.partial_cmp(&remote_soa.rdata.serial) != Some(Ordering::Less)
-            {
-                // The local copy is up-to-date.
-                return Ok(Ixfr::UpToDate);
-            }
+            match local_soa.rdata.serial.partial_cmp(&remote_soa.rdata.serial) {
+                Some(Ordering::Less) => {
+                    // Perform a full AXFR.
+                    return Ok(Ixfr::Uncompressed(axfr(zone, addr).await?));
+                }
 
-            // Perform a full AXFR.
-            return Ok(Ixfr::Uncompressed(axfr(zone, addr).await?));
+                // The local copy is up-to-date.
+                Some(Ordering::Equal) => return Ok(Ixfr::UpToDate),
+
+                // The remote copy is outdated.
+                _ => return Ok(Ixfr::OutdatedRemote(remote_soa.rdata.serial)),
+            }
         }
 
         // Process the transfer data.
@@ -317,15 +332,17 @@ pub async fn ixfr(
                 };
 
                 let serial = Serial::from(soa.serial().into_int());
-                if serial <= local_soa.rdata.serial {
+                match local_soa.rdata.serial.partial_cmp(&serial) {
+                    // The transfer may have been too big for UDP; fall back to
+                    // a TCP-based IXFR.
+                    Some(Ordering::Less) => {}
+
                     // The local copy is up-to-date.
+                    Some(Ordering::Equal) => return Ok(Ixfr::UpToDate),
 
-                    // TODO: Warn if the remote copy appears outdated?
-                    return Ok(Ixfr::UpToDate);
+                    // The remote copy is outdated.
+                    _ => return Ok(Ixfr::OutdatedRemote(serial)),
                 }
-
-                // The transfer may have been too big for UDP; fall back to
-                // a TCP-based IXFR.
             }
 
             _ => unreachable!(),
@@ -361,13 +378,18 @@ pub async fn ixfr(
         // Query the server for its SOA record only.
         let remote_soa = query_soa(zone, addr).await?;
 
-        if local_soa.rdata.serial.partial_cmp(&remote_soa.rdata.serial) != Some(Ordering::Less) {
-            // The local copy is up-to-date.
-            return Ok(Ixfr::UpToDate);
-        }
+        match local_soa.rdata.serial.partial_cmp(&remote_soa.rdata.serial) {
+            Some(Ordering::Less) => {
+                // Perform a full AXFR.
+                return Ok(Ixfr::Uncompressed(axfr(zone, addr).await?));
+            }
 
-        // Perform a full AXFR.
-        return Ok(Ixfr::Uncompressed(axfr(zone, addr).await?));
+            // The local copy is up-to-date.
+            Some(Ordering::Equal) => return Ok(Ixfr::UpToDate),
+
+            // The remote copy is outdated.
+            _ => return Ok(Ixfr::OutdatedRemote(remote_soa.rdata.serial)),
+        }
     }
 
     let mut updates = interpreter.interpret_response(initial)?.peekable();
@@ -439,13 +461,15 @@ pub async fn ixfr(
             };
 
             let serial = Serial::from(soa.serial().into_int());
-            if serial <= local_soa.rdata.serial {
+            match local_soa.rdata.serial.partial_cmp(&serial) {
                 // The local copy is up-to-date.
+                Some(Ordering::Equal) => Ok(Ixfr::UpToDate),
 
-                // TODO: Warn if the remote copy appears outdated?
-                Ok(Ixfr::UpToDate)
-            } else {
-                Err(IxfrError::InconsistentUpToDate)
+                // The server says the local copy is up-to-date, but it's not.
+                Some(Ordering::Less) => Err(IxfrError::InconsistentUpToDate),
+
+                // The remote copy is outdated.
+                Some(Ordering::Greater) | None => Ok(Ixfr::OutdatedRemote(serial)),
             }
         }
 
@@ -460,6 +484,11 @@ pub enum Ixfr {
     /// The local copy's SOA version matches that of the remote copy.
     /// This _should_ mean that the two copies will have the same contents.
     UpToDate,
+
+    /// The remote copy is outdated.
+    ///
+    /// The local copy's SOA version exceeds that of the remote copy.
+    OutdatedRemote(Serial),
 
     /// A sequence of compressed diffs.
     ///
