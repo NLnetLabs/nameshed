@@ -445,7 +445,7 @@ dependencies = [
 [[package]]
 name = "domain"
 version = "0.11.1-dev"
-source = "git+https://github.com/NLnetLabs/domain?branch=aryas-nameshed-patches#3a59edd0fb071867746394862d6035dedf757af7"
+source = "git+https://github.com/NLnetLabs/domain?branch=aryas-nameshed-patches#45414e3d5240d9f3c74146d066f219781b57b8a1"
 dependencies = [
  "arc-swap",
  "bcder",
@@ -475,12 +475,13 @@ dependencies = [
  "tokio-stream",
  "tracing",
  "url",
+ "uuid",
 ]
 
 [[package]]
 name = "domain-macros"
 version = "0.11.1-dev"
-source = "git+https://github.com/NLnetLabs/domain?branch=aryas-nameshed-patches#3a59edd0fb071867746394862d6035dedf757af7"
+source = "git+https://github.com/NLnetLabs/domain?branch=aryas-nameshed-patches#45414e3d5240d9f3c74146d066f219781b57b8a1"
 dependencies = [
  "proc-macro2",
  "quote",
