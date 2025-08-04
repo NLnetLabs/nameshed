@@ -43,7 +43,12 @@ impl RefreshMonitor {
     /// Given the old and new scheduled times, the refresh monitor's state will
     /// be updated, so that the zone is refreshed at the new scheduled time (if
     /// any).
-    pub fn update(&self, zone: &Arc<Zone>, old: Option<Instant>, new: Option<Instant>) {
+    pub fn update(
+        &self,
+        zone: &Arc<Zone>,
+        old: Option<Instant>,
+        new: Option<Instant>,
+    ) {
         let [old, new] = [old, new].map(|time| {
             time.map(|time| ZoneByRefreshTime {
                 time,
@@ -142,7 +147,11 @@ impl RefreshMonitor {
                     continue;
                 };
 
-                zone::LoaderState::enqueue_refresh(&mut state, zone.clone(), false);
+                zone::LoaderState::enqueue_refresh(
+                    &mut state,
+                    zone.clone(),
+                    false,
+                );
             }
 
             // Wait for a refresh or a change to the schedule.

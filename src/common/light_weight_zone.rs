@@ -23,8 +23,9 @@ use domain::{
         Name, NameBuilder, Rtype,
     },
     zonetree::{
-        error::OutOfZone, Answer, InMemoryZoneDiff, ReadableZone, Rrset, SharedRrset, StoredName,
-        WalkOp, WritableZone, WritableZoneNode, ZoneStore,
+        error::OutOfZone, Answer, InMemoryZoneDiff, ReadableZone, Rrset,
+        SharedRrset, StoredName, WalkOp, WritableZone, WritableZoneNode,
+        ZoneStore,
     },
 };
 use log::trace;
@@ -55,7 +56,9 @@ impl PartialEq for HashedSharedRrset {
 #[derive(Clone, Debug)]
 struct SimpleZoneInner {
     root: StoredName,
-    tree: Arc<std::sync::RwLock<BTreeMap<StoredName, HashSet<HashedSharedRrset>>>>,
+    tree: Arc<
+        std::sync::RwLock<BTreeMap<StoredName, HashSet<HashedSharedRrset>>>,
+    >,
     skipped: Arc<AtomicUsize>,
     skip_signed: bool,
 }
@@ -94,8 +97,14 @@ impl ZoneStore for LightWeightZone {
 
     fn write(
         self: Arc<Self>,
-    ) -> Pin<Box<(dyn Future<Output = Box<(dyn WritableZone + 'static)>> + Send + Sync + 'static)>>
-    {
+    ) -> Pin<
+        Box<
+            (dyn Future<Output = Box<(dyn WritableZone + 'static)>>
+                 + Send
+                 + Sync
+                 + 'static),
+        >,
+    > {
         trace!("WRITE");
         Box::pin(ready(Box::new(self.inner.clone()) as Box<dyn WritableZone>))
     }
@@ -107,7 +116,11 @@ impl ZoneStore for LightWeightZone {
 }
 
 impl ReadableZone for SimpleZoneInner {
-    fn query(&self, qname: Name<Bytes>, qtype: Rtype) -> Result<Answer, OutOfZone> {
+    fn query(
+        &self,
+        qname: Name<Bytes>,
+        qtype: Rtype,
+    ) -> Result<Answer, OutOfZone> {
         trace!("QUERY");
         Ok(self
             .tree
@@ -117,7 +130,9 @@ impl ReadableZone for SimpleZoneInner {
             .map(|rrsets| {
                 trace!("QUERY RRSETS");
                 let mut answer = Answer::new(Rcode::NOERROR);
-                if let Some(rrset) = rrsets.iter().find(|rrset| rrset.rtype() == qtype) {
+                if let Some(rrset) =
+                    rrsets.iter().find(|rrset| rrset.rtype() == qtype)
+                {
                     trace!("QUERY RRSETS: FOUND {qtype}");
                     answer.add_answer(rrset.deref().clone());
                 }
@@ -147,7 +162,12 @@ impl WritableZone for SimpleZoneInner {
         &self,
         create_diff: bool,
     ) -> Pin<
-        Box<dyn Future<Output = Result<Box<dyn WritableZoneNode>, std::io::Error>> + Send + Sync>,
+        Box<
+            dyn Future<
+                    Output = Result<Box<dyn WritableZoneNode>, std::io::Error>,
+                > + Send
+                + Sync,
+        >,
     > {
         trace!("OPEN FOR WRITING");
         self.skipped.store(0, Ordering::SeqCst);
@@ -162,8 +182,14 @@ impl WritableZone for SimpleZoneInner {
     fn commit(
         &mut self,
         bump_soa_serial: bool,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<InMemoryZoneDiff>, std::io::Error>> + Send + Sync>>
-    {
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<Option<InMemoryZoneDiff>, std::io::Error>,
+                > + Send
+                + Sync,
+        >,
+    > {
         trace!(
             "COMMITTING: Skipped {} records",
             self.skipped.load(Ordering::SeqCst)
@@ -173,7 +199,9 @@ impl WritableZone for SimpleZoneInner {
 }
 
 struct SimpleZoneNode {
-    pub tree: Arc<std::sync::RwLock<BTreeMap<StoredName, HashSet<HashedSharedRrset>>>>,
+    pub tree: Arc<
+        std::sync::RwLock<BTreeMap<StoredName, HashSet<HashedSharedRrset>>>,
+    >,
     pub name: StoredName,
     pub skipped: Arc<AtomicUsize>,
     pub skip_signed: bool,
@@ -181,7 +209,9 @@ struct SimpleZoneNode {
 
 impl SimpleZoneNode {
     fn new(
-        tree: Arc<std::sync::RwLock<BTreeMap<StoredName, HashSet<HashedSharedRrset>>>>,
+        tree: Arc<
+            std::sync::RwLock<BTreeMap<StoredName, HashSet<HashedSharedRrset>>>,
+        >,
         name: StoredName,
         skipped: Arc<AtomicUsize>,
         skip_signed: bool,
@@ -200,7 +230,12 @@ impl WritableZoneNode for SimpleZoneNode {
         &self,
         label: &Label,
     ) -> Pin<
-        Box<dyn Future<Output = Result<Box<dyn WritableZoneNode>, std::io::Error>> + Send + Sync>,
+        Box<
+            dyn Future<
+                    Output = Result<Box<dyn WritableZoneNode>, std::io::Error>,
+                > + Send
+                + Sync,
+        >,
     > {
         let mut builder = NameBuilder::<BytesMut>::new();
         builder.append_label(label.as_slice()).unwrap();
@@ -217,8 +252,13 @@ impl WritableZoneNode for SimpleZoneNode {
     fn get_rrset(
         &self,
         rtype: Rtype,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<SharedRrset>, std::io::Error>> + Send + Sync>>
-    {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<Option<SharedRrset>, std::io::Error>>
+                + Send
+                + Sync,
+        >,
+    > {
         let rrset = self
             .tree
             .read()
@@ -233,7 +273,8 @@ impl WritableZoneNode for SimpleZoneNode {
     fn update_rrset(
         &self,
         rrset: SharedRrset,
-    ) -> Pin<Box<dyn Future<Output = Result<(), std::io::Error>> + Send + Sync>> {
+    ) -> Pin<Box<dyn Future<Output = Result<(), std::io::Error>> + Send + Sync>>
+    {
         // Filter out attempts to add or change DNSSEC records to/in this zone.
         match rrset.rtype() {
             Rtype::DNSKEY
@@ -293,7 +334,8 @@ impl WritableZoneNode for SimpleZoneNode {
     fn remove_rrset(
         &self,
         rtype: Rtype,
-    ) -> Pin<Box<dyn Future<Output = Result<(), std::io::Error>> + Send + Sync>> {
+    ) -> Pin<Box<dyn Future<Output = Result<(), std::io::Error>> + Send + Sync>>
+    {
         if let Some(rrsets) = self.tree.write().unwrap().get_mut(&self.name) {
             rrsets.retain(|rrset| rrset.rtype() != rtype);
         }
@@ -303,27 +345,31 @@ impl WritableZoneNode for SimpleZoneNode {
 
     fn make_regular(
         &self,
-    ) -> Pin<Box<dyn Future<Output = Result<(), std::io::Error>> + Send + Sync>> {
+    ) -> Pin<Box<dyn Future<Output = Result<(), std::io::Error>> + Send + Sync>>
+    {
         Box::pin(ready(Ok(())))
     }
 
     fn make_zone_cut(
         &self,
         cut: domain::zonetree::types::ZoneCut,
-    ) -> Pin<Box<dyn Future<Output = Result<(), std::io::Error>> + Send + Sync>> {
+    ) -> Pin<Box<dyn Future<Output = Result<(), std::io::Error>> + Send + Sync>>
+    {
         Box::pin(ready(Ok(())))
     }
 
     fn make_cname(
         &self,
         cname: domain::zonetree::SharedRr,
-    ) -> Pin<Box<dyn Future<Output = Result<(), std::io::Error>> + Send + Sync>> {
+    ) -> Pin<Box<dyn Future<Output = Result<(), std::io::Error>> + Send + Sync>>
+    {
         Box::pin(ready(Ok(())))
     }
 
     fn remove_all(
         &self,
-    ) -> Pin<Box<dyn Future<Output = Result<(), std::io::Error>> + Send + Sync>> {
+    ) -> Pin<Box<dyn Future<Output = Result<(), std::io::Error>> + Send + Sync>>
+    {
         self.tree.write().unwrap().clear();
         Box::pin(ready(Ok(())))
     }

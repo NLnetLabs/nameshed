@@ -90,7 +90,8 @@ impl KeyManager {
         let mut ks_info = self.ks_info.lock().await;
         for zone in zone_tree.load().iter_zones() {
             let apex_name = zone.apex_name().to_string();
-            let state_path = Path::new("/tmp/").join(format!("{apex_name}.state"));
+            let state_path =
+                Path::new("/tmp/").join(format!("{apex_name}.state"));
             if !state_path.exists() {
                 continue;
             }
@@ -123,7 +124,8 @@ impl KeyManager {
 
             if *cron_next < UnixTime::now() {
                 // Run cron
-                let cfg_path = self.dnst_keyset_data_dir.join(format!("{apex_name}.cfg"));
+                let cfg_path =
+                    self.dnst_keyset_data_dir.join(format!("{apex_name}.cfg"));
                 let mut args = vec!["keyset", "-c"];
                 args.push(cfg_path.to_str().unwrap());
                 args.push("cron");
@@ -131,7 +133,10 @@ impl KeyManager {
                     "Invoking keyset cron for zone {apex_name} with {}",
                     args.join(" ")
                 );
-                let Ok(res) = Command::new(&self.dnst_keyset_bin_path).args(args).output() else {
+                let Ok(res) = Command::new(&self.dnst_keyset_bin_path)
+                    .args(args)
+                    .output()
+                else {
                     error!(
                         "Failed to invoke keyset binary at '{}",
                         self.dnst_keyset_bin_path.display()
@@ -140,7 +145,9 @@ impl KeyManager {
                     // Clear cron_next.
                     let info = KeySetInfo {
                         cron_next: None,
-                        keyset_state_modified: info.keyset_state_modified.clone(),
+                        keyset_state_modified: info
+                            .keyset_state_modified
+                            .clone(),
                         retries: 0,
                     };
                     let _ = ks_info.insert(apex_name, info);
@@ -148,13 +155,18 @@ impl KeyManager {
                 };
 
                 if res.status.success() {
-                    println!("CRON OUT: {}", String::from_utf8_lossy(&res.stdout));
+                    println!(
+                        "CRON OUT: {}",
+                        String::from_utf8_lossy(&res.stdout)
+                    );
 
                     // We expect cron to change the state file. If
                     // that is the case, get a new KeySetInfo and notify
                     // the signer.
                     let new_info = get_keyset_info(&state_path);
-                    if new_info.keyset_state_modified != info.keyset_state_modified {
+                    if new_info.keyset_state_modified
+                        != info.keyset_state_modified
+                    {
                         // Something happened. Update ks_info and signal the
                         // signer.
                         let new_info = get_keyset_info(&state_path);
@@ -174,7 +186,9 @@ impl KeyManager {
                     let cron_next = cron_next.clone() + Duration::from_secs(60);
                     let new_info = KeySetInfo {
                         cron_next: Some(cron_next),
-                        keyset_state_modified: info.keyset_state_modified.clone(),
+                        keyset_state_modified: info
+                            .keyset_state_modified
+                            .clone(),
                         retries: info.retries + 1,
                     };
                     if new_info.retries >= CRON_MAX_RETRIES {
@@ -185,7 +199,9 @@ impl KeyManager {
                         // Clear cron_next.
                         let info = KeySetInfo {
                             cron_next: None,
-                            keyset_state_modified: info.keyset_state_modified.clone(),
+                            keyset_state_modified: info
+                                .keyset_state_modified
+                                .clone(),
                             retries: 0,
                         };
                         let _ = ks_info.insert(apex_name, info);
@@ -194,11 +210,16 @@ impl KeyManager {
                     let _ = ks_info.insert(apex_name, new_info);
                     continue;
                 } else {
-                    println!("CRON ERR: {}", String::from_utf8_lossy(&res.stderr));
+                    println!(
+                        "CRON ERR: {}",
+                        String::from_utf8_lossy(&res.stderr)
+                    );
                     // Clear cron_next.
                     let info = KeySetInfo {
                         cron_next: None,
-                        keyset_state_modified: info.keyset_state_modified.clone(),
+                        keyset_state_modified: info
+                            .keyset_state_modified
+                            .clone(),
                         retries: 0,
                     };
                     let _ = ks_info.insert(apex_name, info);

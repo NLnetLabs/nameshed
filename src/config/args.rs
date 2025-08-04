@@ -2,7 +2,10 @@
 
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::{
-    builder::{EnumValueParser, PathBufValueParser, PossibleValue, TypedValueParser, ValueParser},
+    builder::{
+        EnumValueParser, PathBufValueParser, PossibleValue, TypedValueParser,
+        ValueParser,
+    },
     Arg, ArgMatches, Command, ValueEnum, ValueHint,
 };
 
@@ -76,7 +79,9 @@ impl ArgsSpec {
             log_target: matches
                 .get_one::<Utf8PathBuf>("log_file")
                 .map(|p| LogTargetSpec::File(p.as_path().into()))
-                .or_else(|| matches.get_flag("syslog").then_some(LogTargetSpec::Syslog)),
+                .or_else(|| {
+                    matches.get_flag("syslog").then_some(LogTargetSpec::Syslog)
+                }),
             daemonize: matches.get_flag("daemonize"),
         }
     }

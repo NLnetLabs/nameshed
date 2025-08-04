@@ -27,11 +27,20 @@ pub trait FileIo: Default {
     where
         T: AsRef<[u8]> + Send + Sync;
 
-    async fn flush<W: AsyncWrite + Unpin + Send>(&mut self, writer: W) -> std::io::Result<()>;
+    async fn flush<W: AsyncWrite + Unpin + Send>(
+        &mut self,
+        writer: W,
+    ) -> std::io::Result<()>;
 
-    fn read_to_string<P: AsRef<Path>>(&self, path: P) -> std::io::Result<String>;
+    fn read_to_string<P: AsRef<Path>>(
+        &self,
+        path: P,
+    ) -> std::io::Result<String>;
 
-    fn read_dir<P: AsRef<Path>>(&self, path: P) -> std::io::Result<fileio::ReadDir>;
+    fn read_dir<P: AsRef<Path>>(
+        &self,
+        path: P,
+    ) -> std::io::Result<fileio::ReadDir>;
 }
 
 // --- FileIo trait: real filesystem implementation --------------------------
@@ -87,13 +96,22 @@ mod fileio {
             writer.flush().await
         }
 
-        fn read_to_string<P: AsRef<Path>>(&self, path: P) -> std::io::Result<String> {
+        fn read_to_string<P: AsRef<Path>>(
+            &self,
+            path: P,
+        ) -> std::io::Result<String> {
             std::fs::read_to_string(path.as_ref()).map_err(|err| {
-                Error::other(format!("For path '{}': {err}", path.as_ref().display()))
+                Error::other(format!(
+                    "For path '{}': {err}",
+                    path.as_ref().display()
+                ))
             })
         }
 
-        fn read_dir<P: AsRef<Path>>(&self, path: P) -> std::io::Result<ReadDir> {
+        fn read_dir<P: AsRef<Path>>(
+            &self,
+            path: P,
+        ) -> std::io::Result<ReadDir> {
             std::fs::read_dir(path)
         }
     }
@@ -188,11 +206,17 @@ mod fileio {
             Ok(())
         }
 
-        async fn flush<W: AsyncWrite + Unpin + Send>(&mut self, _writer: W) -> std::io::Result<()> {
+        async fn flush<W: AsyncWrite + Unpin + Send>(
+            &mut self,
+            _writer: W,
+        ) -> std::io::Result<()> {
             Ok(())
         }
 
-        fn read_to_string<P: AsRef<Path>>(&self, path: P) -> std::io::Result<String> {
+        fn read_to_string<P: AsRef<Path>>(
+            &self,
+            path: P,
+        ) -> std::io::Result<String> {
             self.readable_paths
                 .get(path.as_ref())
                 .map(|v| v.to_string())
@@ -202,7 +226,10 @@ mod fileio {
                 )))
         }
 
-        fn read_dir<P: AsRef<Path>>(&self, path: P) -> std::io::Result<ReadDir> {
+        fn read_dir<P: AsRef<Path>>(
+            &self,
+            path: P,
+        ) -> std::io::Result<ReadDir> {
             let paths = self
                 .readable_paths
                 .keys()

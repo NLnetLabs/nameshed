@@ -57,7 +57,11 @@ impl LoaderState {
     /// > pummeling the master server.
     ///
     /// [RFC 1996, section 4.4]: https://datatracker.ietf.org/doc/html/rfc1996#section-4
-    pub fn enqueue_refresh(state: &mut ZoneState, zone: Arc<Zone>, reload: bool) {
+    pub fn enqueue_refresh(
+        state: &mut ZoneState,
+        zone: Arc<Zone>,
+        reload: bool,
+    ) {
         // TODO: Log
 
         // Determine whether a refresh is ongoing.
@@ -112,7 +116,8 @@ impl LoaderState {
                 .map(|contents| contents.latest.clone());
             let handle = tokio::task::spawn(async move {
                 // Refresh the zone.
-                let serial = match loader::refresh(&zone, &source, latest).await {
+                let serial = match loader::refresh(&zone, &source, latest).await
+                {
                     Ok(serial) => serial,
                     Err(error) => {
                         // Update the zone refresh timers.

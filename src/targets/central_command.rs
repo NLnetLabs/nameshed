@@ -74,7 +74,9 @@ impl CentralCommand {
         mut update_rx: mpsc::Receiver<Update>,
     ) -> Result<(), Terminated> {
         loop {
-            if let Err(Terminated) = self.process_events(&mut cmd_rx, &mut update_rx).await {
+            if let Err(Terminated) =
+                self.process_events(&mut cmd_rx, &mut update_rx).await
+            {
                 // self.status_reporter.terminated();
                 return Err(Terminated);
             }

@@ -6,8 +6,9 @@ use camino::Utf8Path;
 use serde::Deserialize;
 
 use crate::config::{
-    Config, DaemonConfig, GroupId, KeyManagerConfig, LoaderConfig, LogLevel, LogTarget,
-    ReviewConfig, ServerConfig, Setting, SettingSource, SignerConfig, SocketConfig, UserId,
+    Config, DaemonConfig, GroupId, KeyManagerConfig, LoaderConfig, LogLevel,
+    LogTarget, ReviewConfig, ServerConfig, Setting, SettingSource,
+    SignerConfig, SocketConfig, UserId,
 };
 
 //----------- Spec -------------------------------------------------------------
@@ -572,7 +573,9 @@ pub enum ParseIdentityError {
 impl fmt::Display for ParseIdentityError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NumericOverflow { value } => write!(f, "numeric ID '{value}' too large"),
+            Self::NumericOverflow { value } => {
+                write!(f, "numeric ID '{value}' too large")
+            }
         }
     }
 }

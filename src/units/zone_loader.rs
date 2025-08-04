@@ -32,7 +32,9 @@ use domain::net::server::middleware::mandatory::MandatoryMiddlewareSvc;
 use domain::net::server::middleware::notify::NotifyMiddlewareSvc;
 use domain::net::server::middleware::tsig::TsigMiddlewareSvc;
 use domain::net::server::middleware::xfr::XfrMiddlewareSvc;
-use domain::net::server::service::{CallResult, Service, ServiceError, ServiceResult};
+use domain::net::server::service::{
+    CallResult, Service, ServiceError, ServiceResult,
+};
 use domain::net::server::stream::{self, StreamServer};
 use domain::net::server::util::{mk_error_response, service_fn};
 use domain::net::server::ConnectionConfig;
@@ -43,8 +45,9 @@ use domain::utils::base64;
 use domain::zonefile::inplace;
 use domain::zonetree::error::OutOfZone;
 use domain::zonetree::{
-    Answer, InMemoryZoneDiff, ReadableZone, Rrset, SharedRrset, StoredName, WalkOp, WritableZone,
-    WritableZoneNode, Zone, ZoneBuilder, ZoneStore, ZoneTree,
+    Answer, InMemoryZoneDiff, ReadableZone, Rrset, SharedRrset, StoredName,
+    WalkOp, WritableZone, WritableZoneNode, Zone, ZoneBuilder, ZoneStore,
+    ZoneTree,
 };
 use futures::future::{select, Either};
 use futures::{pin_mut, Future};
@@ -64,8 +67,8 @@ use tokio_rustls::rustls::ServerConfig;
 
 use crate::common::light_weight_zone::LightWeightZone;
 use crate::common::net::{
-    ListenAddr, StandardTcpListenerFactory, StandardTcpStream, TcpListener, TcpListenerFactory,
-    TcpStreamWrapper,
+    ListenAddr, StandardTcpListenerFactory, StandardTcpStream, TcpListener,
+    TcpListenerFactory, TcpStreamWrapper,
 };
 use crate::common::tsig::{parse_key_strings, TsigKeyStore};
 use crate::common::xfr::parse_xfr_acl;
@@ -74,15 +77,18 @@ use crate::http::PercentDecodedPath;
 use crate::http::ProcessRequest;
 use crate::log::ExitError;
 use crate::manager::Component;
-use crate::metrics::{self, util::append_per_router_metric, Metric, MetricType, MetricUnit};
+use crate::metrics::{
+    self, util::append_per_router_metric, Metric, MetricType, MetricUnit,
+};
 use crate::payload::Update;
 use crate::units::Unit;
 use crate::zonemaintenance::maintainer::{
     Config, DefaultConnFactory, TypedZone, ZoneLookup, ZoneMaintainer,
 };
 use crate::zonemaintenance::types::{
-    CompatibilityMode, NotifyConfig, TransportStrategy, XfrConfig, XfrStrategy, ZoneConfig,
-    ZoneMaintainerKeyStore, ZoneRefreshCause, ZoneRefreshStatus, ZoneReportDetails,
+    CompatibilityMode, NotifyConfig, TransportStrategy, XfrConfig, XfrStrategy,
+    ZoneConfig, ZoneMaintainerKeyStore, ZoneRefreshCause, ZoneRefreshStatus,
+    ZoneReportDetails,
 };
 
 #[derive(Debug)]
@@ -109,10 +115,14 @@ pub struct ZoneLoader {
 }
 
 impl ZoneLoader {
-    pub async fn run(mut self, mut component: Component) -> Result<(), Terminated> {
+    pub async fn run(
+        mut self,
+        mut component: Component,
+    ) -> Result<(), Terminated> {
         // TODO: metrics and status reporting
 
-        let (zone_updated_tx, mut zone_updated_rx) = tokio::sync::mpsc::channel(10);
+        let (zone_updated_tx, mut zone_updated_rx) =
+            tokio::sync::mpsc::channel(10);
 
         let mut notify_cfg = NotifyConfig { tsig_key: None };
 
@@ -124,15 +134,19 @@ impl ZoneLoader {
         };
 
         for (key_name, opt_alg_and_hex_bytes) in self.tsig_keys.iter() {
-            let key = parse_key_strings(key_name, opt_alg_and_hex_bytes).map_err(|err| {
-                error!("[ZL]: Failed to parse TSIG key '{key_name}': {err}",);
-                Terminated
-            })?;
+            let key = parse_key_strings(key_name, opt_alg_and_hex_bytes)
+                .map_err(|err| {
+                    error!(
+                        "[ZL]: Failed to parse TSIG key '{key_name}': {err}",
+                    );
+                    Terminated
+                })?;
             component.tsig_key_store().insert(key);
         }
 
-        let maintainer_config =
-            Config::<_, DefaultConnFactory>::new(component.tsig_key_store().clone());
+        let maintainer_config = Config::<_, DefaultConnFactory>::new(
+            component.tsig_key_store().clone(),
+        );
         let zone_maintainer = Arc::new(
             ZoneMaintainer::new_with_config(maintainer_config)
                 .with_zone_tree(component.unsigned_zones().clone()),
@@ -145,7 +159,10 @@ impl ZoneLoader {
             self.xfr_in.clone(),
             zone_maintainer.clone(),
         ));
-        component.register_http_resource(http_processor.clone(), &self.http_api_path);
+        component.register_http_resource(
+            http_processor.clone(),
+            &self.http_api_path,
+        );
 
         // Load primary zones.
         // Create secondary zones.
@@ -175,7 +192,9 @@ impl ZoneLoader {
                         })
                         .map_err(|_| Terminated)?
                         .len();
-                let mut buf = inplace::Zonefile::with_capacity(zone_file_len as usize).writer();
+                let mut buf =
+                    inplace::Zonefile::with_capacity(zone_file_len as usize)
+                        .writer();
                 std::io::copy(&mut zone_file, &mut buf)
                     .inspect_err(|err| {
                         error!("[ZL]: Error: Failed to read data from file '{zone_path}': {err}",)
@@ -186,7 +205,10 @@ impl ZoneLoader {
                 let res = Zone::try_from(reader);
                 let Ok(zone) = res else {
                     let errors = res.unwrap_err();
-                    let mut msg = format!("Failed to parse zone: {} errors", errors.len());
+                    let mut msg = format!(
+                        "Failed to parse zone: {} errors",
+                        errors.len()
+                    );
                     for (name, err) in errors.into_iter() {
                         msg.push_str(&format!("  {name}: {err}\n"));
                     }
@@ -237,12 +259,15 @@ impl ZoneLoader {
                     .allow_notify_from
                     .add_src(src.ip(), notify_cfg.clone());
                 if src.port() != 0 {
-                    info!("[ZL]: Adding XFR primary {src} for zone '{zone_name}'",);
+                    info!(
+                        "[ZL]: Adding XFR primary {src} for zone '{zone_name}'",
+                    );
                     zone_cfg.request_xfr_from.add_dst(src, xfr_cfg.clone());
                 }
             }
 
-            let notify_on_write_zone = NotifyOnWriteZone::new(zone, zone_updated_tx.clone());
+            let notify_on_write_zone =
+                NotifyOnWriteZone::new(zone, zone_updated_tx.clone());
             zone = Zone::new(notify_on_write_zone);
 
             let zone = TypedZone::new(zone, zone_cfg);
@@ -322,7 +347,10 @@ impl ZoneLoader {
         Arc::new("/zone-loader/".to_string())
     }
 
-    async fn server<Svc>(addr: ListenAddr, svc: Svc) -> Result<(), std::io::Error>
+    async fn server<Svc>(
+        addr: ListenAddr,
+        svc: Svc,
+    ) -> Result<(), std::io::Error>
     where
         Svc: Service<Vec<u8>, ()> + Clone,
     {
@@ -362,7 +390,10 @@ impl ZoneLoader {
     }
 }
 
-fn my_noop_service(_request: Request<Vec<u8>, ()>, _meta: ()) -> ServiceResult<Vec<u8>> {
+fn my_noop_service(
+    _request: Request<Vec<u8>, ()>,
+    _meta: (),
+) -> ServiceResult<Vec<u8>> {
     Err(ServiceError::Refused)
 }
 
@@ -398,7 +429,8 @@ impl ZoneStore for NotifyOnWriteZone {
 
     fn write(
         self: Arc<Self>,
-    ) -> Pin<Box<dyn Future<Output = Box<dyn WritableZone>> + Send + Sync>> {
+    ) -> Pin<Box<dyn Future<Output = Box<dyn WritableZone>> + Send + Sync>>
+    {
         let fut = self.store.clone().write();
         Box::pin(async move {
             let writable_zone = fut.await;
@@ -427,7 +459,12 @@ impl WritableZone for NotifyOnCommitZone {
         &self,
         create_diff: bool,
     ) -> Pin<
-        Box<dyn Future<Output = Result<Box<dyn WritableZoneNode>, std::io::Error>> + Send + Sync>,
+        Box<
+            dyn Future<
+                    Output = Result<Box<dyn WritableZoneNode>, std::io::Error>,
+                > + Send
+                + Sync,
+        >,
     > {
         self.writable_zone.open(create_diff)
     }
@@ -435,8 +472,14 @@ impl WritableZone for NotifyOnCommitZone {
     fn commit(
         &mut self,
         bump_soa_serial: bool,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<InMemoryZoneDiff>, std::io::Error>> + Send + Sync>>
-    {
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<Option<InMemoryZoneDiff>, std::io::Error>,
+                > + Send
+                + Sync,
+        >,
+    > {
         let fut = self.writable_zone.commit(bump_soa_serial);
         let store = self.store.clone();
         let sender = self.sender.clone();
@@ -507,7 +550,8 @@ impl ProcessRequest for ZoneListApi {
         if request.method() == hyper::Method::GET {
             if req_path == *self.http_api_path {
                 Some(self.build_response().await)
-            } else if req_path == format!("{}status.json", *self.http_api_path) {
+            } else if req_path == format!("{}status.json", *self.http_api_path)
+            {
                 Some(self.build_json_response().await)
             } else {
                 None
@@ -571,7 +615,8 @@ impl ZoneListApi {
 
     async fn build_response_body(&self, response_body: &mut String) {
         let num_zones = self.zones.len();
-        response_body.push_str(&format!("<pre>Showing {num_zones} monitored zones:"));
+        response_body
+            .push_str(&format!("<pre>Showing {num_zones} monitored zones:"));
         for zone_name in self.zones.keys() {
             if let Ok(zone_name) = Name::from_str(zone_name) {
                 if let Ok(report) = self
@@ -609,29 +654,42 @@ impl ZoneListApi {
                 {
                     let role = match report.details() {
                         ZoneReportDetails::Primary => ZoneRole::Primary,
-                        ZoneReportDetails::PendingSecondary(zone_refresh_state)
+                        ZoneReportDetails::PendingSecondary(
+                            zone_refresh_state,
+                        )
                         | ZoneReportDetails::Secondary(zone_refresh_state) => {
                             let status = zone_refresh_state.status();
 
-                            let last_refresh_succeeded_secs_ago = zone_refresh_state
-                                .metrics()
-                                .last_refreshed_at
-                                .and_then(|earlier| {
-                                    now.checked_duration_since(earlier).map(|d| d.as_secs())
-                                });
+                            let last_refresh_succeeded_secs_ago =
+                                zone_refresh_state
+                                    .metrics()
+                                    .last_refreshed_at
+                                    .and_then(|earlier| {
+                                        now.checked_duration_since(earlier)
+                                            .map(|d| d.as_secs())
+                                    });
                             let last_refresh_succeeded_serial =
-                                zone_refresh_state.metrics().last_refresh_succeeded_serial;
+                                zone_refresh_state
+                                    .metrics()
+                                    .last_refresh_succeeded_serial;
 
                             let last_refresh_checked_serial =
-                                zone_refresh_state.metrics().last_soa_serial_check_serial;
-                            let last_refresh_checked_secs_ago = zone_refresh_state
-                                .metrics()
-                                .last_soa_serial_check_succeeded_at
-                                .and_then(|earlier| {
-                                    now.checked_duration_since(earlier).map(|d| d.as_secs())
-                                });
+                                zone_refresh_state
+                                    .metrics()
+                                    .last_soa_serial_check_serial;
+                            let last_refresh_checked_secs_ago =
+                                zone_refresh_state
+                                    .metrics()
+                                    .last_soa_serial_check_succeeded_at
+                                    .and_then(|earlier| {
+                                        now.checked_duration_since(earlier)
+                                            .map(|d| d.as_secs())
+                                    });
 
-                            if let Some((next_refresh_secs_from_now, next_refresh_cause)) = report
+                            if let Some((
+                                next_refresh_secs_from_now,
+                                next_refresh_cause,
+                            )) = report
                                 .timers()
                                 .iter()
                                 .find(|zri| &zri.zone_id == report.zone_id())

@@ -5,7 +5,9 @@ use std::sync::{Arc, RwLock};
 
 use domain::base::name::FromStrError;
 use domain::base::ToName;
-use domain::tsig::{Algorithm, AlgorithmError, Key, KeyName, KeyStore, NewKeyError};
+use domain::tsig::{
+    Algorithm, AlgorithmError, Key, KeyName, KeyStore, NewKeyError,
+};
 use domain::utils::base64::{self, DecodeError};
 use log::info;
 
@@ -34,7 +36,11 @@ impl TsigKeyStore {
         }
     }
 
-    pub fn get_key<N: ToName>(&self, name: &N, algorithm: Algorithm) -> Option<Key> {
+    pub fn get_key<N: ToName>(
+        &self,
+        name: &N,
+        algorithm: Algorithm,
+    ) -> Option<Key> {
         self.inner.get_key(name, algorithm)
     }
 
@@ -75,7 +81,11 @@ pub struct Inner(Arc<RwLock<HashMap<(KeyName, Algorithm), Key>>>);
 impl KeyStore for Inner {
     type Key = domain::tsig::Key;
 
-    fn get_key<N: ToName>(&self, name: &N, algorithm: Algorithm) -> Option<Self::Key> {
+    fn get_key<N: ToName>(
+        &self,
+        name: &N,
+        algorithm: Algorithm,
+    ) -> Option<Self::Key> {
         if let Ok(key_name) = name.try_to_name() {
             let key = (key_name, algorithm);
             if let Ok(store) = self.0.read() {
@@ -104,8 +114,12 @@ impl std::fmt::Display for KeyParseError {
         match self {
             KeyParseError::InvalidAlgorithm => f.write_str("InvalidAlgorithm"),
             KeyParseError::InvalidStructure => f.write_str("InvalidStructure"),
-            KeyParseError::InvalidName(err) => f.write_fmt(format_args!("InvalidName: {err}")),
-            KeyParseError::InvalidBase64(err) => f.write_fmt(format_args!("InvalidBase64: {err}")),
+            KeyParseError::InvalidName(err) => {
+                f.write_fmt(format_args!("InvalidName: {err}"))
+            }
+            KeyParseError::InvalidBase64(err) => {
+                f.write_fmt(format_args!("InvalidBase64: {err}"))
+            }
             KeyParseError::KeyCreationError(err) => {
                 f.write_fmt(format_args!("KeyCreationError: {err}"))
             }
@@ -137,7 +151,10 @@ impl From<NewKeyError> for KeyParseError {
     }
 }
 
-pub fn parse_key_strings(name: &str, alg_and_hex_key_bytes: &str) -> Result<Key, KeyParseError> {
+pub fn parse_key_strings(
+    name: &str,
+    alg_and_hex_key_bytes: &str,
+) -> Result<Key, KeyParseError> {
     let key_parts: Vec<String> = alg_and_hex_key_bytes
         .split(':')
         .map(ToString::to_string)

@@ -1,6 +1,7 @@
 //! Rotonda
 #![allow(renamed_and_removed_lints)]
 #![allow(clippy::unknown_clippy_lints)]
+#![allow(clippy::uninlined_format_args)]
 #![allow(dead_code)]
 #![allow(unused_variables)]
 

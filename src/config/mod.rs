@@ -42,7 +42,9 @@ impl Config {
     }
 
     /// Process all configuration sources.
-    pub fn process(cli_matches: &clap::ArgMatches) -> Result<Self, ConfigError> {
+    pub fn process(
+        cli_matches: &clap::ArgMatches,
+    ) -> Result<Self, ConfigError> {
         // Process environment variables and command-line arguments.
         let mut env = env::EnvSpec::process()?;
         let mut args = args::ArgsSpec::process(cli_matches);

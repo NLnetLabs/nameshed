@@ -30,11 +30,17 @@ use domain::net::server::message::Request;
 use domain::net::server::middleware::cookies::CookiesMiddlewareSvc;
 use domain::net::server::middleware::edns::EdnsMiddlewareSvc;
 use domain::net::server::middleware::mandatory::MandatoryMiddlewareSvc;
-use domain::net::server::middleware::notify::{Notifiable, NotifyMiddlewareSvc};
+use domain::net::server::middleware::notify::{
+    Notifiable, NotifyMiddlewareSvc,
+};
 use domain::net::server::middleware::tsig::TsigMiddlewareSvc;
 use domain::net::server::middleware::xfr::XfrMiddlewareSvc;
-use domain::net::server::middleware::xfr::{XfrData, XfrDataProvider, XfrDataProviderError};
-use domain::net::server::service::{CallResult, Service, ServiceError, ServiceResult};
+use domain::net::server::middleware::xfr::{
+    XfrData, XfrDataProvider, XfrDataProviderError,
+};
+use domain::net::server::service::{
+    CallResult, Service, ServiceError, ServiceResult,
+};
 use domain::net::server::stream::{self, StreamServer};
 use domain::net::server::util::mk_builder_for_target;
 use domain::net::server::util::{mk_error_response, service_fn};
@@ -46,8 +52,8 @@ use domain::zonefile::inplace;
 use domain::zonetree::types::EmptyZoneDiff;
 use domain::zonetree::Answer;
 use domain::zonetree::{
-    InMemoryZoneDiff, ReadableZone, StoredName, WritableZone, WritableZoneNode, Zone, ZoneBuilder,
-    ZoneStore, ZoneTree,
+    InMemoryZoneDiff, ReadableZone, StoredName, WritableZone, WritableZoneNode,
+    Zone, ZoneBuilder, ZoneStore, ZoneTree,
 };
 use futures::future::{select, Either};
 use futures::stream::{once, Once};
@@ -69,8 +75,8 @@ use tokio_rustls::rustls::ServerConfig;
 use uuid::Uuid;
 
 use crate::common::net::{
-    ListenAddr, StandardTcpListenerFactory, StandardTcpStream, TcpListener, TcpListenerFactory,
-    TcpStreamWrapper,
+    ListenAddr, StandardTcpListenerFactory, StandardTcpStream, TcpListener,
+    TcpListenerFactory, TcpStreamWrapper,
 };
 use crate::common::tsig::{parse_key_strings, TsigKeyStore};
 use crate::common::xfr::parse_xfr_acl;
@@ -79,14 +85,18 @@ use crate::comms::{GraphStatus, Terminated};
 use crate::http::{PercentDecodedPath, ProcessRequest};
 use crate::log::ExitError;
 use crate::manager::Component;
-use crate::metrics::{self, util::append_per_router_metric, Metric, MetricType, MetricUnit};
+use crate::metrics::{
+    self, util::append_per_router_metric, Metric, MetricType, MetricUnit,
+};
 use crate::payload::Update;
 use crate::units::Unit;
-use crate::zonemaintenance::maintainer::{DefaultConnFactory, TypedZone, ZoneMaintainer};
+use crate::zonemaintenance::maintainer::{
+    DefaultConnFactory, TypedZone, ZoneMaintainer,
+};
 use crate::zonemaintenance::types::TsigKey;
 use crate::zonemaintenance::types::{
-    CompatibilityMode, NotifyConfig, TransportStrategy, XfrConfig, XfrStrategy, ZoneConfig,
-    ZoneMaintainerKeyStore,
+    CompatibilityMode, NotifyConfig, TransportStrategy, XfrConfig, XfrStrategy,
+    ZoneConfig, ZoneMaintainerKeyStore,
 };
 
 #[derive(Copy, Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -156,7 +166,8 @@ impl ZoneServerUnit {
             Source::PublishedZones => component.published_zones().clone(),
         };
 
-        let max_concurrency = std::thread::available_parallelism().unwrap().get() / 2;
+        let max_concurrency =
+            std::thread::available_parallelism().unwrap().get() / 2;
 
         // TODO: Pass xfr_out to XfrDataProvidingZonesWrapper for enforcement.
         let zones = XfrDataProvidingZonesWrapper {
@@ -168,7 +179,8 @@ impl ZoneServerUnit {
         let svc = service_fn(zone_server_service, zones.clone());
         let svc = XfrMiddlewareSvc::new(svc, zones.clone(), max_concurrency);
         let svc = NotifyMiddlewareSvc::new(svc, zones.clone());
-        let svc = TsigMiddlewareSvc::new(svc, component.tsig_key_store().clone());
+        let svc =
+            TsigMiddlewareSvc::new(svc, component.tsig_key_store().clone());
         let svc = CookiesMiddlewareSvc::with_random_secret(svc);
         let svc = EdnsMiddlewareSvc::new(svc);
         let svc = MandatoryMiddlewareSvc::<_, _, ()>::new(svc);
@@ -206,7 +218,10 @@ impl ZoneServerUnit {
         Arc::new("/zone-loader/".to_string())
     }
 
-    async fn server<Svc>(addr: ListenAddr, svc: Svc) -> Result<(), std::io::Error>
+    async fn server<Svc>(
+        addr: ListenAddr,
+        svc: Svc,
+    ) -> Result<(), std::io::Error>
     where
         Svc: Service<Vec<u8>, ()> + Clone,
     {
@@ -215,7 +230,8 @@ impl ZoneServerUnit {
             ListenAddr::Udp(addr) => {
                 let sock = UdpSocket::bind(addr).await?;
                 let config = dgram::Config::new();
-                let srv = DgramServer::<_, _, _>::with_config(sock, buf, svc, config);
+                let srv =
+                    DgramServer::<_, _, _>::with_config(sock, buf, svc, config);
                 let srv = Arc::new(srv);
                 srv.run().await;
             }
@@ -303,10 +319,10 @@ impl ZoneServer {
             self.source,
             self.listen.clone(),
         ));
-        self.component
-            .write()
-            .await
-            .register_http_resource(http_processor.clone(), &self.http_api_path);
+        self.component.write().await.register_http_resource(
+            http_processor.clone(),
+            &self.http_api_path,
+        );
 
         let arc_self = Arc::new(self);
 
@@ -447,8 +463,12 @@ impl Notifiable for XfrDataProvidingZonesWrapper {
         _source: IpAddr,
     ) -> Pin<
         Box<
-            dyn Future<Output = Result<(), domain::net::server::middleware::notify::NotifyError>>
-                + Sync
+            dyn Future<
+                    Output = Result<
+                        (),
+                        domain::net::server::middleware::notify::NotifyError,
+                    >,
+                > + Sync
                 + Send
                 + '_,
         >,
@@ -458,7 +478,9 @@ impl Notifiable for XfrDataProvidingZonesWrapper {
     }
 }
 
-impl XfrDataProvider<Option<<TsigKeyStore as KeyStore>::Key>> for XfrDataProvidingZonesWrapper {
+impl XfrDataProvider<Option<<TsigKeyStore as KeyStore>::Key>>
+    for XfrDataProvidingZonesWrapper
+{
     type Diff = EmptyZoneDiff;
 
     fn request<Octs>(
@@ -485,7 +507,9 @@ impl XfrDataProvider<Option<<TsigKeyStore as KeyStore>::Key>> for XfrDataProvidi
             .sole_question()
             .map_err(XfrDataProviderError::ParseError)
             .and_then(|q| {
-                if let Some(zone) = self.zones.load().find_zone(q.qname(), q.qclass()) {
+                if let Some(zone) =
+                    self.zones.load().find_zone(q.qname(), q.qclass())
+                {
                     Ok(XfrData::new(zone.clone(), vec![], false))
                 } else {
                     Err(XfrDataProviderError::UnknownZone)
@@ -499,7 +523,11 @@ impl XfrDataProvider<Option<<TsigKeyStore as KeyStore>::Key>> for XfrDataProvidi
 impl KeyStore for XfrDataProvidingZonesWrapper {
     type Key = Key;
 
-    fn get_key<N: ToName>(&self, name: &N, algorithm: Algorithm) -> Option<Self::Key> {
+    fn get_key<N: ToName>(
+        &self,
+        name: &N,
+        algorithm: Algorithm,
+    ) -> Option<Self::Key> {
         self.key_store.get_key(name, algorithm)
     }
 }
@@ -559,7 +587,9 @@ impl ZoneReviewApi {
     fn new(
         http_api_path: Arc<String>,
         update_tx: mpsc::Sender<Update>,
-        pending_approvals: Arc<RwLock<HashMap<(Name<Bytes>, Serial), Vec<Uuid>>>>,
+        pending_approvals: Arc<
+            RwLock<HashMap<(Name<Bytes>, Serial), Vec<Uuid>>>,
+        >,
         zones: XfrDataProvidingZonesWrapper,
         mode: Mode,
         source: Source,
@@ -592,14 +622,17 @@ impl ProcessRequest for ZoneReviewApi {
         request: &hyper::Request<hyper::Body>,
     ) -> Option<hyper::Response<hyper::Body>> {
         let req_path = request.uri().decoded_path();
-        if request.method() == hyper::Method::GET && req_path == *self.http_api_path {
+        if request.method() == hyper::Method::GET
+            && req_path == *self.http_api_path
+        {
             return Some(self.build_status_response().await);
         } else if self.mode == Mode::Prepublish && request.method() == hyper::Method::GET // should really be POST with POST body parameters.
             && req_path.starts_with(self.http_api_path.deref())
         {
             let mut status = StatusCode::BAD_REQUEST;
 
-            let (_base_path, remainder) = req_path.split_at(self.http_api_path.len());
+            let (_base_path, remainder) =
+                req_path.split_at(self.http_api_path.len());
 
             let mut parts = remainder.split('/');
             let operation = parts.next();
@@ -608,8 +641,10 @@ impl ProcessRequest for ZoneReviewApi {
             // We don't use Url::parse() here because it doesn't like
             // base-less URIs which is what we receive.
             if let Some(query) = request.uri().query() {
-                let query_pairs_iter = url::form_urlencoded::parse(query.as_bytes());
-                let query_pairs: HashMap<_, _> = HashMap::from_iter(query_pairs_iter);
+                let query_pairs_iter =
+                    url::form_urlencoded::parse(query.as_bytes());
+                let query_pairs: HashMap<_, _> =
+                    HashMap::from_iter(query_pairs_iter);
                 let zone_name = query_pairs.get("zone");
                 let zone_serial = query_pairs.get("serial");
 
@@ -639,7 +674,9 @@ impl ProcessRequest for ZoneReviewApi {
                                 .get_mut(&(zone_name.clone(), zone_serial))
                             {
                                 // Is this a valid approval token?
-                                if let Ok(given_uuid) = Uuid::from_str(given_approval_token) {
+                                if let Ok(given_uuid) =
+                                    Uuid::from_str(given_approval_token)
+                                {
                                     if let Some(idx) = pending_approvals
                                         .iter()
                                         .position(|&uuid| uuid == given_uuid)
@@ -651,8 +688,10 @@ impl ProcessRequest for ZoneReviewApi {
                                                 status = StatusCode::OK;
                                                 pending_approvals.remove(idx);
 
-                                                if pending_approvals.is_empty() {
-                                                    let evt_zone_name = zone_name.clone();
+                                                if pending_approvals.is_empty()
+                                                {
+                                                    let evt_zone_name =
+                                                        zone_name.clone();
                                                     let (zone_type, event) = match self.source {
                                                         Source::UnsignedZones => (
                                                             "unsigned",
@@ -671,7 +710,10 @@ impl ProcessRequest for ZoneReviewApi {
                                                         Source::PublishedZones => unreachable!(),
                                                     };
                                                     info!("Pending {zone_type} zone '{zone_name}' approved at serial {zone_serial}.");
-                                                    self.update_tx.send(event).await.unwrap();
+                                                    self.update_tx
+                                                        .send(event)
+                                                        .await
+                                                        .unwrap();
                                                     remove_approvals = true;
                                                 }
                                             }
@@ -750,9 +792,15 @@ impl ZoneReviewApi {
             (Mode::Prepublish, Source::PublishedZones) => {
                 "Pre-publication review server for published zones"
             }
-            (Mode::Publish, Source::UnsignedZones) => "Publication server for unsigned zones",
-            (Mode::Publish, Source::SignedZones) => "Publication server for signed zones",
-            (Mode::Publish, Source::PublishedZones) => "Publication server for published zones",
+            (Mode::Publish, Source::UnsignedZones) => {
+                "Publication server for unsigned zones"
+            }
+            (Mode::Publish, Source::SignedZones) => {
+                "Publication server for signed zones"
+            }
+            (Mode::Publish, Source::PublishedZones) => {
+                "Publication server for published zones"
+            }
         };
 
         formatdoc! {
@@ -781,12 +829,10 @@ impl ZoneReviewApi {
         for zone in self.zones.zones.load().iter_zones() {
             response_body.push_str(&format!("zone:   {}\n", zone.apex_name()));
             if self.mode == Mode::Prepublish {
-                for ((zone_name, zone_serial), pending_approvals) in self
-                    .pending_approvals
-                    .read()
-                    .await
-                    .iter()
-                    .filter(|((zone_name, _), _)| zone_name == zone.apex_name())
+                for ((zone_name, zone_serial), pending_approvals) in
+                    self.pending_approvals.read().await.iter().filter(
+                        |((zone_name, _), _)| zone_name == zone.apex_name(),
+                    )
                 {
                     response_body.push_str(&format!(
                         "        pending approvals for serial {zone_serial}: {}\n",

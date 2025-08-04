@@ -28,22 +28,28 @@ use domain::base::name::FlattenInto;
 use domain::base::record::ComposeRecord;
 use domain::base::wire::Composer;
 use domain::base::{
-    CanonicalOrd, Name, ParsedName, ParsedRecord, Record, Rtype, Serial, ToName, Ttl,
+    CanonicalOrd, Name, ParsedName, ParsedRecord, Record, Rtype, Serial,
+    ToName, Ttl,
 };
 use domain::crypto::kmip::sign::KeyUrl;
 use domain::crypto::kmip::{self, ClientCertificate, ConnectionSettings};
 use domain::crypto::kmip_pool::{ConnectionManager, SyncConnPool};
 use domain::crypto::sign::{
-    generate, FromBytesError, GenerateParams, KeyPair, SecretKeyBytes, SignError, SignRaw
+    generate, FromBytesError, GenerateParams, KeyPair, SecretKeyBytes,
+    SignError, SignRaw,
 };
 use domain::dnssec::common::parse_from_bind;
 use domain::dnssec::sign::denial::config::DenialConfig;
 use domain::dnssec::sign::denial::nsec::GenerateNsecConfig;
-use domain::dnssec::sign::denial::nsec3::{GenerateNsec3Config, Nsec3ParamTtlMode};
+use domain::dnssec::sign::denial::nsec3::{
+    GenerateNsec3Config, Nsec3ParamTtlMode,
+};
 use domain::dnssec::sign::error::SigningError;
 use domain::dnssec::sign::keys::keyset::{KeySet, KeyType};
 use domain::dnssec::sign::keys::SigningKey;
-use domain::dnssec::sign::records::{DefaultSorter, RecordsIter, Rrset, Sorter};
+use domain::dnssec::sign::records::{
+    DefaultSorter, RecordsIter, Rrset, Sorter,
+};
 use domain::dnssec::sign::signatures::rrsigs::{
     sign_rrset, sign_sorted_zone_records, GenerateRrsigConfig,
 };
@@ -58,7 +64,9 @@ use domain::net::server::middleware::mandatory::MandatoryMiddlewareSvc;
 use domain::net::server::middleware::notify::NotifyMiddlewareSvc;
 use domain::net::server::middleware::tsig::TsigMiddlewareSvc;
 use domain::net::server::middleware::xfr::XfrMiddlewareSvc;
-use domain::net::server::service::{CallResult, Service, ServiceError, ServiceResult};
+use domain::net::server::service::{
+    CallResult, Service, ServiceError, ServiceResult,
+};
 use domain::net::server::stream::{self, StreamServer};
 use domain::net::server::util::{mk_error_response, service_fn};
 use domain::net::server::ConnectionConfig;
@@ -72,8 +80,8 @@ use domain::zonefile::inplace::{self, Entry, Zonefile};
 use domain::zonetree::types::{StoredRecordData, ZoneUpdate};
 use domain::zonetree::update::ZoneUpdater;
 use domain::zonetree::{
-    InMemoryZoneDiff, ReadableZone, StoredName, StoredRecord, WritableZone, WritableZoneNode, Zone,
-    ZoneBuilder, ZoneStore, ZoneTree,
+    InMemoryZoneDiff, ReadableZone, StoredName, StoredRecord, WritableZone,
+    WritableZoneNode, Zone, ZoneBuilder, ZoneStore, ZoneTree,
 };
 use futures::future::{select, Either};
 use futures::{pin_mut, Future, SinkExt};
@@ -82,7 +90,9 @@ use log::warn;
 use log::{debug, error, info, trace};
 use non_empty_vec::NonEmpty;
 use octseq::{EmptyBuilder, OctetsInto, Parser};
-use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelExtend};
+use rayon::iter::{
+    IntoParallelIterator, IntoParallelRefIterator, ParallelExtend,
+};
 use rayon::slice::ParallelSliceMut;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_with::{serde_as, DeserializeFromStr, DisplayFromStr};
@@ -97,8 +107,8 @@ use url::Url;
 
 use crate::common::light_weight_zone::LightWeightZone;
 use crate::common::net::{
-    ListenAddr, StandardTcpListenerFactory, StandardTcpStream, TcpListener, TcpListenerFactory,
-    TcpStreamWrapper,
+    ListenAddr, StandardTcpListenerFactory, StandardTcpStream, TcpListener,
+    TcpListenerFactory, TcpStreamWrapper,
 };
 use crate::common::tsig::{parse_key_strings, TsigKeyStore};
 use crate::common::xfr::parse_xfr_acl;
@@ -108,14 +118,19 @@ use crate::http::PercentDecodedPath;
 use crate::http::ProcessRequest;
 use crate::log::ExitError;
 use crate::manager::Component;
-use crate::metrics::{self, util::append_per_router_metric, Metric, MetricType, MetricUnit};
+use crate::metrics::{
+    self, util::append_per_router_metric, Metric, MetricType, MetricUnit,
+};
 use crate::payload::Update;
 use crate::units::Unit;
 use crate::zonemaintenance::maintainer::{Config, ZoneLookup};
-use crate::zonemaintenance::maintainer::{DefaultConnFactory, TypedZone, ZoneMaintainer};
+use crate::zonemaintenance::maintainer::{
+    DefaultConnFactory, TypedZone, ZoneMaintainer,
+};
 use crate::zonemaintenance::types::{
-    serialize_duration_as_secs, serialize_instant_as_duration_secs, serialize_opt_duration_as_secs,
-    CompatibilityMode, NotifyConfig, TransportStrategy, XfrConfig, XfrStrategy, ZoneConfig,
+    serialize_duration_as_secs, serialize_instant_as_duration_secs,
+    serialize_opt_duration_as_secs, CompatibilityMode, NotifyConfig,
+    TransportStrategy, XfrConfig, XfrStrategy, ZoneConfig,
     ZoneMaintainerKeyStore,
 };
 use core::sync::atomic::AtomicBool;
@@ -141,7 +156,8 @@ pub struct ZoneSignerUnit {
 
     pub max_concurrent_rrsig_generation_tasks: usize,
 
-    pub kmip_server_conn_settings: HashMap<String, KmipServerConnectionSettings>,
+    pub kmip_server_conn_settings:
+        HashMap<String, KmipServerConnectionSettings>,
 
     pub update_tx: mpsc::Sender<Update>,
 
@@ -177,7 +193,8 @@ impl ZoneSignerUnit {
         // Create KMIP server connection pools.
         // Warning: This will block until the pools have established their
         // minimum number of connections or timed out.
-        let expected_kmip_server_conn_pools = self.kmip_server_conn_settings.len();
+        let expected_kmip_server_conn_pools =
+            self.kmip_server_conn_settings.len();
 
         let kmip_servers: HashMap<String, SyncConnPool> = self.kmip_server_conn_settings.drain().filter_map(|(server_id, conn_settings)| {
             let host_and_port = (conn_settings.server_addr.clone(), conn_settings.server_port);
@@ -247,27 +264,31 @@ impl ZoneSignerUnit {
     }
 
     fn load_private_key(key_path: &Path) -> Result<SecretKeyBytes, Terminated> {
-        let private_data = std::fs::read_to_string(key_path).map_err(|err| {
-            error!("Unable to read file '{}': {err}", key_path.display());
-            Terminated
-        })?;
+        let private_data =
+            std::fs::read_to_string(key_path).map_err(|err| {
+                error!("Unable to read file '{}': {err}", key_path.display());
+                Terminated
+            })?;
 
         // Note: Compared to the original ldns-signzone there is a minor
         // regression here because at the time of writing the error returned
         // from parsing indicates broadly the type of parsing failure but does
         // note indicate the line number at which parsing failed.
-        let secret_key = SecretKeyBytes::parse_from_bind(&private_data).map_err(|err| {
-            error!(
+        let secret_key = SecretKeyBytes::parse_from_bind(&private_data)
+            .map_err(|err| {
+                error!(
                 "Unable to parse BIND formatted private key file '{}': {err}",
                 key_path.display(),
             );
-            Terminated
-        })?;
+                Terminated
+            })?;
 
         Ok(secret_key)
     }
 
-    fn load_public_key(key_path: &Path) -> Result<Record<StoredName, Dnskey<Bytes>>, Terminated> {
+    fn load_public_key(
+        key_path: &Path,
+    ) -> Result<Record<StoredName, Dnskey<Bytes>>, Terminated> {
         let public_data = std::fs::read_to_string(key_path).map_err(|err| {
             error!("loading public key from file '{}'", key_path.display(),);
             Terminated
@@ -332,7 +353,9 @@ impl ZoneSigner {
             expiration_offset,
             denial_config,
             use_lightweight_zone_tree,
-            concurrent_operation_permits: Semaphore::new(max_concurrent_operations),
+            concurrent_operation_permits: Semaphore::new(
+                max_concurrent_operations,
+            ),
             max_concurrent_rrsig_generation_tasks,
             signer_status: Default::default(),
             treat_single_keys_as_csks,
@@ -351,8 +374,10 @@ impl ZoneSigner {
             self.http_api_path.clone(),
             self.signer_status.clone(),
         ));
-        self.component
-            .register_http_resource(http_processor.clone(), &self.http_api_path);
+        self.component.register_http_resource(
+            http_processor.clone(),
+            &self.http_api_path,
+        );
 
         while let Some(cmd) = cmd_rx.recv().await {
             info!("[ZS]: Received command: {cmd:?}");
@@ -367,7 +392,9 @@ impl ZoneSigner {
                     zone_serial,
                 } => {
                     if let Err(err) = self.sign_zone(zone_name).await {
-                        error!("[ZS]: Signing of zone '{zone_name}' failed: {err}");
+                        error!(
+                            "[ZS]: Signing of zone '{zone_name}' failed: {err}"
+                        );
                     }
                 }
 
@@ -381,7 +408,9 @@ impl ZoneSigner {
     async fn sign_zone(&self, zone_name: &StoredName) -> Result<(), String> {
         // TODO: Implement serial bumping (per policy, e.g. ODS 'keep', 'counter', etc.?)
 
-        info!("[ZS]: Waiting to start signing operation for zone '{zone_name}'.");
+        info!(
+            "[ZS]: Waiting to start signing operation for zone '{zone_name}'."
+        );
         self.signer_status.write().await.enqueue(zone_name.clone());
 
         let permit = self.concurrent_operation_permits.acquire().await.unwrap();
@@ -417,8 +446,10 @@ impl ZoneSigner {
         // Create a signing configuration.
         //
         let signing_config = self.signing_config();
-        let rrsig_cfg =
-            GenerateRrsigConfig::new(signing_config.inception, signing_config.expiration);
+        let rrsig_cfg = GenerateRrsigConfig::new(
+            signing_config.inception,
+            signing_config.expiration,
+        );
 
         //
         // Convert zone records into a form we can sign.
@@ -426,7 +457,8 @@ impl ZoneSigner {
         trace!("[ZS]: Collecting records to sign for zone '{zone_name}'.");
         let walk_start = Instant::now();
         let passed_zone = unsigned_zone.clone();
-        let mut records = spawn_blocking(|| collect_zone(passed_zone)).await.unwrap();
+        let mut records =
+            spawn_blocking(|| collect_zone(passed_zone)).await.unwrap();
         let walk_time = walk_start.elapsed().as_secs();
         let unsigned_rr_count = records.len();
 
@@ -476,8 +508,10 @@ impl ZoneSigner {
             }
 
             if let Some(priv_key_name) = key_info.privref() {
-                let priv_url = Url::parse(priv_key_name).expect("valid URL expected");
-                let pub_url = Url::parse(pub_key_name).expect("valid URL expected");
+                let priv_url =
+                    Url::parse(priv_key_name).expect("valid URL expected");
+                let pub_url =
+                    Url::parse(pub_key_name).expect("valid URL expected");
 
                 match (priv_url.scheme(), pub_url.scheme()) {
                     ("file", "file") => {
@@ -492,7 +526,7 @@ impl ZoneSigner {
 
                         let public_key = ZoneSignerUnit::load_public_key(Path::new(pub_key_path))
                             .map_err(|_| format!("Failed to load public key from '{}'", pub_key_path))?;
-        
+
                         let key_pair = KeyPair::from_bytes(&private_key, public_key.data())
                             .map_err(|err| format!("Failed to create key pair for zone {zone_name} using key files {pub_key_path} and {priv_key_path}: {err}"))?;
                         let signing_key =
@@ -573,7 +607,9 @@ impl ZoneSigner {
         .await
         .unwrap()
         .map_err(|err: SigningError| {
-            format!("Failed to generate denial RRs for zone '{zone_name}': {err}")
+            format!(
+                "Failed to generate denial RRs for zone '{zone_name}': {err}"
+            )
         })?;
         let denial_time = denial_start.elapsed().as_secs();
         let denial_rr_count = unsigned_records.len() - unsigned_rr_count;
@@ -597,7 +633,8 @@ impl ZoneSigner {
         // Work out how many RRs have to be signed and how many concurrent
         // threads to sign with and how big each chunk to be signed should be.
         let rr_count = RecordsIter::new(&unsigned_records).count();
-        let (parallelism, chunk_size) = self.determine_signing_concurrency(rr_count);
+        let (parallelism, chunk_size) =
+            self.determine_signing_concurrency(rr_count);
         info!("SIGNER: Using {parallelism} threads to sign {rr_count} owners in chunks of {chunk_size}.",);
 
         self.signer_status.write().await.update(zone_name, |s| {
@@ -615,8 +652,10 @@ impl ZoneSigner {
 
         // Create a channel for passing RRs generated by RRSIG generation to
         // a task that will insert them into the signed zone.
-        let (tx, rx) =
-            mpsc::channel::<(Vec<Record<StoredName, Rrsig<Bytes, StoredName>>>, Duration)>(10000);
+        let (tx, rx) = mpsc::channel::<(
+            Vec<Record<StoredName, Rrsig<Bytes, StoredName>>>,
+            Duration,
+        )>(10000);
 
         // Start a background task that will insert RRs that it receives from
         // the RRSIG generator below.
@@ -752,7 +791,10 @@ impl ZoneSigner {
         } else {
             self.max_concurrent_rrsig_generation_tasks
         };
-        let parallelism = std::cmp::min(parallelism, self.max_concurrent_rrsig_generation_tasks);
+        let parallelism = std::cmp::min(
+            parallelism,
+            self.max_concurrent_rrsig_generation_tasks,
+        );
         let chunk_size = rr_count / parallelism;
         (parallelism, chunk_size)
     }
@@ -865,14 +907,21 @@ fn sign_rr_chunk(
             }
         }
 
-        let rrsigs = sign_sorted_zone_records(zone_name, RecordsIter::new(slice), &zsks, rrsig_cfg)
-            .map_err(|err| err.to_string())?;
+        let rrsigs = sign_sorted_zone_records(
+            zone_name,
+            RecordsIter::new(slice),
+            &zsks,
+            rrsig_cfg,
+        )
+        .map_err(|err| err.to_string())?;
         duration = duration.saturating_add(before.elapsed());
 
         if !rrsigs.is_empty() {
             // trace!("SIGNER: Thread {i}: sending {} DNSKEY RRs and {} RRSIG RRs to be stored", res.dnskeys.len(), res.rrsigs.len());
             if let Err(err) = tx.blocking_send((rrsigs, duration)) {
-                return Err(format!("Unable to send RRs for storage, aborting: {err}"));
+                return Err(format!(
+                    "Unable to send RRs for storage, aborting: {err}"
+                ));
             }
         } else {
             // trace!("SIGNER: Thread {i}: no DNSKEY RRs or RRSIG RRs to be stored");
@@ -886,7 +935,10 @@ fn sign_rr_chunk(
 #[allow(clippy::type_complexity)]
 async fn rrsig_inserter(
     mut updater: ZoneUpdater<StoredName>,
-    mut rx: Receiver<(Vec<Record<StoredName, Rrsig<Bytes, StoredName>>>, Duration)>,
+    mut rx: Receiver<(
+        Vec<Record<StoredName, Rrsig<Bytes, StoredName>>>,
+        Duration,
+    )>,
 ) -> (ZoneUpdater<StoredName>, u64, Duration, usize) {
     trace!("SIGNER: Adding new signed records to new/existing copy of signed zone.");
     let mut rrsig_count = 0usize;
@@ -895,7 +947,8 @@ async fn rrsig_inserter(
     let start = Instant::now();
 
     while let Some((rrsig_records, duration)) = rx.recv().await {
-        max_rrsig_generation_time = std::cmp::max(max_rrsig_generation_time, duration);
+        max_rrsig_generation_time =
+            std::cmp::max(max_rrsig_generation_time, duration);
 
         let insert_start = Instant::now();
 
@@ -910,7 +963,11 @@ async fn rrsig_inserter(
         insertion_time = insertion_time.saturating_add(insert_start.elapsed());
         if rrsig_count % 100 == 0 {
             let elapsed = start.elapsed().as_secs();
-            let rate = if elapsed > 0 { rrsig_count / (elapsed as usize) } else { rrsig_count }; // TODO: Use floating point arithmetic?
+            let rate = if elapsed > 0 {
+                rrsig_count / (elapsed as usize)
+            } else {
+                rrsig_count
+            }; // TODO: Use floating point arithmetic?
             info!("Inserted {rrsig_count} RRSIGs in {elapsed} seconds at a rate of {rate} RRSIGs/second");
         }
     }
@@ -950,11 +1007,14 @@ fn collect_zone(zone: Zone) -> Vec<StoredRecord> {
     zone.read()
         .walk(Box::new(move |owner, rrset, _at_zone_cut| {
             let mut unlocked_records = passed_records.lock().unwrap();
-            unlocked_records.extend(
-                rrset.data().iter().map(|rdata| {
-                    Record::new(owner.clone(), Class::IN, rrset.ttl(), rdata.to_owned())
-                }),
-            );
+            unlocked_records.extend(rrset.data().iter().map(|rdata| {
+                Record::new(
+                    owner.clone(),
+                    Class::IN,
+                    rrset.ttl(),
+                    rdata.to_owned(),
+                )
+            }));
         }));
 
     let records = Arc::into_inner(records).unwrap().into_inner().unwrap();
@@ -967,7 +1027,9 @@ fn collect_zone(zone: Zone) -> Vec<StoredRecord> {
     records
 }
 
-fn parse_nsec3_config(config: &TomlNsec3Config) -> GenerateNsec3Config<Bytes, MultiThreadedSorter> {
+fn parse_nsec3_config(
+    config: &TomlNsec3Config,
+) -> GenerateNsec3Config<Bytes, MultiThreadedSorter> {
     let mut params = Nsec3param::default();
     if matches!(
         config.opt_out,
@@ -980,9 +1042,11 @@ fn parse_nsec3_config(config: &TomlNsec3Config) -> GenerateNsec3Config<Bytes, Mu
         TomlNsec3ParamTtlMode::Soa => Nsec3ParamTtlMode::Soa,
         TomlNsec3ParamTtlMode::SoaMinimum => Nsec3ParamTtlMode::SoaMinimum,
     };
-    let mut nsec3_config = GenerateNsec3Config::new(params).with_ttl_mode(ttl_mode);
+    let mut nsec3_config =
+        GenerateNsec3Config::new(params).with_ttl_mode(ttl_mode);
     if matches!(config.opt_out, TomlNsec3OptOut::OptOutFlagOnly) {
-        nsec3_config = nsec3_config.without_opt_out_excluding_owner_names_of_unsigned_delegations();
+        nsec3_config = nsec3_config
+            .without_opt_out_excluding_owner_names_of_unsigned_delegations();
     }
     nsec3_config
 }
@@ -1137,7 +1201,9 @@ impl ZoneSigningStatus {
             ZoneSigningStatus::Requested(_) => {
                 panic!("Cannot finish a signing operation that never started")
             }
-            ZoneSigningStatus::InProgress(s) => Self::Finished(FinishedStatus::new(s)),
+            ZoneSigningStatus::InProgress(s) => {
+                Self::Finished(FinishedStatus::new(s))
+            }
             ZoneSigningStatus::Finished(_) => self,
         }
     }
@@ -1162,13 +1228,19 @@ struct ZoneSignerStatus {
 }
 
 impl ZoneSignerStatus {
-    pub fn get(&self, wanted_zone_name: &StoredName) -> Option<&NamedZoneSigningStatus> {
+    pub fn get(
+        &self,
+        wanted_zone_name: &StoredName,
+    ) -> Option<&NamedZoneSigningStatus> {
         self.zones_being_signed
             .iter()
             .rfind(|v| v.zone_name == wanted_zone_name)
     }
 
-    fn get_mut(&mut self, wanted_zone_name: &StoredName) -> Option<&mut NamedZoneSigningStatus> {
+    fn get_mut(
+        &mut self,
+        wanted_zone_name: &StoredName,
+    ) -> Option<&mut NamedZoneSigningStatus> {
         self.zones_being_signed
             .iter_mut()
             .rfind(|v| v.zone_name == wanted_zone_name)
@@ -1199,7 +1271,11 @@ impl ZoneSignerStatus {
         }
     }
 
-    pub fn update<F: Fn(&mut InProgressStatus)>(&mut self, zone_name: &StoredName, cb: F) {
+    pub fn update<F: Fn(&mut InProgressStatus)>(
+        &mut self,
+        zone_name: &StoredName,
+        cb: F,
+    ) {
         if let Some(NamedZoneSigningStatus {
             status: ZoneSigningStatus::InProgress(in_progress_status),
             ..
@@ -1241,7 +1317,10 @@ struct SigningHistoryApi {
 }
 
 impl SigningHistoryApi {
-    fn new(http_api_path: Arc<String>, signing_status: Arc<RwLock<ZoneSignerStatus>>) -> Self {
+    fn new(
+        http_api_path: Arc<String>,
+        signing_status: Arc<RwLock<ZoneSignerStatus>>,
+    ) -> Self {
         Self {
             http_api_path,
             signing_status,
@@ -1262,10 +1341,15 @@ impl ProcessRequest for SigningHistoryApi {
                 if req_path == format!("{}status.json", *self.http_api_path) {
                     return Some(self.build_json_status_response().await);
                 } else if req_path.ends_with("/status.json") {
-                    let (_, parts) = req_path.split_at(self.http_api_path.len());
-                    if let Some((zone_name, status_rel_url)) = parts.split_once('/') {
+                    let (_, parts) =
+                        req_path.split_at(self.http_api_path.len());
+                    if let Some((zone_name, status_rel_url)) =
+                        parts.split_once('/')
+                    {
                         if status_rel_url == "status.json" {
-                            return self.build_json_zone_status_response(zone_name).await;
+                            return self
+                                .build_json_zone_status_response(zone_name)
+                                .await;
                         }
                     }
                 }
@@ -1276,8 +1360,11 @@ impl ProcessRequest for SigningHistoryApi {
 }
 
 impl SigningHistoryApi {
-    pub async fn build_json_status_response(&self) -> hyper::Response<hyper::Body> {
-        let json = serde_json::to_string(&*self.signing_status.read().await).unwrap();
+    pub async fn build_json_status_response(
+        &self,
+    ) -> hyper::Response<hyper::Body> {
+        let json =
+            serde_json::to_string(&*self.signing_status.read().await).unwrap();
 
         hyper::Response::builder()
             .header("Content-Type", "application/json")
@@ -1291,7 +1378,9 @@ impl SigningHistoryApi {
         zone_name: &str,
     ) -> Option<hyper::Response<hyper::Body>> {
         if let Ok(zone_name) = StoredName::from_str(zone_name) {
-            if let Some(status) = self.signing_status.read().await.get(&zone_name) {
+            if let Some(status) =
+                self.signing_status.read().await.get(&zone_name)
+            {
                 let json = serde_json::to_string(status).unwrap();
                 return Some(
                     hyper::Response::builder()
@@ -1452,17 +1541,19 @@ impl From<KmipServerConnectionSettings> for ConnectionSettings {
             password: cfg.server_password,
             insecure: cfg.server_insecure,
             client_cert,
-            server_cert: None,                             // TOOD
-            ca_cert: None,                                 // TODO
+            server_cert: None, // TOOD
+            ca_cert: None,     // TODO
             connect_timeout: Some(Duration::from_secs(5)), // TODO
-            read_timeout: None,                            // TODO
-            write_timeout: None,                           // TODO
-            max_response_bytes: None,                      // TODO
+            read_timeout: None, // TODO
+            write_timeout: None, // TODO
+            max_response_bytes: None, // TODO
         }
     }
 }
 
-fn load_client_cert(opt: &KmipServerConnectionSettings) -> Option<ClientCertificate> {
+fn load_client_cert(
+    opt: &KmipServerConnectionSettings,
+) -> Option<ClientCertificate> {
     match (
         &opt.client_cert_path,
         &opt.client_key_path,
@@ -1482,10 +1573,12 @@ fn load_client_cert(opt: &KmipServerConnectionSettings) -> Option<ClientCertific
         (_, Some(_), Some(_)) | (Some(_), _, Some(_)) => {
             panic!("Use either but not both of: client certificate and key PEM file paths, or a PCKS#12 certficate file path");
         }
-        (Some(cert_path), Some(key_path), None) => Some(ClientCertificate::SeparatePem {
-            cert_bytes: load_binary_file(cert_path),
-            key_bytes: Some(load_binary_file(key_path)),
-        }),
+        (Some(cert_path), Some(key_path), None) => {
+            Some(ClientCertificate::SeparatePem {
+                cert_bytes: load_binary_file(cert_path),
+                key_bytes: Some(load_binary_file(key_path)),
+            })
+        }
     }
 }
 

@@ -26,12 +26,14 @@ impl EnvSpec {
     pub fn process() -> Result<Self, EnvError> {
         fn var(var: &'static str) -> Result<Option<String>, EnvError> {
             std::env::var_os(var)
-                .map(|value| value.into_string().map_err(|_| EnvError::NonUtf8 { var }))
+                .map(|value| {
+                    value.into_string().map_err(|_| EnvError::NonUtf8 { var })
+                })
                 .transpose()
         }
 
-        let config_path =
-            var("NAMESHED_CONFIG_PATH")?.map(|path| Utf8PathBuf::from(path).into_boxed_path());
+        let config_path = var("NAMESHED_CONFIG_PATH")?
+            .map(|path| Utf8PathBuf::from(path).into_boxed_path());
 
         let log_level = var("NAMESHED_LOG_LEVEL")?
             .map(|value| match &*value {

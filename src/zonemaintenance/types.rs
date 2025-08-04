@@ -354,12 +354,16 @@ impl Display for ZoneRefreshStatus {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             ZoneRefreshStatus::RefreshPending => f.write_str("refresh pending"),
-            ZoneRefreshStatus::RefreshInProgress(n) => {
-                f.write_fmt(format_args!("refresh in progress ({n} updates applied)"))
-            }
+            ZoneRefreshStatus::RefreshInProgress(n) => f.write_fmt(
+                format_args!("refresh in progress ({n} updates applied)"),
+            ),
             ZoneRefreshStatus::RetryPending => f.write_str("retrying"),
-            ZoneRefreshStatus::RetryInProgress => f.write_str("retry in progress"),
-            ZoneRefreshStatus::NotifyInProgress => f.write_str("notify in progress"),
+            ZoneRefreshStatus::RetryInProgress => {
+                f.write_str("retry in progress")
+            }
+            ZoneRefreshStatus::NotifyInProgress => {
+                f.write_str("notify in progress")
+            }
         }
     }
 }
@@ -396,7 +400,10 @@ where
     }
 }
 
-pub fn serialize_duration_as_secs<S>(duration: &Duration, serializer: S) -> Result<S::Ok, S::Error>
+pub fn serialize_duration_as_secs<S>(
+    duration: &Duration,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
 {
@@ -588,7 +595,8 @@ impl ZoneRefreshInstant {
             zone_id.name,
             refresh.into_duration().as_secs()
         );
-        let end_instant = Instant::now().checked_add(refresh.into_duration()).unwrap();
+        let end_instant =
+            Instant::now().checked_add(refresh.into_duration()).unwrap();
         Self {
             cause,
             zone_id,
@@ -622,14 +630,18 @@ impl Display for ZoneRefreshCause {
             ZoneRefreshCause::NotifyFromPrimary(primary) => {
                 write!(f, "NOTIFY from {primary}")
             }
-            ZoneRefreshCause::SoaRefreshTimer => f.write_str("SOA REFRESH periodic timer expired"),
+            ZoneRefreshCause::SoaRefreshTimer => {
+                f.write_str("SOA REFRESH periodic timer expired")
+            }
             ZoneRefreshCause::SoaRefreshTimerAfterStartup => {
                 f.write_str("SOA REFRESH timer (scheduled at startup) expired")
             }
-            ZoneRefreshCause::SoaRefreshTimerAfterZoneAdded => {
-                f.write_str("SOA REFRESH timer (scheduled at zone addition) expired")
+            ZoneRefreshCause::SoaRefreshTimerAfterZoneAdded => f.write_str(
+                "SOA REFRESH timer (scheduled at zone addition) expired",
+            ),
+            ZoneRefreshCause::SoaRetryTimer => {
+                f.write_str("SOA RETRY timer expired")
             }
-            ZoneRefreshCause::SoaRetryTimer => f.write_str("SOA RETRY timer expired"),
         }
     }
 }
@@ -665,7 +677,10 @@ impl ZoneRefreshTimer {
 impl Future for ZoneRefreshTimer {
     type Output = ZoneRefreshInstant;
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Self::Output> {
         match self.sleep_fut.poll_unpin(cx) {
             Poll::Ready(()) => Poll::Ready(self.refresh_instant.clone()),
             Poll::Pending => Poll::Pending,
@@ -682,7 +697,10 @@ pub struct NameServerNameAddr {
 }
 
 impl NameServerNameAddr {
-    pub fn new<T: IntoIterator<Item = SocketAddr>>(name: StoredName, addrs: T) -> Self {
+    pub fn new<T: IntoIterator<Item = SocketAddr>>(
+        name: StoredName,
+        addrs: T,
+    ) -> Self {
         Self {
             name,
             addrs: HashSet::from_iter(addrs),
@@ -795,7 +813,9 @@ impl ZoneInfo {
             if key.start_serial() < serial {
                 // Diff is for a serial that is too old, skip it.
                 continue;
-            } else if key.start_serial() > serial || key.start_serial() > end_serial {
+            } else if key.start_serial() > serial
+                || key.start_serial() > end_serial
+            {
                 // Diff is for a serial that is too new, abort as we don't
                 // have the diff that the client needs.
                 if enabled!(Level::TRACE) {
@@ -960,10 +980,13 @@ impl Display for ZoneReportDetails {
                 f.write_str("        type: primary\n")?;
                 f.write_str("        state: ok\n")
             }
-            ZoneReportDetails::PendingSecondary(state) | ZoneReportDetails::Secondary(state) => {
+            ZoneReportDetails::PendingSecondary(state)
+            | ZoneReportDetails::Secondary(state) => {
                 let now = Instant::now();
                 f.write_str("        type: secondary\n")?;
-                let at = match now.checked_duration_since(state.metrics.zone_created_at) {
+                let at = match now
+                    .checked_duration_since(state.metrics.zone_created_at)
+                {
                     Some(duration) => {
                         format!("{}s ago", duration.as_secs())
                     }
@@ -973,9 +996,12 @@ impl Display for ZoneReportDetails {
                 writeln!(f, "        state: {}", state.status)?;
 
                 if state.metrics.last_refreshed_at.is_some() {
-                    let last_refreshed_at = state.metrics.last_refreshed_at.unwrap();
-                    let serial = state.metrics.last_refresh_succeeded_serial.unwrap();
-                    let at = match now.checked_duration_since(last_refreshed_at) {
+                    let last_refreshed_at =
+                        state.metrics.last_refreshed_at.unwrap();
+                    let serial =
+                        state.metrics.last_refresh_succeeded_serial.unwrap();
+                    let at = match now.checked_duration_since(last_refreshed_at)
+                    {
                         Some(duration) => {
                             format!("{}s ago", duration.as_secs())
                         }
@@ -1007,13 +1033,17 @@ impl Display for ZoneReportDetails {
                 };
                 writeln!(f, "        last refresh attempted at: {at}")?;
 
-                let at = match state.metrics.last_soa_serial_check_succeeded_at {
+                let at = match state.metrics.last_soa_serial_check_succeeded_at
+                {
                     Some(at) => match now.checked_duration_since(at) {
                         Some(duration) => {
                             format!(
                                 "{}s ago (serial: {})",
                                 duration.as_secs(),
-                                state.metrics.last_soa_serial_check_serial.unwrap()
+                                state
+                                    .metrics
+                                    .last_soa_serial_check_serial
+                                    .unwrap()
                             )
                         }
                         None => "unknown".to_string(),
@@ -1022,13 +1052,17 @@ impl Display for ZoneReportDetails {
                 };
                 writeln!(f, "        last successful soa check at: {at}")?;
 
-                let at = match state.metrics.last_soa_serial_check_succeeded_at {
+                let at = match state.metrics.last_soa_serial_check_succeeded_at
+                {
                     Some(at) => match now.checked_duration_since(at) {
                         Some(duration) => {
                             format!(
                                 "{}s ago (serial: {})",
                                 duration.as_secs(),
-                                state.metrics.last_soa_serial_check_serial.unwrap()
+                                state
+                                    .metrics
+                                    .last_soa_serial_check_serial
+                                    .unwrap()
                             )
                         }
                         None => "unknown".to_string(),

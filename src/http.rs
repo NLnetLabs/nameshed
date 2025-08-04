@@ -127,11 +127,11 @@ impl Server {
         let make_service = make_service_fn(|conn: &HttpStream| {
             let metrics = metrics.clone();
             let resources = resources.clone();
-            let client_ip = Arc::new(
-                conn.sock()
-                    .peer_addr()
-                    .map_or_else(|_err| "-".to_string(), |addr| addr.to_string()),
-            );
+            let client_ip =
+                Arc::new(conn.sock().peer_addr().map_or_else(
+                    |_err| "-".to_string(),
+                    |addr| addr.to_string(),
+                ));
             async move {
                 Ok::<_, Infallible>(service_fn(move |req| {
                     let metrics = metrics.clone();
@@ -139,16 +139,23 @@ impl Server {
                     let client_ip = client_ip.clone();
                     async move {
                         if log::log_enabled!(log::Level::Trace) {
-                            let request_line =
-                                format!("{} {} {:?}", req.method(), req.uri(), req.version());
-                            let res = Self::handle_request(req, &metrics, &resources).await;
+                            let request_line = format!(
+                                "{} {} {:?}",
+                                req.method(),
+                                req.uri(),
+                                req.version()
+                            );
+                            let res =
+                                Self::handle_request(req, &metrics, &resources)
+                                    .await;
                             if let Ok(res) = &res {
                                 let status_code = res.status().as_u16();
                                 trace!("{client_ip} - - {request_line} {status_code} -");
                             }
                             res
                         } else {
-                            Self::handle_request(req, &metrics, &resources).await
+                            Self::handle_request(req, &metrics, &resources)
+                                .await
                         }
                     }
                 }))
@@ -228,14 +235,16 @@ impl Server {
                 use std::io::Write;
 
                 let (mut parts, body) = res.into_parts();
-                let mut compressor = GzEncoder::new(Vec::new(), Compression::default());
+                let mut compressor =
+                    GzEncoder::new(Vec::new(), Compression::default());
                 compressor
                     .write_all(&hyper::body::to_bytes(body).await.unwrap())
                     .unwrap();
                 let body = compressor.finish().unwrap().into();
-                parts
-                    .headers
-                    .append("Content-Encoding", HeaderValue::from_static("gzip"));
+                parts.headers.append(
+                    "Content-Encoding",
+                    HeaderValue::from_static("gzip"),
+                );
                 return Response::from_parts(parts, body);
             }
         }
@@ -330,7 +339,10 @@ impl Resources {
     ///
     /// Returns some response if any of the registered processors actually
     /// processed the particular request or `None` otherwise.
-    pub async fn process_request(&self, request: &Request<Body>) -> Option<Response<Body>> {
+    pub async fn process_request(
+        &self,
+        request: &Request<Body>,
+    ) -> Option<Response<Body>> {
         let sources = self.sources.load();
         for item in sources.iter() {
             if let Some(process) = item.processor.upgrade() {
@@ -384,12 +396,18 @@ pub trait ProcessRequest: Send + Sync {
     /// If the processor feels responsible for the reuqest, it should return
     /// some response. This can be an error response. Otherwise it should
     /// return `None`.
-    async fn process_request(&self, request: &Request<Body>) -> Option<Response<Body>>;
+    async fn process_request(
+        &self,
+        request: &Request<Body>,
+    ) -> Option<Response<Body>>;
 }
 
 #[async_trait]
 impl<T: ProcessRequest> ProcessRequest for Arc<T> {
-    async fn process_request(&self, request: &Request<Body>) -> Option<Response<Body>> {
+    async fn process_request(
+        &self,
+        request: &Request<Body>,
+    ) -> Option<Response<Body>> {
         AsRef::<T>::as_ref(self).process_request(request).await
     }
 }
@@ -399,7 +417,10 @@ impl<F> ProcessRequest for F
 where
     F: Fn(&Request<Body>) -> Option<Response<Body>> + Sync + Send,
 {
-    async fn process_request(&self, request: &Request<Body>) -> Option<Response<Body>> {
+    async fn process_request(
+        &self,
+        request: &Request<Body>,
+    ) -> Option<Response<Body>> {
         (self)(request)
     }
 }
@@ -435,7 +456,9 @@ impl Accept for HttpAccept {
         pin_mut!(sock);
         match sock.poll_accept(cx) {
             Poll::Pending => Poll::Pending,
-            Poll::Ready(Ok((sock, _addr))) => Poll::Ready(Some(Ok(HttpStream { sock }))),
+            Poll::Ready(Ok((sock, _addr))) => {
+                Poll::Ready(Some(Ok(HttpStream { sock })))
+            }
             Poll::Ready(Err(err)) => Poll::Ready(Some(Err(err))),
         }
     }
@@ -475,13 +498,19 @@ impl AsyncWrite for HttpStream {
         sock.poll_write(cx, buf)
     }
 
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), io::Error>> {
+    fn poll_flush(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context,
+    ) -> Poll<Result<(), io::Error>> {
         let sock = &mut self.sock;
         pin_mut!(sock);
         sock.poll_flush(cx)
     }
 
-    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), io::Error>> {
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context,
+    ) -> Poll<Result<(), io::Error>> {
         let sock = &mut self.sock;
         pin_mut!(sock);
         sock.poll_shutdown(cx)
@@ -539,7 +568,10 @@ pub fn extract_params(request: &Request<Body>) -> Vec<QueryParam> {
         .unwrap_or_default()
 }
 
-pub fn get_param<'a>(params: &'a QueryParams, needle: &str) -> Option<MatchedParam<'a>> {
+pub fn get_param<'a>(
+    params: &'a QueryParams,
+    needle: &str,
+) -> Option<MatchedParam<'a>> {
     params.iter().find_map(|query_param| {
         MatchedParam::parse(query_param, needle).inspect(|matched_param| {
             query_param.mark_used();
@@ -547,7 +579,10 @@ pub fn get_param<'a>(params: &'a QueryParams, needle: &str) -> Option<MatchedPar
     })
 }
 
-pub fn get_all_params<'a>(params: &'a QueryParams, needle: &str) -> Vec<MatchedParam<'a>> {
+pub fn get_all_params<'a>(
+    params: &'a QueryParams,
+    needle: &str,
+) -> Vec<MatchedParam<'a>> {
     params
         .iter()
         .filter_map(|query_param| {
@@ -568,7 +603,9 @@ impl<'a> MatchedParam<'a> {
     fn parse(param: &'a QueryParam, needle: &str) -> Option<MatchedParam<'a>> {
         let mut iter = param.name().split(&['[', ']']);
         match (iter.next(), iter.next()) {
-            (Some(k), None) if k == needle => Some(MatchedParam::Exact(param.value())),
+            (Some(k), None) if k == needle => {
+                Some(MatchedParam::Exact(param.value()))
+            }
             (Some(k), Some(family)) if k == needle => {
                 Some(MatchedParam::Family(family, param.value()))
             }

@@ -17,7 +17,9 @@ use crate::targets::Target;
 use crate::units::key_manager::KeyManagerUnit;
 use crate::units::zone_loader::ZoneLoader;
 use crate::units::zone_server::{self, ZoneServerUnit};
-use crate::units::zone_signer::{KmipServerConnectionSettings, TomlDenialConfig, ZoneSignerUnit};
+use crate::units::zone_signer::{
+    KmipServerConnectionSettings, TomlDenialConfig, ZoneSignerUnit,
+};
 use crate::units::Unit;
 use crate::{http, metrics};
 use domain::zonetree::ZoneTree;
@@ -128,8 +130,11 @@ impl Component {
         rel_base_url: &str,
     ) {
         debug!("registering resource {:?}", &rel_base_url);
-        self.http_resources
-            .register(Arc::downgrade(&process), rel_base_url, false)
+        self.http_resources.register(
+            Arc::downgrade(&process),
+            rel_base_url,
+            false,
+        )
     }
 
     /// Register a sub HTTP resource.
@@ -139,11 +144,18 @@ impl Component {
         rel_base_url: &str,
     ) {
         debug!("registering resource {:?}", &rel_base_url);
-        self.http_resources
-            .register(Arc::downgrade(&process), rel_base_url, true)
+        self.http_resources.register(
+            Arc::downgrade(&process),
+            rel_base_url,
+            true,
+        )
     }
 
-    pub async fn send_command(&self, target_unit_name: &str, data: ApplicationCommand) {
+    pub async fn send_command(
+        &self,
+        target_unit_name: &str,
+        data: ApplicationCommand,
+    ) {
         self.app_cmd_tx
             .send((target_unit_name.to_string(), data))
             .await
@@ -233,7 +245,10 @@ impl Manager {
         let signed_zones = Default::default();
         let published_zones = Default::default();
 
-        #[allow(clippy::let_and_return, clippy::default_constructed_unit_structs)]
+        #[allow(
+            clippy::let_and_return,
+            clippy::default_constructed_unit_structs
+        )]
         let manager = Manager {
             loader_tx: None,
             review_tx: None,
@@ -263,7 +278,9 @@ impl Manager {
     }
 
     pub async fn accept_application_commands(&self) {
-        while let Some((unit_name, data)) = self.app_cmd_rx.lock().await.recv().await {
+        while let Some((unit_name, data)) =
+            self.app_cmd_rx.lock().await.recv().await
+        {
             let Some(tx) = (match &*unit_name {
                 "ZL" => self.loader_tx.as_ref(),
                 "RS" => self.review_tx.as_ref(),
@@ -487,8 +504,14 @@ impl Manager {
                         server_addr,
                         server_port,
                         server_insecure: true,
-                        server_username: std::env::var("NAMESHED_HSM_RELAY_USERNAME").ok(),
-                        server_password: std::env::var("NAMESHED_HSM_RELAY_PASSWORD").ok(),
+                        server_username: std::env::var(
+                            "NAMESHED_HSM_RELAY_USERNAME",
+                        )
+                        .ok(),
+                        server_password: std::env::var(
+                            "NAMESHED_HSM_RELAY_PASSWORD",
+                        )
+                        .ok(),
                         ..Default::default()
                     },
                 );
@@ -531,12 +554,16 @@ impl Manager {
             );
         }
 
-        let zone_name = std::env::var("ZL_IN_ZONE").unwrap_or("example.com.".into());
+        let zone_name =
+            std::env::var("ZL_IN_ZONE").unwrap_or("example.com.".into());
         let zone_file = std::env::var("ZL_IN_ZONE_FILE").unwrap_or("".into());
-        let xfr_in = std::env::var("ZL_XFR_IN").unwrap_or("127.0.0.1:8055 KEY sec1-key".into());
-        let tsig_key_name = std::env::var("ZL_TSIG_KEY_NAME").unwrap_or("sec1-key".into());
-        let tsig_key = std::env::var("ZL_TSIG_KEY")
-            .unwrap_or("hmac-sha256:zlCZbVJPIhobIs1gJNQfrsS3xCxxsR9pMUrGwG8OgG8=".into());
+        let xfr_in = std::env::var("ZL_XFR_IN")
+            .unwrap_or("127.0.0.1:8055 KEY sec1-key".into());
+        let tsig_key_name =
+            std::env::var("ZL_TSIG_KEY_NAME").unwrap_or("sec1-key".into());
+        let tsig_key = std::env::var("ZL_TSIG_KEY").unwrap_or(
+            "hmac-sha256:zlCZbVJPIhobIs1gJNQfrsS3xCxxsR9pMUrGwG8OgG8=".into(),
+        );
 
         let units = [
             (
@@ -547,7 +574,10 @@ impl Manager {
                         "tcp:127.0.0.1:8054".parse().unwrap(),
                         "udp:127.0.0.1:8054".parse().unwrap(),
                     ],
-                    zones: Arc::new(HashMap::from([(zone_name.clone(), zone_file)])),
+                    zones: Arc::new(HashMap::from([(
+                        zone_name.clone(),
+                        zone_file,
+                    )])),
                     xfr_in: Arc::new(HashMap::from([(zone_name, xfr_in)])),
                     tsig_keys: HashMap::from([(tsig_key_name, tsig_key)]),
                     update_tx: update_tx.clone(),
@@ -626,7 +656,10 @@ impl Manager {
                         "tcp:127.0.0.1:8058".parse().unwrap(),
                         "udp:127.0.0.1:8058".parse().unwrap(),
                     ],
-                    xfr_out: HashMap::from([("example.com".into(), "127.0.0.1:8055".into())]),
+                    xfr_out: HashMap::from([(
+                        "example.com".into(),
+                        "127.0.0.1:8055".into(),
+                    )]),
                     hooks: vec![],
                     mode: zone_server::Mode::Publish,
                     source: zone_server::Source::PublishedZones,
@@ -685,7 +718,11 @@ impl Manager {
         tokio::spawn(new_unit.run(component));
     }
 
-    fn spawn_target(component: Component, new_target: Target, cmd_rx: Receiver<TargetCommand>) {
+    fn spawn_target(
+        component: Component,
+        new_target: Target,
+        cmd_rx: Receiver<TargetCommand>,
+    ) {
         tokio::spawn(new_target.run(component, cmd_rx));
     }
 

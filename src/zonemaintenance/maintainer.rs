@@ -47,35 +47,44 @@ use domain::net::client::request::{
 use domain::net::client::tsig::{self};
 use domain::net::server::message::Request;
 use domain::net::server::middleware::notify::{Notifiable, NotifyError};
-use domain::net::server::middleware::xfr::{XfrData, XfrDataProvider, XfrDataProviderError};
+use domain::net::server::middleware::xfr::{
+    XfrData, XfrDataProvider, XfrDataProviderError,
+};
 use domain::net::xfr::protocol::XfrResponseInterpreter;
 use domain::rdata::{Soa, ZoneRecordData};
 use domain::tsig::{Key, KeyStore};
 use domain::zonetree::error::{OutOfZone, ZoneTreeModificationError};
 use domain::zonetree::update::ZoneUpdater;
 use domain::zonetree::{
-    AnswerContent, InMemoryZoneDiff, ReadableZone, SharedRrset, StoredName, WritableZone,
-    WritableZoneNode, Zone, ZoneStore, ZoneTree,
+    AnswerContent, InMemoryZoneDiff, ReadableZone, SharedRrset, StoredName,
+    WritableZone, WritableZoneNode, Zone, ZoneStore, ZoneTree,
 };
 use log::log_enabled;
 
 use super::types::{
-    CompatibilityMode, Event, NotifySrcDstConfig, NotifyStrategy, TransportStrategy, XfrConfig,
-    XfrStrategy, ZoneChangedMsg, ZoneConfig, ZoneDiffs, ZoneId, ZoneInfo, ZoneNameServers,
-    ZoneRefreshCause, ZoneRefreshInstant, ZoneRefreshState, ZoneRefreshStatus, ZoneRefreshTimer,
-    ZoneReport, ZoneReportDetails, IANA_DNS_PORT_NUMBER, MIN_DURATION_BETWEEN_ZONE_REFRESHES,
+    CompatibilityMode, Event, NotifySrcDstConfig, NotifyStrategy,
+    TransportStrategy, XfrConfig, XfrStrategy, ZoneChangedMsg, ZoneConfig,
+    ZoneDiffs, ZoneId, ZoneInfo, ZoneNameServers, ZoneRefreshCause,
+    ZoneRefreshInstant, ZoneRefreshState, ZoneRefreshStatus, ZoneRefreshTimer,
+    ZoneReport, ZoneReportDetails, IANA_DNS_PORT_NUMBER,
+    MIN_DURATION_BETWEEN_ZONE_REFRESHES,
 };
 
 //------------ ConnectionFactory ---------------------------------------------
 
-pub type FactoryResult<SR, E> =
-    Box<dyn Future<Output = Result<Option<Box<SR>>, E>> + Send + Sync + 'static>;
+pub type FactoryResult<SR, E> = Box<
+    dyn Future<Output = Result<Option<Box<SR>>, E>> + Send + Sync + 'static,
+>;
 
-pub type UdpClientResult<Octs, E> =
-    FactoryResult<dyn SendRequest<RequestMessage<Octs>> + Send + Sync + 'static, E>;
+pub type UdpClientResult<Octs, E> = FactoryResult<
+    dyn SendRequest<RequestMessage<Octs>> + Send + Sync + 'static,
+    E,
+>;
 
-pub type TcpClientResult<Octs, E> =
-    FactoryResult<dyn SendRequestMulti<RequestMessageMulti<Octs>> + Send + Sync + 'static, E>;
+pub type TcpClientResult<Octs, E> = FactoryResult<
+    dyn SendRequestMulti<RequestMessageMulti<Octs>> + Send + Sync + 'static,
+    E,
+>;
 
 pub trait ConnectionFactory {
     type Error: Display;
@@ -220,7 +229,8 @@ impl<KS, CF> ZoneMaintainer<KS, CF>
 where
     KS: Deref + Send + Sync + 'static,
     KS::Target: KeyStore,
-    <KS::Target as KeyStore>::Key: Clone + Debug + Display + Sync + Send + 'static,
+    <KS::Target as KeyStore>::Key:
+        Clone + Debug + Display + Sync + Send + 'static,
     CF: ConnectionFactory + Send + Sync + 'static,
 {
     pub async fn run(&self) {
@@ -250,11 +260,18 @@ where
                 //    reboots is optional, but it is reasonable to simply
                 //    execute an SOA NOTIFY transaction on each authority zone
                 //    when a server first starts."
-                Self::send_notify(zone, &zone_config.send_notify_to, self.config.clone()).await;
+                Self::send_notify(
+                    zone,
+                    &zone_config.send_notify_to,
+                    self.config.clone(),
+                )
+                .await;
             }
 
             if zone_config.is_secondary() {
-                match Self::track_zone_freshness(zone, time_tracking.clone()).await {
+                match Self::track_zone_freshness(zone, time_tracking.clone())
+                    .await
+                {
                     Ok(soa_refresh) => {
                         // https://datatracker.ietf.org/doc/html/rfc1034#section-4.3.5
                         // 4.3.5. Zone maintenance and transfers
@@ -472,7 +489,10 @@ where
         self.running.store(false, Ordering::SeqCst);
     }
 
-    pub async fn insert_zone(&self, zone: TypedZone) -> Result<(), ZoneTreeModificationError> {
+    pub async fn insert_zone(
+        &self,
+        zone: TypedZone,
+    ) -> Result<(), ZoneTreeModificationError> {
         self.insert_zones([zone]).await
     }
 
@@ -521,7 +541,10 @@ where
         Ok(())
     }
 
-    async fn insert_active_zone(&self, zone: Zone) -> Result<(), ZoneTreeModificationError> {
+    async fn insert_active_zone(
+        &self,
+        zone: Zone,
+    ) -> Result<(), ZoneTreeModificationError> {
         Self::update_known_nameservers_for_zone(&zone).await;
 
         let mut new_zones = self.zones().deref().clone();
@@ -573,7 +596,11 @@ where
     }
 
     #[allow(dead_code)]
-    pub async fn force_zone_refresh(&self, apex_name: &StoredName, class: Class) {
+    pub async fn force_zone_refresh(
+        &self,
+        apex_name: &StoredName,
+        class: Class,
+    ) {
         self.event_tx
             .send(Event::ZoneRefreshRequested {
                 cause: ZoneRefreshCause::ManualTrigger,
@@ -615,7 +642,8 @@ impl<KS, CF> ZoneMaintainer<KS, CF>
 where
     KS: Deref + 'static,
     KS::Target: KeyStore,
-    <KS::Target as KeyStore>::Key: Clone + Debug + Display + Sync + Send + 'static,
+    <KS::Target as KeyStore>::Key:
+        Clone + Debug + Display + Sync + Send + 'static,
     CF: ConnectionFactory + 'static,
 {
     async fn send_notify(
@@ -693,10 +721,12 @@ where
             tokio::spawn(async move {
                 // TODO: Use the connection factory here.
                 let udp_connect = UdpConnect::new(nameserver_addr);
-                let client = Connection::with_config(udp_connect, dgram_config.clone());
+                let client =
+                    Connection::with_config(udp_connect, dgram_config.clone());
 
                 trace!("Sending NOTIFY to nameserver {nameserver_addr}");
-                let span = tracing::trace_span!("auth", addr = %nameserver_addr);
+                let span =
+                    tracing::trace_span!("auth", addr = %nameserver_addr);
                 let _guard = span.enter();
 
                 // https://datatracker.ietf.org/doc/html/rfc1996
@@ -709,7 +739,8 @@ where
                 // TODO: We have no retry queue at the moment. Do we need one?
 
                 let res = if let Some(key) = tsig_key {
-                    let client = net::client::tsig::Connection::new(key.clone(), client);
+                    let client =
+                        net::client::tsig::Connection::new(key.clone(), client);
                     client.send_request(req.clone()).get_response().await
                 } else {
                     client.send_request(req.clone()).get_response().await
@@ -740,7 +771,9 @@ where
         match time_tracking.write().await.entry(zone_id) {
             Vacant(e) => {
                 let read = zone.read();
-                if let Ok(Some((soa, _))) = Self::read_soa(&read, apex_name).await {
+                if let Ok(Some((soa, _))) =
+                    Self::read_soa(&read, apex_name).await
+                {
                     e.insert(ZoneRefreshState::new(&soa));
                     Ok(Some(soa.refresh()))
                 } else {
@@ -775,8 +808,11 @@ where
         // TODO: Maybe add some fuzzyness to spread syncing of zones out a
         // bit.
 
-        let new_refresh_instant =
-            ZoneRefreshInstant::new(key.clone(), at.unwrap_or(Ttl::ZERO), cause);
+        let new_refresh_instant = ZoneRefreshInstant::new(
+            key.clone(),
+            at.unwrap_or(Ttl::ZERO),
+            cause,
+        );
 
         let new_timer = ZoneRefreshTimer::new(new_refresh_instant);
 
@@ -821,7 +857,8 @@ where
         let readable_pending_zones = pending_zones.read().await;
         let mut is_pending = false;
         let zone_id = ZoneId::new(msg.apex_name.clone(), msg.class);
-        let zone = if let Some(zone) = zones.get_zone(&msg.apex_name, msg.class) {
+        let zone = if let Some(zone) = zones.get_zone(&msg.apex_name, msg.class)
+        {
             zone
         } else if let Some(zone) = readable_pending_zones.get(&zone_id) {
             is_pending = true;
@@ -840,7 +877,8 @@ where
         // notifications for updates to a zone that we are authoritative for.
         let zone_info = cat_zone.info();
 
-        let (source, allow_notify_from) = match (msg.source, &zone_info.config) {
+        let (source, allow_notify_from) = match (msg.source, &zone_info.config)
+        {
             (None, zone_cfg) => {
                 // One of our zones has been changed locally.
                 trace!("Local change occurred in zone '{}'", msg.apex_name);
@@ -999,7 +1037,9 @@ where
         let zone_id = ZoneId::from(zone);
 
         {
-            if let Some(zone_refresh_info) = time_tracking.write().await.get_mut(&zone_id) {
+            if let Some(zone_refresh_info) =
+                time_tracking.write().await.get_mut(&zone_id)
+            {
                 match cause {
                     ZoneRefreshCause::ManualTrigger
                     | ZoneRefreshCause::NotifyFromPrimary(_)
@@ -1008,15 +1048,21 @@ where
                     | ZoneRefreshCause::SoaRefreshTimerAfterZoneAdded => {
                         zone_refresh_info
                             .metrics_mut()
-                            .last_refresh_phase_started_at = Some(Instant::now());
-                        zone_refresh_info.metrics_mut().last_refresh_attempted_at =
+                            .last_refresh_phase_started_at =
                             Some(Instant::now());
-                        zone_refresh_info.set_status(ZoneRefreshStatus::RefreshInProgress(0));
+                        zone_refresh_info
+                            .metrics_mut()
+                            .last_refresh_attempted_at = Some(Instant::now());
+                        zone_refresh_info.set_status(
+                            ZoneRefreshStatus::RefreshInProgress(0),
+                        );
                     }
                     ZoneRefreshCause::SoaRetryTimer => {
-                        zone_refresh_info.metrics_mut().last_refresh_attempted_at =
-                            Some(Instant::now());
-                        zone_refresh_info.set_status(ZoneRefreshStatus::RetryInProgress);
+                        zone_refresh_info
+                            .metrics_mut()
+                            .last_refresh_attempted_at = Some(Instant::now());
+                        zone_refresh_info
+                            .set_status(ZoneRefreshStatus::RetryInProgress);
                     }
                 }
             }
@@ -1024,7 +1070,13 @@ where
 
         info!("Refreshing zone '{}' due to {cause}", zone.apex_name());
 
-        let res = Self::refresh_zone(zone, initial_xfr_addr, time_tracking.clone(), config).await;
+        let res = Self::refresh_zone(
+            zone,
+            initial_xfr_addr,
+            time_tracking.clone(),
+            config,
+        )
+        .await;
 
         let mut tt = time_tracking.write().await;
         let Some(zone_refresh_info) = tt.get_mut(&zone_id) else {
@@ -1047,7 +1099,9 @@ where
                 //    check for the EXPIRE interval, it must assume that its
                 //    copy of the zone is obsolete an discard it."
 
-                if zone_refresh_info.status() == ZoneRefreshStatus::RetryInProgress {
+                if zone_refresh_info.status()
+                    == ZoneRefreshStatus::RetryInProgress
+                {
                     let time_of_last_soa_check = zone_refresh_info
                         .metrics()
                         .last_soa_serial_check_succeeded_at
@@ -1056,7 +1110,10 @@ where
                     if zone_refresh_info.is_expired(time_of_last_soa_check) {
                         let cat_zone: &MaintainedZone = zone.into();
 
-                        trace!("Marking zone '{}' as expired", zone.apex_name());
+                        trace!(
+                            "Marking zone '{}' as expired",
+                            zone.apex_name()
+                        );
                         cat_zone.mark_expired();
 
                         // TODO: Should we keep trying to refresh an
@@ -1081,7 +1138,8 @@ where
                         return Err(());
                     }
                 } else {
-                    zone_refresh_info.set_status(ZoneRefreshStatus::RetryPending);
+                    zone_refresh_info
+                        .set_status(ZoneRefreshStatus::RetryPending);
                 }
 
                 // Schedule a zone refresh according to the SOA RETRY timer value.
@@ -1131,7 +1189,9 @@ where
         let zone_id = ZoneId::from(zone);
         // Was this zone already refreshed recently?
         {
-            if let Some(zone_refresh_info) = time_tracking.read().await.get(&zone_id) {
+            if let Some(zone_refresh_info) =
+                time_tracking.read().await.get(&zone_id)
+            {
                 if let Some(age) = zone_refresh_info.age() {
                     if age < MIN_DURATION_BETWEEN_ZONE_REFRESHES {
                         // Don't refresh, we refreshed very recently
@@ -1180,7 +1240,8 @@ where
         let current_serial = soa.map(|(soa, _)| soa.serial());
 
         // Determine the primary server addresses to visit and in which order.
-        let primary_addrs = initial_xfr_addr.iter().chain(request_xfr_from.addrs());
+        let primary_addrs =
+            initial_xfr_addr.iter().chain(request_xfr_from.addrs());
 
         let mut num_ok_primaries = 0;
         let mut saved_err = None;
@@ -1308,7 +1369,8 @@ where
                     zone_refresh_info.soa_serial_check_succeeded(None);
                     return Ok(None);
                 } else {
-                    zone_refresh_info.soa_serial_check_succeeded(Some(primary_soa_serial));
+                    zone_refresh_info
+                        .soa_serial_check_succeeded(Some(primary_soa_serial));
                 }
             }
         }
@@ -1428,7 +1490,9 @@ where
 
     #[allow(clippy::too_many_arguments)]
     async fn do_xfr(
-        udp_client: Option<Box<dyn SendRequest<RequestMessage<Vec<u8>>> + Send + Sync>>,
+        udp_client: Option<
+            Box<dyn SendRequest<RequestMessage<Vec<u8>>> + Send + Sync>,
+        >,
         transport: TransportStrategy,
         zone: &Zone,
         primary_addr: SocketAddr,
@@ -1451,7 +1515,9 @@ where
         let msg = if xfr_type == Rtype::IXFR {
             let mut msg = msg.authority();
             let read = zone.read();
-            let Ok(Some((soa, ttl))) = Self::read_soa(&read, zone.apex_name().clone()).await else {
+            let Ok(Some((soa, ttl))) =
+                Self::read_soa(&read, zone.apex_name().clone()).await
+            else {
                 trace!(
                     "Internal error - missing SOA for zone '{}'",
                     zone.apex_name()
@@ -1507,15 +1573,19 @@ where
                     .map_err(ZoneMaintainerError::RequestError)?;
 
                 if msg.is_error() {
-                    return Err(ZoneMaintainerError::ResponseError(msg.opt_rcode()));
+                    return Err(ZoneMaintainerError::ResponseError(
+                        msg.opt_rcode(),
+                    ));
                 }
 
                 let it = xfr_interpreter
                     .interpret_response(msg)
                     .map_err(ZoneMaintainerError::ProcessingError)?;
 
-                let mut progress_reporter =
-                    XfrProgressReporter::new(zone.apex_name().to_owned(), Duration::from_secs(5));
+                let mut progress_reporter = XfrProgressReporter::new(
+                    zone.apex_name().to_owned(),
+                    Duration::from_secs(5),
+                );
                 let mut num_updates_applied = 0;
 
                 trace!("Processing XFR events");
@@ -1537,15 +1607,17 @@ where
                         if let Some(zone_refresh_info) =
                             time_tracking.write().await.get_mut(&zone_id)
                         {
-                            zone_refresh_info.set_status(ZoneRefreshStatus::RefreshInProgress(
-                                num_updates_applied,
-                            ));
+                            zone_refresh_info.set_status(
+                                ZoneRefreshStatus::RefreshInProgress(
+                                    num_updates_applied,
+                                ),
+                            );
                         }
                     }
 
                     if log_enabled!(log::Level::Info) {
-                        if let Some(report) =
-                            progress_reporter.create_report(1, num_updates_applied)
+                        if let Some(report) = progress_reporter
+                            .create_report(1, num_updates_applied)
                         {
                             info!("{}", report);
                         }
@@ -1553,12 +1625,16 @@ where
                 }
 
                 if !xfr_interpreter.is_finished() {
-                    trace!("Processing XFR events complete: incomplete response");
+                    trace!(
+                        "Processing XFR events complete: incomplete response"
+                    );
                     return Err(ZoneMaintainerError::IncompleteResponse);
                 }
 
                 if log_enabled!(log::Level::Info) {
-                    if let Some(report) = progress_reporter.create_report(1, num_updates_applied) {
+                    if let Some(report) =
+                        progress_reporter.create_report(1, num_updates_applied)
+                    {
                         info!("{}", report);
                     }
                 }
@@ -1590,8 +1666,10 @@ where
                 let req = RequestMessageMulti::new(msg).unwrap();
                 let mut send_request = tcp_client.send_request(req);
 
-                let mut progress_reporter =
-                    XfrProgressReporter::new(zone.apex_name().to_owned(), Duration::from_secs(5));
+                let mut progress_reporter = XfrProgressReporter::new(
+                    zone.apex_name().to_owned(),
+                    Duration::from_secs(5),
+                );
                 let mut num_responses_received = 0;
                 let mut num_updates_applied = 0;
 
@@ -1608,7 +1686,9 @@ where
                     };
 
                     if msg.is_error() {
-                        return Err(ZoneMaintainerError::ResponseError(msg.opt_rcode()));
+                        return Err(ZoneMaintainerError::ResponseError(
+                            msg.opt_rcode(),
+                        ));
                     }
 
                     num_responses_received += 1;
@@ -1633,15 +1713,20 @@ where
                             if let Some(zone_refresh_info) =
                                 time_tracking.write().await.get_mut(&zone_id)
                             {
-                                zone_refresh_info.set_status(ZoneRefreshStatus::RefreshInProgress(
-                                    num_updates_applied,
-                                ));
+                                zone_refresh_info.set_status(
+                                    ZoneRefreshStatus::RefreshInProgress(
+                                        num_updates_applied,
+                                    ),
+                                );
                             }
                         }
 
                         if log_enabled!(log::Level::Info) {
                             if let Some(report) = progress_reporter
-                                .create_report(num_responses_received, num_updates_applied)
+                                .create_report(
+                                    num_responses_received,
+                                    num_updates_applied,
+                                )
                             {
                                 info!("{}", report);
                             }
@@ -1652,9 +1737,10 @@ where
                 }
 
                 if log_enabled!(log::Level::Info) {
-                    if let Some(report) =
-                        progress_reporter.create_report(num_responses_received, num_updates_applied)
-                    {
+                    if let Some(report) = progress_reporter.create_report(
+                        num_responses_received,
+                        num_updates_applied,
+                    ) {
                         info!("{}", report);
                     }
                 }
@@ -1663,11 +1749,14 @@ where
             }
         }
 
-        let soa_and_ttl = Self::read_soa(&zone.read(), zone.apex_name().clone())
-            .await
-            .map_err(|_out_of_zone_err| {
-                ZoneMaintainerError::InternalError("Unable to read SOA for zone post XFR in")
-            })?;
+        let soa_and_ttl =
+            Self::read_soa(&zone.read(), zone.apex_name().clone())
+                .await
+                .map_err(|_out_of_zone_err| {
+                    ZoneMaintainerError::InternalError(
+                        "Unable to read SOA for zone post XFR in",
+                    )
+                })?;
 
         let Some((soa, _ttl)) = soa_and_ttl else {
             return Err(ZoneMaintainerError::InternalError(
@@ -1759,9 +1848,10 @@ where
 
         let mut primary_addresses: Vec<IpAddr> = vec![];
 
-        if let Some(res) = Self::read_rrset(&read, soa.mname().clone(), Rtype::A)
-            .await
-            .map_err(|_| ())?
+        if let Some(res) =
+            Self::read_rrset(&read, soa.mname().clone(), Rtype::A)
+                .await
+                .map_err(|_| ())?
         {
             for rrset in res.data().iter() {
                 if let ZoneRecordData::A(a) = rrset {
@@ -1770,9 +1860,10 @@ where
             }
         }
 
-        if let Some(res) = Self::read_rrset(&read, soa.mname().clone(), Rtype::AAAA)
-            .await
-            .map_err(|_| ())?
+        if let Some(res) =
+            Self::read_rrset(&read, soa.mname().clone(), Rtype::AAAA)
+                .await
+                .map_err(|_| ())?
         {
             for rrset in res.data().iter() {
                 if let ZoneRecordData::Aaaa(aaaa) = rrset {
@@ -1781,21 +1872,24 @@ where
             }
         }
 
-        let mut nameservers = ZoneNameServers::new(soa.mname().clone(), &primary_addresses);
+        let mut nameservers =
+            ZoneNameServers::new(soa.mname().clone(), &primary_addresses);
 
         // Does the zone apex have NS records and are their
         // addresses defined in the zone?
-        if let Some(res) = Self::read_rrset(&read, zone.apex_name().clone(), Rtype::NS)
-            .await
-            .map_err(|_| ())?
+        if let Some(res) =
+            Self::read_rrset(&read, zone.apex_name().clone(), Rtype::NS)
+                .await
+                .map_err(|_| ())?
         {
             let mut data_iter = res.data().iter();
             while let Some(ZoneRecordData::Ns(ns)) = data_iter.next() {
                 let mut other_addresses = vec![];
 
-                if let Some(res) = Self::read_rrset(&read, ns.nsdname().clone(), Rtype::A)
-                    .await
-                    .map_err(|_| ())?
+                if let Some(res) =
+                    Self::read_rrset(&read, ns.nsdname().clone(), Rtype::A)
+                        .await
+                        .map_err(|_| ())?
                 {
                     for rrset in res.data().iter() {
                         if let ZoneRecordData::A(a) = rrset {
@@ -1804,9 +1898,10 @@ where
                     }
                 }
 
-                if let Some(res) = Self::read_rrset(&read, ns.nsdname().clone(), Rtype::AAAA)
-                    .await
-                    .map_err(|_| ())?
+                if let Some(res) =
+                    Self::read_rrset(&read, ns.nsdname().clone(), Rtype::AAAA)
+                        .await
+                        .map_err(|_| ())?
                 {
                     for rrset in res.data().iter() {
                         if let ZoneRecordData::Aaaa(aaaa) = rrset {
@@ -1822,7 +1917,11 @@ where
         Ok(nameservers)
     }
 
-    async fn is_known_primary(acl: &NotifySrcDstConfig, source: &IpAddr, zone: &Zone) -> bool {
+    async fn is_known_primary(
+        acl: &NotifySrcDstConfig,
+        source: &IpAddr,
+        zone: &Zone,
+    ) -> bool {
         let source_addr = SocketAddr::new(*source, IANA_DNS_PORT_NUMBER);
         if acl.has_dst(&source_addr) {
             trace!("Source IP {source} is on the ACL for the zone.");
@@ -1934,8 +2033,10 @@ impl XfrProgressReporter {
                 .unwrap_or(self.start_time - self.report_every),
         ) >= self.report_every
         {
-            let seconds_so_far = now.duration_since(self.start_time).as_secs() as f64;
-            let records_per_second = ((num_updates_applied as f64) / seconds_so_far).floor() as i64;
+            let seconds_so_far =
+                now.duration_since(self.start_time).as_secs() as f64;
+            let records_per_second =
+                ((num_updates_applied as f64) / seconds_so_far).floor() as i64;
 
             let report = format!("XFR progress report for zone '{}': Received {} records in {} responses in {} seconds ({} records/second)",
                 self.zone_apex,
@@ -1967,7 +2068,8 @@ where
         class: Class,
         apex_name: &StoredName,
         source: IpAddr,
-    ) -> Pin<Box<dyn Future<Output = Result<(), NotifyError>> + Sync + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = Result<(), NotifyError>> + Sync + Send + '_>>
+    {
         let apex_name = apex_name.clone();
         Box::pin(async move {
             if !self.running.load(Ordering::SeqCst) {
@@ -2022,13 +2124,12 @@ where
                 source: Some(source),
             };
 
-            self.event_tx
-                .send(Event::ZoneChanged(msg))
-                .await
-                .map_err(|err| {
+            self.event_tx.send(Event::ZoneChanged(msg)).await.map_err(
+                |err| {
                     error!("Internal error: {err}");
                     NotifyError::Other
-                })?;
+                },
+            )?;
 
             Ok(())
         })
@@ -2067,7 +2168,11 @@ where
     /// temporarily not in the correct state (SERVFAIL) vs a zone for which
     /// the ZoneMaintainer is authoritative and which is in the correct state
     /// (Ok).
-    fn get_zone(&self, apex_name: &impl ToName, class: Class) -> Result<Option<Zone>, ZoneError> {
+    fn get_zone(
+        &self,
+        apex_name: &impl ToName,
+        class: Class,
+    ) -> Result<Option<Zone>, ZoneError> {
         let zones = self.zones();
 
         if let Some(zone) = zones.get_zone(apex_name, class) {
@@ -2087,7 +2192,11 @@ where
     /// CLASS, if any.
     ///
     /// Returns the same result as [get_zone()].
-    fn find_zone(&self, qname: &impl ToName, class: Class) -> Result<Option<Zone>, ZoneError> {
+    fn find_zone(
+        &self,
+        qname: &impl ToName,
+        class: Class,
+    ) -> Result<Option<Zone>, ZoneError> {
         let zones = self.zones();
 
         if let Some(zone) = zones.find_zone(qname, class) {
@@ -2108,7 +2217,8 @@ impl<KS, CF> ZoneMaintainer<KS, CF>
 where
     KS: Deref + 'static + Sync + Send,
     KS::Target: KeyStore,
-    <KS::Target as KeyStore>::Key: Clone + Debug + Display + Sync + Send + 'static,
+    <KS::Target as KeyStore>::Key:
+        Clone + Debug + Display + Sync + Send + 'static,
     CF: ConnectionFactory + Sync + Send + 'static,
 {
     fn check_xfr_access<'a>(
@@ -2124,7 +2234,8 @@ where
             );
             return Err(XfrDataProviderError::Refused);
         };
-        let Some(xfr_config) = zone_info.config().provide_xfr_to.src(client_ip) else {
+        let Some(xfr_config) = zone_info.config().provide_xfr_to.src(client_ip)
+        else {
             warn!(
                 "{qtype} for zone '{}' from {client_ip} refused: client is not permitted to transfer this zone", zone.apex_name(),
             );
@@ -2133,7 +2244,8 @@ where
 
         if matches!(
             (qtype, xfr_config.strategy),
-            (Rtype::AXFR, XfrStrategy::IxfrOnly) | (Rtype::IXFR, XfrStrategy::AxfrOnly)
+            (Rtype::AXFR, XfrStrategy::IxfrOnly)
+                | (Rtype::IXFR, XfrStrategy::AxfrOnly)
         ) {
             warn!(
                 "{qtype} for zone '{}' from {client_ip} refused: zone does not allow {qtype}",
@@ -2158,10 +2270,14 @@ where
 
         if let Some(diff_from) = diff_from {
             let read = zone.read();
-            if let Ok(Some((soa, _ttl))) =
-                ZoneMaintainer::<KS, CF>::read_soa(&read, zone.apex_name().to_owned()).await
+            if let Ok(Some((soa, _ttl))) = ZoneMaintainer::<KS, CF>::read_soa(
+                &read,
+                zone.apex_name().to_owned(),
+            )
+            .await
             {
-                diffs = zone_info.diffs_for_range(diff_from, soa.serial()).await;
+                diffs =
+                    zone_info.diffs_for_range(diff_from, soa.serial()).await;
             }
         }
 
@@ -2175,7 +2291,8 @@ impl<KS, CF> XfrDataProvider<()> for ZoneMaintainer<KS, CF>
 where
     KS: Deref + 'static + Sync + Send,
     KS::Target: KeyStore,
-    <KS::Target as KeyStore>::Key: Clone + Debug + Display + Sync + Send + 'static,
+    <KS::Target as KeyStore>::Key:
+        Clone + Debug + Display + Sync + Send + 'static,
     CF: ConnectionFactory + Sync + Send + 'static,
 {
     type Diff = Arc<InMemoryZoneDiff>;
@@ -2186,8 +2303,9 @@ where
         diff_from: Option<Serial>,
     ) -> Pin<
         Box<
-            dyn Future<Output = Result<XfrData<Self::Diff>, XfrDataProviderError>>
-                + Sync
+            dyn Future<
+                    Output = Result<XfrData<Self::Diff>, XfrDataProviderError>,
+                > + Sync
                 + Send
                 + '_,
         >,
@@ -2214,12 +2332,15 @@ where
 
                     let zone_info = cat_zone.info();
 
-                    let xfr_config = ZoneMaintainer::<KS, CF>::check_xfr_access(
-                        zone_info, &zone, client_ip, qtype,
-                    )?;
+                    let xfr_config =
+                        ZoneMaintainer::<KS, CF>::check_xfr_access(
+                            zone_info, &zone, client_ip, qtype,
+                        )?;
 
-                    let diffs =
-                        ZoneMaintainer::<KS, CF>::diffs_for_zone(diff_from, &zone, zone_info).await;
+                    let diffs = ZoneMaintainer::<KS, CF>::diffs_for_zone(
+                        diff_from, &zone, zone_info,
+                    )
+                    .await;
 
                     let backward_compatible = matches!(
                         xfr_config.compatibility_mode,
@@ -2247,7 +2368,8 @@ impl<KS, CF> XfrDataProvider<Option<Key>> for ZoneMaintainer<KS, CF>
 where
     KS: Deref + 'static + Sync + Send,
     KS::Target: KeyStore,
-    <KS::Target as KeyStore>::Key: Clone + Debug + Display + Sync + Send + 'static,
+    <KS::Target as KeyStore>::Key:
+        Clone + Debug + Display + Sync + Send + 'static,
     CF: ConnectionFactory + Sync + Send + 'static,
 {
     type Diff = Arc<InMemoryZoneDiff>;
@@ -2258,8 +2380,9 @@ where
         diff_from: Option<Serial>,
     ) -> Pin<
         Box<
-            dyn Future<Output = Result<XfrData<Self::Diff>, XfrDataProviderError>>
-                + Sync
+            dyn Future<
+                    Output = Result<XfrData<Self::Diff>, XfrDataProviderError>,
+                > + Sync
                 + Send
                 + '_,
         >,
@@ -2287,9 +2410,10 @@ where
 
                     let zone_info = cat_zone.info();
 
-                    let xfr_config = ZoneMaintainer::<KS, CF>::check_xfr_access(
-                        zone_info, &zone, client_ip, qtype,
-                    )?;
+                    let xfr_config =
+                        ZoneMaintainer::<KS, CF>::check_xfr_access(
+                            zone_info, &zone, client_ip, qtype,
+                        )?;
 
                     let expected_tsig_key_name =
                         xfr_config.tsig_key.as_ref().map(|(name, _alg)| name);
@@ -2323,8 +2447,10 @@ where
                         return Err(XfrDataProviderError::Refused);
                     }
 
-                    let diffs =
-                        ZoneMaintainer::<KS, CF>::diffs_for_zone(diff_from, &zone, zone_info).await;
+                    let diffs = ZoneMaintainer::<KS, CF>::diffs_for_zone(
+                        diff_from, &zone, zone_info,
+                    )
+                    .await;
 
                     let backward_compatible = matches!(
                         xfr_config.compatibility_mode,
@@ -2386,7 +2512,8 @@ impl ZoneStore for TypedZone {
 
     fn write(
         self: Arc<Self>,
-    ) -> Pin<Box<dyn Future<Output = Box<dyn WritableZone>> + Send + Sync>> {
+    ) -> Pin<Box<dyn Future<Output = Box<dyn WritableZone>> + Send + Sync>>
+    {
         self.store.clone().write()
     }
 
@@ -2405,7 +2532,11 @@ pub struct MaintainedZone {
 }
 
 impl MaintainedZone {
-    fn new(notify_tx: Sender<Event>, store: Arc<dyn ZoneStore>, info: ZoneInfo) -> Self {
+    fn new(
+        notify_tx: Sender<Event>,
+        store: Arc<dyn ZoneStore>,
+        info: ZoneInfo,
+    ) -> Self {
         Self {
             notify_tx,
             store,
@@ -2447,7 +2578,8 @@ impl ZoneStore for MaintainedZone {
     /// Gets a write interface to this zone.
     fn write(
         self: Arc<Self>,
-    ) -> Pin<Box<dyn Future<Output = Box<dyn WritableZone>> + Send + Sync>> {
+    ) -> Pin<Box<dyn Future<Output = Box<dyn WritableZone>> + Send + Sync>>
+    {
         let fut = self.store.clone().write();
         let notify_tx = self.notify_tx.clone();
         Box::pin(async move {
@@ -2484,16 +2616,26 @@ impl WritableZone for WritableMaintainedZone {
     fn open(
         &self,
         _create_diff: bool,
-    ) -> Pin<Box<dyn Future<Output = Result<Box<dyn WritableZoneNode>, io::Error>> + Send + Sync>>
-    {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<Box<dyn WritableZoneNode>, io::Error>>
+                + Send
+                + Sync,
+        >,
+    > {
         self.writable_zone.open(true)
     }
 
     fn commit(
         &mut self,
         bump_soa_serial: bool,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<InMemoryZoneDiff>, io::Error>> + Send + Sync>>
-    {
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<Option<InMemoryZoneDiff>, io::Error>>
+                + Send
+                + Sync,
+        >,
+    > {
         let fut = self.writable_zone.commit(bump_soa_serial);
         let notify_tx = self.notify_tx.clone();
         let cat_zone = self.catalog_zone.clone();
@@ -2549,7 +2691,9 @@ pub enum ZoneMaintainerError {
 impl Display for ZoneMaintainerError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            ZoneMaintainerError::NotRunning => f.write_str("ZoneMaintainer not running"),
+            ZoneMaintainerError::NotRunning => {
+                f.write_str("ZoneMaintainer not running")
+            }
             ZoneMaintainerError::InternalError(err) => {
                 f.write_fmt(format_args!("Internal error: {err}"))
             }
@@ -2557,18 +2701,24 @@ impl Display for ZoneMaintainerError {
             ZoneMaintainerError::RequestError(err) => {
                 f.write_fmt(format_args!("Error while sending request: {err}"))
             }
-            ZoneMaintainerError::ResponseError(err) => {
-                f.write_fmt(format_args!("Error while receiving response: {err}"))
+            ZoneMaintainerError::ResponseError(err) => f.write_fmt(
+                format_args!("Error while receiving response: {err}"),
+            ),
+            ZoneMaintainerError::IoError(err) => {
+                f.write_fmt(format_args!("I/O error: {err}"))
             }
-            ZoneMaintainerError::IoError(err) => f.write_fmt(format_args!("I/O error: {err}")),
             ZoneMaintainerError::ConnectionError(err) => {
                 f.write_fmt(format_args!("Unable to connect: {err}"))
             }
-            ZoneMaintainerError::NoConnectionAvailable => f.write_str("No connection available"),
+            ZoneMaintainerError::NoConnectionAvailable => {
+                f.write_str("No connection available")
+            }
             ZoneMaintainerError::IxfrResponseTooLargeForUdp => {
                 f.write_str("IXFR response too large for UDP")
             }
-            ZoneMaintainerError::IncompleteResponse => f.write_str("Incomplete response"),
+            ZoneMaintainerError::IncompleteResponse => {
+                f.write_str("Incomplete response")
+            }
             ZoneMaintainerError::ProcessingError(err) => {
                 f.write_fmt(format_args!("Processing error: {err}"))
             }
@@ -2617,7 +2767,14 @@ impl ConnectionFactory for DefaultConnFactory {
         Box<
             dyn Future<
                     Output = Result<
-                        Option<Box<dyn SendRequest<RequestMessage<Octs>> + Send + Sync + 'static>>,
+                        Option<
+                            Box<
+                                dyn SendRequest<RequestMessage<Octs>>
+                                    + Send
+                                    + Sync
+                                    + 'static,
+                            >,
+                        >,
                         Self::Error,
                     >,
                 > + Send
@@ -2636,13 +2793,18 @@ impl ConnectionFactory for DefaultConnFactory {
             dgram_config.set_max_retries(1);
             dgram_config.set_udp_payload_size(Some(1400));
 
-            let client = dgram::Connection::with_config(UdpConnect::new(dest), dgram_config);
+            let client = dgram::Connection::with_config(
+                UdpConnect::new(dest),
+                dgram_config,
+            );
 
             if let Some(key) = key {
-                Ok(Some(
-                    Box::new(net::client::tsig::Connection::new(key, client))
-                        as Box<dyn SendRequest<RequestMessage<Octs>> + Send + Sync>,
+                Ok(Some(Box::new(net::client::tsig::Connection::new(
+                    key, client,
                 ))
+                    as Box<
+                        dyn SendRequest<RequestMessage<Octs>> + Send + Sync,
+                    >))
             } else {
                 Ok(Some(Box::new(client)
                     as Box<
@@ -2688,7 +2850,8 @@ impl ConnectionFactory for DefaultConnFactory {
             // AXFR/IXFR request.
             stream_config.set_idle_timeout(Duration::from_secs(5));
             // Allow much more time for an XFR streaming response.
-            stream_config.set_streaming_response_timeout(Duration::from_secs(30));
+            stream_config
+                .set_streaming_response_timeout(Duration::from_secs(30));
 
             let tcp_stream = TcpStream::connect(dest)
                 .await
@@ -2698,7 +2861,9 @@ impl ConnectionFactory for DefaultConnFactory {
                 let (client, transport) = net::client::stream::Connection::<
                     tsig::RequestMessage<RequestMessage<Octs>, K>,
                     tsig::RequestMessage<RequestMessageMulti<Octs>, K>,
-                >::with_config(tcp_stream, stream_config);
+                >::with_config(
+                    tcp_stream, stream_config
+                );
 
                 tokio::spawn(async move {
                     transport.run().await;
@@ -2708,13 +2873,17 @@ impl ConnectionFactory for DefaultConnFactory {
                 let conn = net::client::tsig::Connection::new(key, client);
                 Ok(Some(Box::new(conn)
                     as Box<
-                        dyn SendRequestMulti<RequestMessageMulti<Octs>> + Send + Sync,
+                        dyn SendRequestMulti<RequestMessageMulti<Octs>>
+                            + Send
+                            + Sync,
                     >))
             } else {
                 let (client, transport) = net::client::stream::Connection::<
                     RequestMessage<Octs>,
                     RequestMessageMulti<Octs>,
-                >::with_config(tcp_stream, stream_config);
+                >::with_config(
+                    tcp_stream, stream_config
+                );
 
                 tokio::spawn(async move {
                     transport.run().await;
@@ -2723,7 +2892,9 @@ impl ConnectionFactory for DefaultConnFactory {
 
                 Ok(Some(Box::new(client)
                     as Box<
-                        dyn SendRequestMulti<RequestMessageMulti<Octs>> + Send + Sync,
+                        dyn SendRequestMulti<RequestMessageMulti<Octs>>
+                            + Send
+                            + Sync,
                     >))
             }
         };
@@ -2737,9 +2908,17 @@ impl ConnectionFactory for DefaultConnFactory {
 pub trait ZoneLookup {
     fn zones(&self) -> Arc<ZoneTree>;
 
-    fn get_zone(&self, apex_name: &impl ToName, class: Class) -> Result<Option<Zone>, ZoneError>;
+    fn get_zone(
+        &self,
+        apex_name: &impl ToName,
+        class: Class,
+    ) -> Result<Option<Zone>, ZoneError>;
 
-    fn find_zone(&self, qname: &impl ToName, class: Class) -> Result<Option<Zone>, ZoneError>;
+    fn find_zone(
+        &self,
+        qname: &impl ToName,
+        class: Class,
+    ) -> Result<Option<Zone>, ZoneError>;
 }
 
 impl<T: ZoneLookup> ZoneLookup for Arc<T> {
@@ -2747,11 +2926,19 @@ impl<T: ZoneLookup> ZoneLookup for Arc<T> {
         (**self).zones()
     }
 
-    fn get_zone(&self, apex_name: &impl ToName, class: Class) -> Result<Option<Zone>, ZoneError> {
+    fn get_zone(
+        &self,
+        apex_name: &impl ToName,
+        class: Class,
+    ) -> Result<Option<Zone>, ZoneError> {
         (**self).get_zone(apex_name, class)
     }
 
-    fn find_zone(&self, qname: &impl ToName, class: Class) -> Result<Option<Zone>, ZoneError> {
+    fn find_zone(
+        &self,
+        qname: &impl ToName,
+        class: Class,
+    ) -> Result<Option<Zone>, ZoneError> {
         (**self).find_zone(qname, class)
     }
 }

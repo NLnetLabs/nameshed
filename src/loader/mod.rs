@@ -47,12 +47,16 @@ pub async fn refresh(
         zone::loader::Source::Zonefile { path } => {
             let zone = zone.clone();
             let path = path.clone();
-            tokio::task::spawn_blocking(move || zonefile::refresh(&zone, &path, latest))
-                .await
-                .unwrap()
+            tokio::task::spawn_blocking(move || {
+                zonefile::refresh(&zone, &path, latest)
+            })
+            .await
+            .unwrap()
         }
 
-        zone::loader::Source::Server { addr } => server::refresh(zone, addr, latest).await,
+        zone::loader::Source::Server { addr } => {
+            server::refresh(zone, addr, latest).await
+        }
     }
 }
 
@@ -81,7 +85,9 @@ pub async fn reload(
                 .unwrap()
         }
 
-        zone::loader::Source::Server { addr } => server::reload(zone, addr).await,
+        zone::loader::Source::Server { addr } => {
+            server::reload(zone, addr).await
+        }
     }
 }
 
@@ -237,9 +243,13 @@ impl fmt::Display for ReloadError {
             } => {
                 write!(f, "the source of the zone is reporting an outdated SOA ({remote_serial}, while the latest local copy is {local_serial})")
             }
-            ReloadError::Inconsistent => write!(f, "the local and remote copies are inconsistent"),
+            ReloadError::Inconsistent => {
+                write!(f, "the local and remote copies are inconsistent")
+            }
             ReloadError::Axfr(error) => write!(f, "the AXFR failed: {error}"),
-            ReloadError::Zonefile(error) => write!(f, "the zonefile could not be loaded: {error}"),
+            ReloadError::Zonefile(error) => {
+                write!(f, "the zonefile could not be loaded: {error}")
+            }
         }
     }
 }

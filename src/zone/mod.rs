@@ -71,8 +71,8 @@ impl Zone {
         let mut apex_name = vec![0u8; name.built_bytes_size()];
         name.build_bytes(&mut apex_name).unwrap();
         let apex_name = bytes::Bytes::from(apex_name);
-        let apex_name =
-            domain::base::Name::from_octets(apex_name).expect("'Name' produces valid domain names");
+        let apex_name = domain::base::Name::from_octets(apex_name)
+            .expect("'Name' produces valid domain names");
 
         Self {
             name,

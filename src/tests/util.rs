@@ -13,9 +13,11 @@ pub(crate) mod internal {
     /// Accepts a log level name as a string, e.g. "trace".
     #[allow(dead_code)]
     pub(crate) fn enable_logging(log_level: &str) {
-        let _ = env_logger::Builder::from_env(Env::default().default_filter_or(log_level))
-            .is_test(true)
-            .try_init();
+        let _ = env_logger::Builder::from_env(
+            Env::default().default_filter_or(log_level),
+        )
+        .is_test(true)
+        .try_init();
     }
 
     pub(crate) fn get_testable_metrics_snapshot(
@@ -27,11 +29,16 @@ pub(crate) mod internal {
     }
 }
 
-pub fn assert_json_eq(actual_json: serde_json::Value, expected_json: serde_json::Value) {
+pub fn assert_json_eq(
+    actual_json: serde_json::Value,
+    expected_json: serde_json::Value,
+) {
     use assert_json_diff::{assert_json_matches_no_panic, CompareMode};
 
     let config = assert_json_diff::Config::new(CompareMode::Strict);
-    if let Err(err) = assert_json_matches_no_panic(&actual_json, &expected_json, config) {
+    if let Err(err) =
+        assert_json_matches_no_panic(&actual_json, &expected_json, config)
+    {
         eprintln!(
             "Actual JSON: {}",
             serde_json::to_string_pretty(&actual_json).unwrap()
@@ -50,7 +57,9 @@ pub mod net {
 
     use tokio::net::TcpStream;
 
-    use crate::common::net::{TcpListener, TcpListenerFactory, TcpStreamWrapper};
+    use crate::common::net::{
+        TcpListener, TcpListenerFactory, TcpStreamWrapper,
+    };
 
     /// A mock TcpListenerFactory that stores a callback supplied by the
     /// unit test thereby allowing the unit test to determine if binding to
@@ -60,7 +69,9 @@ pub mod net {
     where
         T: Fn(String) -> std::io::Result<MockTcpListener<U, Fut>>,
         U: Fn() -> Fut,
-        Fut: Future<Output = std::io::Result<(MockTcpStreamWrapper, SocketAddr)>>,
+        Fut: Future<
+            Output = std::io::Result<(MockTcpStreamWrapper, SocketAddr)>,
+        >,
     {
         pub bind_cb: T,
         pub binds: Arc<std::sync::Mutex<Vec<String>>>,
@@ -70,7 +81,9 @@ pub mod net {
     where
         T: Fn(String) -> std::io::Result<MockTcpListener<U, Fut>>,
         U: Fn() -> Fut,
-        Fut: Future<Output = std::io::Result<(MockTcpStreamWrapper, SocketAddr)>>,
+        Fut: Future<
+            Output = std::io::Result<(MockTcpStreamWrapper, SocketAddr)>,
+        >,
     {
         pub fn new(bind_cb: T) -> Self {
             Self {
@@ -81,13 +94,20 @@ pub mod net {
     }
 
     #[async_trait::async_trait]
-    impl<T, U, Fut> TcpListenerFactory<MockTcpListener<U, Fut>> for MockTcpListenerFactory<T, U, Fut>
+    impl<T, U, Fut> TcpListenerFactory<MockTcpListener<U, Fut>>
+        for MockTcpListenerFactory<T, U, Fut>
     where
-        T: Fn(String) -> std::io::Result<MockTcpListener<U, Fut>> + std::marker::Sync,
+        T: Fn(String) -> std::io::Result<MockTcpListener<U, Fut>>
+            + std::marker::Sync,
         U: Fn() -> Fut,
-        Fut: Future<Output = std::io::Result<(MockTcpStreamWrapper, SocketAddr)>>,
+        Fut: Future<
+            Output = std::io::Result<(MockTcpStreamWrapper, SocketAddr)>,
+        >,
     {
-        async fn bind(&self, addr: String) -> std::io::Result<MockTcpListener<U, Fut>> {
+        async fn bind(
+            &self,
+            addr: String,
+        ) -> std::io::Result<MockTcpListener<U, Fut>> {
             let listener = (self.bind_cb)(addr.clone())?;
             self.binds.lock().unwrap().push(addr);
             Ok(listener)
@@ -101,12 +121,16 @@ pub mod net {
     pub struct MockTcpListener<T, Fut>(T)
     where
         T: Fn() -> Fut,
-        Fut: Future<Output = std::io::Result<(MockTcpStreamWrapper, SocketAddr)>>;
+        Fut: Future<
+            Output = std::io::Result<(MockTcpStreamWrapper, SocketAddr)>,
+        >;
 
     impl<T, Fut> MockTcpListener<T, Fut>
     where
         T: Fn() -> Fut,
-        Fut: Future<Output = std::io::Result<(MockTcpStreamWrapper, SocketAddr)>>,
+        Fut: Future<
+            Output = std::io::Result<(MockTcpStreamWrapper, SocketAddr)>,
+        >,
     {
         pub fn new(listen_cb: T) -> Self {
             Self(listen_cb)
@@ -117,9 +141,12 @@ pub mod net {
     impl<Fut, T> TcpListener<MockTcpStreamWrapper> for MockTcpListener<T, Fut>
     where
         T: Fn() -> Fut + Sync + Send,
-        Fut: Future<Output = std::io::Result<(MockTcpStreamWrapper, SocketAddr)>> + Send,
+        Fut: Future<Output = std::io::Result<(MockTcpStreamWrapper, SocketAddr)>>
+            + Send,
     {
-        async fn accept(&self) -> std::io::Result<(MockTcpStreamWrapper, SocketAddr)> {
+        async fn accept(
+            &self,
+        ) -> std::io::Result<(MockTcpStreamWrapper, SocketAddr)> {
             self.0().await
         }
     }

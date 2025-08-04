@@ -1,6 +1,8 @@
 //! Loading zones from DNS servers.
 
-use std::{cmp::Ordering, fmt, iter::Peekable, mem, net::SocketAddr, sync::Arc};
+use std::{
+    cmp::Ordering, fmt, iter::Peekable, mem, net::SocketAddr, sync::Arc,
+};
 
 use bytes::Bytes;
 use domain::{
@@ -8,7 +10,10 @@ use domain::{
     net::{
         client::{
             self,
-            request::{RequestMessage, RequestMessageMulti, SendRequest, SendRequestMulti},
+            request::{
+                RequestMessage, RequestMessageMulti, SendRequest,
+                SendRequestMulti,
+            },
         },
         xfr::{
             self,
@@ -20,8 +25,8 @@ use domain::{
             build::MessageBuilder,
             name::NameCompressor,
             wire::{AsBytes, ParseBytesZC, ParseError},
-            CanonicalRecordData, HeaderFlags, Message, MessageItem, QClass, QType, Question,
-            RClass, RType, Record, Serial,
+            CanonicalRecordData, HeaderFlags, Message, MessageItem, QClass,
+            QType, Question, RClass, RType, Record, Serial,
         },
         rdata::RecordData,
     },
@@ -70,9 +75,10 @@ pub async fn refresh(
                 // Coalesce the diffs together.
                 let mut compressed = compressed.into_iter();
                 let initial = compressed.next().unwrap();
-                let compressed = compressed.try_fold(initial, |mut whole, sub| {
-                    whole.merge_from_next(&sub).map(|()| whole)
-                })?;
+                let compressed =
+                    compressed.try_fold(initial, |mut whole, sub| {
+                        whole.merge_from_next(&sub).map(|()| whole)
+                    })?;
 
                 // Forward the local copy through the compressed diffs.
                 let remote = latest.forward(&compressed)?;
@@ -140,13 +146,19 @@ pub async fn refresh(
 /// Reload a zone from a DNS server.
 ///
 /// See [`super::reload()`].
-pub async fn reload(zone: &Arc<Zone>, addr: &DnsServerAddr) -> Result<Option<Serial>, ReloadError> {
+pub async fn reload(
+    zone: &Arc<Zone>,
+    addr: &DnsServerAddr,
+) -> Result<Option<Serial>, ReloadError> {
     // Load the full remote zone with an AXFR.
     let remote = axfr(zone, addr).await?;
     let remote_serial = remote.soa.rdata.serial;
 
     // A compressed copy of the local version of the zone.
-    let mut compressed_local: Option<(contents::Compressed, Arc<contents::Uncompressed>)> = None;
+    let mut compressed_local: Option<(
+        contents::Compressed,
+        Arc<contents::Uncompressed>,
+    )> = None;
 
     // Loop while the zone contents change from under us.
     loop {
@@ -172,10 +184,10 @@ pub async fn reload(zone: &Arc<Zone>, addr: &DnsServerAddr) -> Result<Option<Ser
                 // We need to compress the local copy.  Check if we
                 // have already done so.
 
-                let local = if let Some((local, _)) = compressed_local
-                    .take()
-                    .filter(|(_, uncompressed)| Arc::ptr_eq(&contents.latest, uncompressed))
-                {
+                let local = if let Some((local, _)) =
+                    compressed_local.take().filter(|(_, uncompressed)| {
+                        Arc::ptr_eq(&contents.latest, uncompressed)
+                    }) {
                     // Use the cached result.
                     local
                 } else {
@@ -249,8 +261,8 @@ pub async fn ixfr(
         .unwrap();
     builder.push_authority(local_soa).unwrap();
     let message = Bytes::copy_from_slice(builder.finish().as_bytes());
-    let message =
-        domain::base::Message::from_octets(message).expect("'Message' is at least 12 bytes long");
+    let message = domain::base::Message::from_octets(message)
+        .expect("'Message' is at least 12 bytes long");
 
     // If UDP is supported, try it before TCP.
     if let Some(udp_port) = addr.udp_port {
@@ -410,7 +422,8 @@ pub async fn ixfr(
                         .get_response()
                         .await?
                         .ok_or(IxfrError::IncompleteResponse)?;
-                    updates = interpreter.interpret_response(message)?.peekable();
+                    updates =
+                        interpreter.interpret_response(message)?.peekable();
                 }
             };
 
@@ -447,7 +460,8 @@ pub async fn ixfr(
                         .get_response()
                         .await?
                         .ok_or(IxfrError::IncompleteResponse)?;
-                    updates = interpreter.interpret_response(message)?.peekable();
+                    updates =
+                        interpreter.interpret_response(message)?.peekable();
                 }
             }
 
@@ -469,7 +483,9 @@ pub async fn ixfr(
                 Some(Ordering::Less) => Err(IxfrError::InconsistentUpToDate),
 
                 // The remote copy is outdated.
-                Some(Ordering::Greater) | None => Ok(Ixfr::OutdatedRemote(serial)),
+                Some(Ordering::Greater) | None => {
+                    Ok(Ixfr::OutdatedRemote(serial))
+                }
             }
         }
 
@@ -520,7 +536,9 @@ fn process_ixfr(
             ZoneUpdate::BeginBatchDelete(record) => {
                 // If there was a previous zone version, write it out.
                 assert!(this_soa.is_some() == next_soa.is_some());
-                if let Some((soa, next_soa)) = this_soa.take().zip(next_soa.take()) {
+                if let Some((soa, next_soa)) =
+                    this_soa.take().zip(next_soa.take())
+                {
                     // Sort the contents of the batch addition.
                     only_next.sort_unstable();
 
@@ -624,8 +642,8 @@ pub async fn axfr(
         })
         .unwrap();
     let message = Bytes::copy_from_slice(builder.finish().as_bytes());
-    let message =
-        domain::base::Message::from_octets(message).expect("'Message' is at least 12 bytes long");
+    let message = domain::base::Message::from_octets(message)
+        .expect("'Message' is at least 12 bytes long");
 
     // Prepare a TCP client.
     let tcp_addr: SocketAddr = (addr.ip, addr.tcp_port).into();
@@ -705,7 +723,10 @@ fn process_axfr(
 //----------- query_soa() ------------------------------------------------------
 
 /// Query a DNS server for the SOA record of a zone.
-pub async fn query_soa(zone: &Arc<Zone>, addr: &DnsServerAddr) -> Result<SoaRecord, QuerySoaError> {
+pub async fn query_soa(
+    zone: &Arc<Zone>,
+    addr: &DnsServerAddr,
+) -> Result<SoaRecord, QuerySoaError> {
     // Prepare the SOA query message.
     let mut buffer = [0u8; 512];
     let mut compressor = NameCompressor::default();
@@ -723,8 +744,8 @@ pub async fn query_soa(zone: &Arc<Zone>, addr: &DnsServerAddr) -> Result<SoaReco
         })
         .unwrap();
     let message = Bytes::copy_from_slice(builder.finish().as_bytes());
-    let message =
-        domain::base::Message::from_octets(message).expect("'Message' is at least 12 bytes long");
+    let message = domain::base::Message::from_octets(message)
+        .expect("'Message' is at least 12 bytes long");
 
     let tcp_addr: SocketAddr = (addr.ip, addr.tcp_port).into();
 
@@ -734,7 +755,8 @@ pub async fn query_soa(zone: &Arc<Zone>, addr: &DnsServerAddr) -> Result<SoaReco
         let udp_addr: SocketAddr = (addr.ip, udp_port).into();
         let udp_conn = client::protocol::UdpConnect::new(udp_addr);
         let tcp_conn = client::protocol::TcpConnect::new(tcp_addr);
-        let (client, transport) = client::dgram_stream::Connection::new(udp_conn, tcp_conn);
+        let (client, transport) =
+            client::dgram_stream::Connection::new(udp_conn, tcp_conn);
         tokio::task::spawn(transport.run());
 
         // Send the query.
@@ -942,8 +964,12 @@ impl std::error::Error for AxfrError {
 impl fmt::Display for AxfrError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            AxfrError::Client(error) => write!(f, "could not communicate with the server: {error}"),
-            AxfrError::Connection(error) => write!(f, "could not connect to the server: {error}"),
+            AxfrError::Client(error) => {
+                write!(f, "could not communicate with the server: {error}")
+            }
+            AxfrError::Connection(error) => {
+                write!(f, "could not connect to the server: {error}")
+            }
             AxfrError::Xfr(error) => write!(
                 f,
                 "the server's response was semantically incorrect: {error}"
@@ -1016,7 +1042,9 @@ impl fmt::Display for QuerySoaError {
             QuerySoaError::Connection(error) => {
                 write!(f, "could not connect to the server: {error}")
             }
-            QuerySoaError::Parse(_) => write!(f, "could not parse the server's response"),
+            QuerySoaError::Parse(_) => {
+                write!(f, "could not parse the server's response")
+            }
             QuerySoaError::MismatchedResponse => {
                 write!(f, "the server's response did not match the query")
             }

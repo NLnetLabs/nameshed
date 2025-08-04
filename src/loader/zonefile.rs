@@ -30,8 +30,10 @@ pub fn refresh(
     latest: Option<Arc<Uncompressed>>,
 ) -> Result<Option<Serial>, RefreshError> {
     // Open the zonefile.
-    let file =
-        BufReader::new(File::open(path).map_err(|err| RefreshError::Zonefile(Error::Open(err)))?);
+    let file = BufReader::new(
+        File::open(path)
+            .map_err(|err| RefreshError::Zonefile(Error::Open(err)))?,
+    );
     let mut scanner = ZonefileScanner::new(file, Some(&zone.name));
 
     // Assume the first record is the SOA.
@@ -56,7 +58,9 @@ pub fn refresh(
             })
         }
 
-        Some(Entry::Include { .. }) => return Err(Error::UnsupportedInclude.into()),
+        Some(Entry::Include { .. }) => {
+            return Err(Error::UnsupportedInclude.into())
+        }
         _ => return Err(Error::MissingStartSoa.into()),
     };
 
@@ -84,11 +88,14 @@ pub fn refresh(
     while let Some(entry) = scanner.scan().map_err(Error::Misformatted)? {
         let record = match entry {
             Entry::Record(record) => record,
-            Entry::Include { .. } => return Err(Error::UnsupportedInclude.into()),
+            Entry::Include { .. } => {
+                return Err(Error::UnsupportedInclude.into())
+            }
         };
 
         all.push(RegularRecord(
-            record.transform(|name| name.unsized_copy_into(), |data| data.into()),
+            record
+                .transform(|name| name.unsized_copy_into(), |data| data.into()),
         ));
     }
 
@@ -98,7 +105,10 @@ pub fn refresh(
     let remote = Uncompressed { soa, all };
 
     // A compressed copy of the local version of the zone.
-    let mut compressed_local: Option<(contents::Compressed, Arc<contents::Uncompressed>)> = None;
+    let mut compressed_local: Option<(
+        contents::Compressed,
+        Arc<contents::Uncompressed>,
+    )> = None;
 
     // Loop while the zone contents change from under us.
     loop {
@@ -124,9 +134,10 @@ pub fn refresh(
                 // We need to compress the local copy.  Check if we
                 // have already done so.
 
-                let Some((local, _)) = compressed_local
-                    .take()
-                    .filter(|(_, latest)| Arc::ptr_eq(&contents.latest, latest))
+                let Some((local, _)) =
+                    compressed_local.take().filter(|(_, latest)| {
+                        Arc::ptr_eq(&contents.latest, latest)
+                    })
                 else {
                     let local = contents.latest.clone();
                     std::mem::drop(data);
@@ -156,13 +167,19 @@ pub fn refresh(
 /// Reload a zone from a zonefile.
 ///
 /// See [`super::reload()`].
-pub fn reload(zone: &Arc<Zone>, path: &Utf8Path) -> Result<Option<Serial>, ReloadError> {
+pub fn reload(
+    zone: &Arc<Zone>,
+    path: &Utf8Path,
+) -> Result<Option<Serial>, ReloadError> {
     // Load the complete zone.
     let remote = load(zone, path)?;
     let remote_serial = remote.soa.rdata.serial;
 
     // A compressed copy of the local version of the zone.
-    let mut compressed_local: Option<(contents::Compressed, Arc<contents::Uncompressed>)> = None;
+    let mut compressed_local: Option<(
+        contents::Compressed,
+        Arc<contents::Uncompressed>,
+    )> = None;
 
     // Loop while the zone contents change from under us.
     loop {
@@ -188,9 +205,10 @@ pub fn reload(zone: &Arc<Zone>, path: &Utf8Path) -> Result<Option<Serial>, Reloa
                 // We need to compress the local copy.  Check if we
                 // have already done so.
 
-                let Some((local, _)) = compressed_local
-                    .take()
-                    .filter(|(_, latest)| Arc::ptr_eq(&contents.latest, latest))
+                let Some((local, _)) =
+                    compressed_local.take().filter(|(_, latest)| {
+                        Arc::ptr_eq(&contents.latest, latest)
+                    })
                 else {
                     // We need to perform the compression.  Unlock
                     // the zone, as this is an expensive operation.
@@ -271,7 +289,8 @@ pub fn load(zone: &Arc<Zone>, path: &Utf8Path) -> Result<Uncompressed, Error> {
         };
 
         all.push(RegularRecord(
-            record.transform(|name| name.unsized_copy_into(), |data| data.into()),
+            record
+                .transform(|name| name.unsized_copy_into(), |data| data.into()),
         ));
     }
 
@@ -320,9 +339,15 @@ impl fmt::Display for Error {
         match self {
             Error::Open(error) => error.fmt(f),
             Error::Misformatted(error) => error.fmt(f),
-            Error::MismatchedOrigin => write!(f, "the zonefile has the wrong origin name"),
-            Error::MissingStartSoa => write!(f, "the zonefile does not start with a SOA record"),
-            Error::UnsupportedInclude => write!(f, "zonefile include directives are not supported"),
+            Error::MismatchedOrigin => {
+                write!(f, "the zonefile has the wrong origin name")
+            }
+            Error::MissingStartSoa => {
+                write!(f, "the zonefile does not start with a SOA record")
+            }
+            Error::UnsupportedInclude => {
+                write!(f, "zonefile include directives are not supported")
+            }
         }
     }
 }
