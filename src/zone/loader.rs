@@ -1,12 +1,19 @@
 //! Zone-specific loader state.
 
-use std::{net::IpAddr, sync::Arc, time::Instant};
+use std::{
+    net::IpAddr,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use camino::Utf8Path;
 
-use crate::loader;
+use crate::loader::{self, Loader, RefreshMonitor};
 
-use super::{Zone, ZoneState};
+use super::{
+    contents::{SoaRecord, Uncompressed},
+    Zone, ZoneState,
+};
 
 //----------- LoaderState ------------------------------------------------------
 
@@ -16,12 +23,14 @@ pub struct LoaderState {
     /// The source of the zone.
     pub source: Source,
 
+    /// The refresh timer state of the zone.
+    pub refresh_timer: RefreshTimerState,
+
     /// Ongoing and enqueued refreshes of the zone.
     pub refreshes: Option<Refreshes>,
     //
     // TODO:
     // - File monitoring state
-    // - Refresh monitoring state
 }
 
 impl LoaderState {
@@ -32,6 +41,8 @@ impl LoaderState {
         // TODO: Should we enqueue a reload now, or do we leave that to the
         //   caller?  Issuing reloads during the initialization of a zone might
         //   not be the best idea.
+        //
+        // TODO: Should we _schedule_ refreshes now either?
 
         let _ = zone;
         state.loader.source = source;
@@ -57,90 +68,187 @@ impl LoaderState {
     /// > pummeling the master server.
     ///
     /// [RFC 1996, section 4.4]: https://datatracker.ietf.org/doc/html/rfc1996#section-4
-    pub fn enqueue_refresh(state: &mut ZoneState, zone: Arc<Zone>, reload: bool) {
+    pub fn enqueue_refresh(
+        state: &mut ZoneState,
+        zone: &Arc<Zone>,
+        reload: bool,
+        loader: &Arc<Loader>,
+    ) {
         // TODO: Log
+
+        let refresh = match reload {
+            false => EnqueuedRefresh::Refresh,
+            true => EnqueuedRefresh::Reload,
+        };
 
         // Determine whether a refresh is ongoing.
         if let Some(refreshes) = &mut state.loader.refreshes {
             // There is an ongoing refresh.  Enqueue a new one, which will
             // start when the ongoing one finishes.  If a refresh is already
             // enqueued, the two will be merged.
-            refreshes.enqueue(if reload {
-                EnqueuedRefresh::Reload
-            } else {
-                EnqueuedRefresh::Refresh
-            });
-            return;
+            refreshes.enqueue(refresh);
+        } else {
+            // Start this refresh immediately.
+            Self::start(state, zone.clone(), refresh, loader.clone());
         }
+    }
 
-        // There is no ongoing refresh.  Initiate one immediately.
+    /// Start an enqueued refresh.
+    fn start(
+        state: &mut ZoneState,
+        zone: Arc<Zone>,
+        refresh: EnqueuedRefresh,
+        loader: Arc<Loader>,
+    ) {
         let start = Instant::now();
         let source = state.loader.source.clone();
-        let ongoing = if reload {
-            let handle = tokio::task::spawn(async move {
-                // Reload the zone.
-                let serial = match loader::reload(&zone, &source).await {
-                    Ok(serial) => serial,
-                    Err(error) => {
-                        // Update the zone refresh timers.
-                        let _ = error;
-                        todo!()
-                    }
-                };
+        let ongoing = match refresh {
+            EnqueuedRefresh::Refresh => {
+                let latest = state
+                    .contents
+                    .as_ref()
+                    .map(|contents| contents.latest.clone());
+                let handle = tokio::task::spawn(Self::refresh(zone, start, source, latest, loader));
+                OngoingRefresh::Refresh { start, handle }
+            }
+            EnqueuedRefresh::Reload => {
+                let handle = tokio::task::spawn(Self::reload(zone, start, source, loader));
+                OngoingRefresh::Reload { start, handle }
+            }
+        };
+        state.loader.refreshes = Some(Refreshes::new(ongoing));
+    }
 
-                if let Some(serial) = serial {
-                    // TODO: Inform the central command.
-                    let _ = serial;
-                }
-                // TODO: Update the zone refresh timers.
+    /// Refresh this zone.
+    async fn refresh(
+        zone: Arc<Zone>,
+        start: Instant,
+        source: Source,
+        latest: Option<Arc<Uncompressed>>,
+        loader: Arc<Loader>,
+    ) {
+        // Perform the source-specific reload into the zone contents.
+        let (result, lock) = loader::refresh(&zone, &source, latest).await;
 
-                // Update the old-base contents.
-                if let Some(latest) = zone.data.lock().ok().and_then(|state| {
-                    state
-                        .contents
-                        .as_ref()
-                        .map(|contents| contents.latest.clone())
-                }) {
-                    latest.write_into_zonetree(&zone.loaded).await;
-                }
-            });
-            OngoingRefresh::Reload { start, handle }
+        // Try to re-use a recent lock from the reload.
+        let mut lock = lock.unwrap_or_else(|| zone.data.lock().unwrap());
+        let state = &mut *lock;
+
+        // Update the zone refresh timers.
+        let soa = state.contents.as_ref().map(|contents| &contents.latest.soa);
+        if result.is_ok() {
+            state
+                .loader
+                .refresh_timer
+                .schedule_refresh(&zone, start, soa, &loader.refresh_monitor);
         } else {
-            let latest = state
-                .contents
-                .as_ref()
-                .map(|contents| contents.latest.clone());
-            let handle = tokio::task::spawn(async move {
-                // Refresh the zone.
-                let serial = match loader::refresh(&zone, &source, latest).await {
-                    Ok(serial) => serial,
-                    Err(error) => {
-                        // Update the zone refresh timers.
-                        let _ = error;
-                        todo!()
-                    }
-                };
+            state
+                .loader
+                .refresh_timer
+                .schedule_retry(&zone, start, soa, &loader.refresh_monitor);
+        }
 
-                if let Some(serial) = serial {
-                    // TODO: Inform the central command.
-                    let _ = serial;
-                }
-                // TODO: Update the zone refresh timers.
+        // Process the result of the reload.
+        match result {
+            Ok(None) => {
+                // Nothing to do.
+            }
+
+            Ok(Some(serial)) => {
+                // TODO: Inform the central command.
+                let _ = serial;
 
                 // Update the old-base contents.
-                if let Some(latest) = zone.data.lock().ok().and_then(|state| {
-                    state
-                        .contents
-                        .as_ref()
-                        .map(|contents| contents.latest.clone())
-                }) {
-                    latest.write_into_zonetree(&zone.loaded).await;
-                }
-            });
-            OngoingRefresh::Refresh { start, handle }
+                let latest = state.contents.as_ref().unwrap().latest.clone();
+                let zone_copy = zone.clone();
+                tokio::task::spawn(
+                    async move { latest.write_into_zonetree(&zone_copy.loaded).await },
+                );
+            }
+
+            Err(error) => {
+                // TODO: Log the error?
+                let _ = error;
+            }
+        }
+
+        // Update the state of ongoing refreshes.
+        let id = tokio::task::id();
+        let enqueued = match state.loader.refreshes.take() {
+            Some(Refreshes {
+                ongoing: OngoingRefresh::Refresh { start: _, handle },
+                enqueued,
+            }) if handle.id() == id => enqueued,
+            refreshes => panic!("ongoing refresh ({id:?}) is unregistered (state: {refreshes:?})"),
         };
 
-        state.loader.refreshes = Some(Refreshes::new(ongoing));
+        // Start the next enqueued refresh.
+        if let Some(refresh) = enqueued {
+            Self::start(state, zone.clone(), refresh, loader);
+        }
+    }
+
+    /// Reload this zone.
+    async fn reload(zone: Arc<Zone>, start: Instant, source: Source, loader: Arc<Loader>) {
+        // Perform the source-specific reload into the zone contents.
+        let (result, lock) = loader::reload(&zone, &source).await;
+
+        // Try to re-use a recent lock from the reload.
+        let mut lock = lock.unwrap_or_else(|| zone.data.lock().unwrap());
+        let state = &mut *lock;
+
+        // Update the zone refresh timers.
+        let soa = state.contents.as_ref().map(|contents| &contents.latest.soa);
+        if result.is_ok() {
+            state
+                .loader
+                .refresh_timer
+                .schedule_refresh(&zone, start, soa, &loader.refresh_monitor);
+        } else {
+            state
+                .loader
+                .refresh_timer
+                .schedule_retry(&zone, start, soa, &loader.refresh_monitor);
+        }
+
+        // Process the result of the reload.
+        match result {
+            Ok(None) => {
+                // Nothing to do.
+            }
+
+            Ok(Some(serial)) => {
+                // TODO: Inform the central command.
+                let _ = serial;
+
+                // Update the old-base contents.
+                let latest = state.contents.as_ref().unwrap().latest.clone();
+                let zone_copy = zone.clone();
+                tokio::task::spawn(
+                    async move { latest.write_into_zonetree(&zone_copy.loaded).await },
+                );
+            }
+
+            Err(error) => {
+                // TODO: Log the error?
+                let _ = error;
+            }
+        }
+
+        // Update the state of ongoing refreshes.
+        let id = tokio::task::id();
+        let enqueued = match state.loader.refreshes.take() {
+            Some(Refreshes {
+                ongoing: OngoingRefresh::Reload { start: _, handle },
+                enqueued,
+            }) if handle.id() == id => enqueued,
+            refreshes => panic!("ongoing reload ({id:?}) is unregistered (state: {refreshes:?})"),
+        };
+
+        // Start the next enqueued refresh.
+        if let Some(refresh) = enqueued {
+            Self::start(state, zone.clone(), refresh, loader);
+        }
     }
 }
 
@@ -183,6 +291,123 @@ pub enum Source {
         /// The address of the server.
         addr: DnsServerAddr,
     },
+}
+
+//----------- RefreshTimerState ------------------------------------------------
+
+/// State for the refresh timer of a zone.
+#[derive(Debug, Default)]
+pub enum RefreshTimerState {
+    /// The refresh timer is disabled.
+    ///
+    /// The zone will not be refreshed automatically.  This is the default state
+    /// for new zones, and is used when a local copy of the zone is unavailable.
+    #[default]
+    Disabled,
+
+    /// Following up a previous successful refresh.
+    ///
+    /// The zone was recently refreshed successfully.  A new refresh will be
+    /// enqueued following the SOA REFRESH timer.
+    Refresh {
+        /// When the previous (successful) refresh started.
+        previous: Instant,
+
+        /// The scheduled time for the next refresh.
+        ///
+        /// This is equal to `previous + soa.refresh`.  If the SOA record
+        /// changes (e.g. due to a new version of the zone being loaded), this
+        /// is recomputed, and the refresh is rescheduled accordingly.
+        scheduled: Instant,
+    },
+
+    /// Following up a previous failing refresh.
+    ///
+    /// A previous refresh of the zone failed.  A new refresh will be enqueued
+    /// following the SOA RETRY timer.
+    Retry {
+        /// When the previous (failing) refresh started.
+        previous: Instant,
+
+        /// The scheduled time for the next refresh.
+        ///
+        /// This is equal to `previous + soa.retry`.  If the SOA record changes
+        /// (e.g. due to a new version of the zone being loaded), this is
+        /// recomputed, and the refresh is rescheduled accordingly.
+        scheduled: Instant,
+    },
+}
+
+impl RefreshTimerState {
+    /// The currently scheduled refresh time, if any.
+    pub const fn scheduled_time(&self) -> Option<Instant> {
+        match *self {
+            Self::Disabled => None,
+            Self::Refresh { scheduled, .. } => Some(scheduled),
+            Self::Retry { scheduled, .. } => Some(scheduled),
+        }
+    }
+
+    /// Disable zone refreshing.
+    ///
+    /// This is called when the zone contents are wiped or the zone source is
+    /// removed.
+    pub fn disable(&mut self, zone: &Arc<Zone>, monitor: &RefreshMonitor) {
+        monitor.update(zone, self.scheduled_time(), None);
+        *self = Self::Disabled;
+    }
+
+    /// Schedule a refresh.
+    ///
+    /// This is called when a previous refresh completes successfully.
+    pub fn schedule_refresh(
+        &mut self,
+        zone: &Arc<Zone>,
+        previous: Instant,
+        soa: Option<&SoaRecord>,
+        monitor: &RefreshMonitor,
+    ) {
+        // If a SOA record is unavailable, don't schedule anything.
+        let Some(soa) = soa else {
+            monitor.update(zone, self.scheduled_time(), None);
+            *self = Self::Disabled;
+            return;
+        };
+
+        let refresh = Duration::from_secs(soa.rdata.refresh.get().into());
+        let scheduled = previous + refresh;
+        monitor.update(zone, self.scheduled_time(), Some(scheduled));
+        *self = Self::Refresh {
+            previous,
+            scheduled,
+        };
+    }
+
+    /// Schedule a retry.
+    ///
+    /// This is called when a previous refresh fails.
+    pub fn schedule_retry(
+        &mut self,
+        zone: &Arc<Zone>,
+        previous: Instant,
+        soa: Option<&SoaRecord>,
+        monitor: &RefreshMonitor,
+    ) {
+        // If a SOA record is unavailable, don't schedule anything.
+        let Some(soa) = soa else {
+            monitor.update(zone, self.scheduled_time(), None);
+            *self = Self::Disabled;
+            return;
+        };
+
+        let retry = Duration::from_secs(soa.rdata.retry.get().into());
+        let scheduled = previous + retry;
+        monitor.update(zone, self.scheduled_time(), Some(scheduled));
+        *self = Self::Retry {
+            previous,
+            scheduled,
+        };
+    }
 }
 
 //----------- Refreshes --------------------------------------------------------

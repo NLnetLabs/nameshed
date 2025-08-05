@@ -34,10 +34,10 @@ use tokio::net::TcpStream;
 use crate::zone::{
     contents::{self, RegularRecord, SoaRecord},
     loader::DnsServerAddr,
-    Zone, ZoneContents,
+    Zone,
 };
 
-use super::{RefreshError, ReloadError};
+use super::RefreshError;
 
 //----------- refresh() --------------------------------------------------------
 
@@ -48,170 +48,57 @@ pub async fn refresh(
     zone: &Arc<Zone>,
     addr: &DnsServerAddr,
     latest: Option<Arc<contents::Uncompressed>>,
-) -> Result<Option<Serial>, RefreshError> {
-    // Fetch the zone.
-    let (mut compressed, remote) = if let Some(latest) = latest {
-        // Fetch the zone relative to the latest local copy.
-        match ixfr(zone, addr, &latest.soa).await? {
-            Ixfr::UpToDate => {
-                // The local copy is up-to-date.
-                return Ok(None);
-            }
-
-            Ixfr::OutdatedRemote(remote_serial) => {
-                // The remote copy is outdated.
-                return Err(RefreshError::OutdatedRemote {
-                    local_serial: latest.soa.rdata.serial,
-                    remote_serial,
-                });
-            }
-
-            Ixfr::Compressed(compressed) => {
-                // Coalesce the diffs together.
-                let mut compressed = compressed.into_iter();
-                let initial = compressed.next().unwrap();
-                let compressed = compressed.try_fold(initial, |mut whole, sub| {
-                    whole.merge_from_next(&sub).map(|()| whole)
-                })?;
-
-                // Forward the local copy through the compressed diffs.
-                let remote = latest.forward(&compressed)?;
-
-                (Some((compressed, latest)), remote)
-            }
-
-            Ixfr::Uncompressed(remote) => {
-                // Compress the local copy using the remote copy.
-                let compressed = latest.compress(&remote);
-
-                (Some((compressed, latest)), remote)
-            }
-        }
-    } else {
+) -> Result<Option<super::Refresh>, RefreshError> {
+    let Some(latest) = latest else {
         // Fetch the whole zone.
         let remote = axfr(zone, addr).await?;
 
-        (None, remote)
+        return Ok(Some(super::Refresh {
+            uncompressed: Arc::new(remote),
+            compressed: None,
+        }));
     };
 
-    // Loop while the zone contents change from under us.
-    loop {
-        // Load the latest local copy of the zone.
-        let mut data = zone.data.lock().unwrap();
-        let Some(contents) = &mut data.contents else {
-            // Update the zone contents.
-            let remote_serial = remote.soa.rdata.serial;
-            data.contents = Some(ZoneContents {
-                latest: Arc::new(remote),
-                previous: Default::default(),
-            });
+    // Fetch the zone relative to the latest local copy.
+    match ixfr(zone, addr, &latest.soa).await? {
+        Ixfr::UpToDate => {
+            // The local copy is up-to-date.
+            Ok(None)
+        }
 
-            return Ok(Some(remote_serial));
-        };
+        Ixfr::OutdatedRemote(remote_serial) => {
+            // The remote copy is outdated.
+            Err(RefreshError::OutdatedRemote {
+                local_serial: latest.soa.rdata.serial,
+                remote_serial,
+            })
+        }
 
-        // TODO: What if the local copy _now_ exceeds the remote copy?
-        //   Do we perform another XFR, or do we assume the remote is outdated?
+        Ixfr::Compressed(compressed) => {
+            // Coalesce the diffs together.
+            let mut compressed = compressed.into_iter();
+            let initial = compressed.next().unwrap();
+            let compressed = compressed.try_fold(initial, |mut whole, sub| {
+                whole.merge_from_next(&sub).map(|()| whole)
+            })?;
 
-        // Check whether a compressed copy (of the right version) is available.
-        let Some((compressed, _)) = compressed
-            .take()
-            .filter(|(_, latest)| Arc::ptr_eq(&contents.latest, latest))
-        else {
-            let latest = contents.latest.clone();
-            std::mem::drop(data);
+            // Forward the local copy through the compressed diffs.
+            let remote = latest.forward(&compressed)?;
 
+            Ok(Some(super::Refresh {
+                uncompressed: Arc::new(remote),
+                compressed: Some((Arc::new(compressed), latest)),
+            }))
+        }
+
+        Ixfr::Uncompressed(remote) => {
             // Compress the local copy using the remote copy.
-            compressed = Some((latest.compress(&remote), latest));
+            let compressed = latest.compress(&remote);
 
-            continue;
-        };
-
-        // Update the zone contents.
-        let remote_serial = remote.soa.rdata.serial;
-        contents.latest = Arc::new(remote);
-        contents.previous.push_back(Arc::new(compressed));
-
-        return Ok(Some(remote_serial));
-    }
-}
-
-//----------- reload() ---------------------------------------------------------
-
-/// Reload a zone from a DNS server.
-///
-/// See [`super::reload()`].
-pub async fn reload(zone: &Arc<Zone>, addr: &DnsServerAddr) -> Result<Option<Serial>, ReloadError> {
-    // Load the full remote zone with an AXFR.
-    let remote = axfr(zone, addr).await?;
-    let remote_serial = remote.soa.rdata.serial;
-
-    // A compressed copy of the local version of the zone.
-    let mut compressed_local: Option<(contents::Compressed, Arc<contents::Uncompressed>)> = None;
-
-    // Loop while the zone contents change from under us.
-    loop {
-        // Load the latest local copy of the zone.
-        let mut data = zone.data.lock().unwrap();
-        let Some(contents) = &mut data.contents else {
-            // There were no previous contents to the zone.
-            //
-            // Save the freshly loaded version and return.
-
-            data.contents = Some(ZoneContents {
-                latest: Arc::new(remote),
-                previous: Default::default(),
-            });
-
-            return Ok(Some(remote_serial));
-        };
-
-        // Compare the local and remote copies.
-        let local_serial = contents.latest.soa.rdata.serial;
-        match local_serial.partial_cmp(&remote_serial) {
-            Some(Ordering::Less) => {
-                // We need to compress the local copy.  Check if we
-                // have already done so.
-
-                let local = if let Some((local, _)) = compressed_local
-                    .take()
-                    .filter(|(_, uncompressed)| Arc::ptr_eq(&contents.latest, uncompressed))
-                {
-                    // Use the cached result.
-                    local
-                } else {
-                    let local = contents.latest.clone();
-                    std::mem::drop(data);
-
-                    // Compress the local copy using the remote copy.
-                    compressed_local = Some((local.compress(&remote), local));
-
-                    continue;
-                };
-
-                // Update the zone contents.
-                contents.latest = Arc::new(remote);
-                contents.previous.push_back(Arc::new(local));
-                return Ok(Some(remote_serial));
-            }
-
-            Some(Ordering::Equal) => {
-                // Verify the consistency of the two copies.
-                let local = contents.latest.clone();
-                std::mem::drop(data);
-                if local.eq_unsigned(&remote) {
-                    return Ok(None);
-                } else {
-                    return Err(ReloadError::Inconsistent);
-                }
-            }
-
-            _ => {
-                // The remote copy is outdated.
-                return Err(ReloadError::OutdatedRemote {
-                    local_serial,
-                    remote_serial,
-                });
-            }
+            Ok(Some(super::Refresh {
+                uncompressed: Arc::new(remote),
+                compressed: Some((Arc::new(compressed), latest)),
+            }))
         }
     }
 }
