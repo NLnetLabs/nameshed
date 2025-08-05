@@ -12,6 +12,8 @@ use tokio::sync::watch;
 
 use crate::zone::{self, Zone, ZoneByPtr};
 
+use super::Loader;
+
 //----------- RefreshMonitor ---------------------------------------------------
 
 /// A monitor for zone refreshes.
@@ -100,7 +102,7 @@ impl RefreshMonitor {
     }
 
     /// Drive this refresh monitor.
-    pub async fn run(&self) -> Infallible {
+    pub async fn run(&self, loader: &Arc<Loader>) -> Infallible {
         /// Wait until the specified instant.
         async fn wait(deadline: Option<Instant>) {
             if let Some(deadline) = deadline {
@@ -148,9 +150,7 @@ impl RefreshMonitor {
                 };
 
                 zone::LoaderState::enqueue_refresh(
-                    &mut state,
-                    zone.clone(),
-                    false,
+                    &mut state, &zone, false, loader,
                 );
             }
 
