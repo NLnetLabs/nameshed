@@ -15,8 +15,12 @@ use std::{
 };
 
 use domain::new::base::Serial;
+use tokio::sync::mpsc;
 
-use crate::zone::{self, contents, Zone, ZoneContents, ZoneState};
+use crate::{
+    payload::Update,
+    zone::{self, contents, Zone, ZoneContents, ZoneState},
+};
 
 mod refresh;
 mod server;
@@ -30,6 +34,24 @@ pub use refresh::RefreshMonitor;
 pub struct Loader {
     /// The refresh monitor.
     pub refresh_monitor: RefreshMonitor,
+
+    /// A sender for updates from the loader.
+    pub update_tx: mpsc::Sender<Update>,
+}
+
+impl Loader {
+    /// Construct a new [`Loader`].
+    pub fn new(update_tx: mpsc::Sender<Update>) -> Self {
+        Self {
+            refresh_monitor: RefreshMonitor::new(),
+            update_tx,
+        }
+    }
+
+    /// Drive this [`Loader`].
+    pub async fn run(self: &Arc<Self>) {
+        self.refresh_monitor.run(self).await;
+    }
 }
 
 //----------- refresh() --------------------------------------------------------

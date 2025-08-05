@@ -7,8 +7,12 @@ use std::{
 };
 
 use camino::Utf8Path;
+use domain::new::base::wire::BuildBytes;
 
-use crate::loader::{self, Loader, RefreshMonitor};
+use crate::{
+    loader::{self, Loader, RefreshMonitor},
+    payload::Update,
+};
 
 use super::{
     contents::{SoaRecord, Uncompressed},
@@ -155,15 +159,27 @@ impl LoaderState {
             }
 
             Ok(Some(serial)) => {
-                // TODO: Inform the central command.
-                let _ = serial;
-
                 // Update the old-base contents.
                 let latest = state.contents.as_ref().unwrap().latest.clone();
                 let zone_copy = zone.clone();
                 tokio::task::spawn(
                     async move { latest.write_into_zonetree(&zone_copy.loaded).await },
                 );
+
+                // Inform the central command.
+                let mut bytes = vec![0u8; zone.name.len()];
+                zone.name.build_bytes(&mut bytes).unwrap();
+                let bytes = bytes::Bytes::from(bytes);
+                let mut parser = octseq::Parser::from_ref(&bytes);
+                let zone_name = domain::base::Name::parse(&mut parser).unwrap();
+                let zone_serial = domain::base::Serial(serial.into());
+                loader
+                    .update_tx
+                    .blocking_send(Update::UnsignedZoneUpdatedEvent {
+                        zone_name,
+                        zone_serial,
+                    })
+                    .unwrap();
             }
 
             Err(error) => {
@@ -218,15 +234,27 @@ impl LoaderState {
             }
 
             Ok(Some(serial)) => {
-                // TODO: Inform the central command.
-                let _ = serial;
-
                 // Update the old-base contents.
                 let latest = state.contents.as_ref().unwrap().latest.clone();
                 let zone_copy = zone.clone();
                 tokio::task::spawn(
                     async move { latest.write_into_zonetree(&zone_copy.loaded).await },
                 );
+
+                // Inform the central command.
+                let mut bytes = vec![0u8; zone.name.len()];
+                zone.name.build_bytes(&mut bytes).unwrap();
+                let bytes = bytes::Bytes::from(bytes);
+                let mut parser = octseq::Parser::from_ref(&bytes);
+                let zone_name = domain::base::Name::parse(&mut parser).unwrap();
+                let zone_serial = domain::base::Serial(serial.into());
+                loader
+                    .update_tx
+                    .blocking_send(Update::UnsignedZoneUpdatedEvent {
+                        zone_name,
+                        zone_serial,
+                    })
+                    .unwrap();
             }
 
             Err(error) => {
