@@ -10,6 +10,7 @@ use tokio::sync::mpsc::{self, Receiver, Sender};
 use crate::common::file_io::TheFileIo;
 use crate::common::tsig::TsigKeyStore;
 use crate::comms::ApplicationCommand;
+use crate::log::Logger;
 use crate::metrics;
 use crate::targets::central_command::{self, CentralCommandTarget};
 use crate::targets::Target;
@@ -131,6 +132,9 @@ pub struct Manager {
     /// Commands for the zone loader.
     loader_tx: Option<mpsc::UnboundedSender<ApplicationCommand>>,
 
+    /// The logger.
+    _logger: &'static Logger,
+
     /// Commands for the review server.
     review_tx: Option<mpsc::UnboundedSender<ApplicationCommand>>,
 
@@ -171,15 +175,9 @@ pub struct Manager {
     app_cmd_rx: Arc<tokio::sync::Mutex<Receiver<(String, ApplicationCommand)>>>,
 }
 
-impl Default for Manager {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Manager {
     /// Creates a new manager.
-    pub fn new() -> Self {
+    pub fn new(logger: &'static Logger) -> Self {
         let (app_cmd_tx, app_cmd_rx) = tokio::sync::mpsc::channel(10);
 
         let tsig_key_store = Default::default();
@@ -190,6 +188,7 @@ impl Manager {
         #[allow(clippy::let_and_return, clippy::default_constructed_unit_structs)]
         let manager = Manager {
             loader_tx: None,
+            _logger: logger,
             review_tx: None,
             key_manager_tx: None,
             signer_tx: None,

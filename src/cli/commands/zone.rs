@@ -8,7 +8,6 @@ use crate::api::{
     ZoneAdd, ZoneAddResult, ZoneSource, ZoneStage, ZoneStatusResult, ZonesListResult,
 };
 use crate::cli::client::NameshedApiClient;
-use crate::log::ExitError;
 
 #[derive(Clone, Debug, clap::Args)]
 pub struct Zone {
@@ -60,7 +59,7 @@ pub enum ZoneCommand {
 // - reload zone (i.e. from file)
 
 impl Zone {
-    pub async fn execute(self, client: NameshedApiClient) -> Result<(), ExitError> {
+    pub async fn execute(self, client: NameshedApiClient) -> Result<(), ()> {
         match self.command {
             ZoneCommand::Add { name, source } => {
                 let res: ZoneAddResult = client
@@ -71,7 +70,6 @@ impl Zone {
                     .await
                     .map_err(|e| {
                         error!("HTTP request failed: {e}");
-                        ExitError
                     })?;
 
                 println!("Registered zone {}", res.name);
@@ -84,7 +82,6 @@ impl Zone {
                     .await
                     .map_err(|e| {
                         error!("HTTP request failed: {e}");
-                        ExitError
                     })?;
 
                 println!("Removed zone {}", res.name);
@@ -97,7 +94,6 @@ impl Zone {
                     .await
                     .map_err(|e| {
                         error!("HTTP request failed: {e}");
-                        ExitError
                     })?;
 
                 for zone in response.zones {
@@ -119,7 +115,6 @@ impl Zone {
                     .await
                     .map_err(|e| {
                         error!("HTTP request failed: {e}");
-                        ExitError
                     })?;
 
                 println!("Success: Sent zone reload command for {}", zone);
@@ -135,7 +130,6 @@ impl Zone {
                     .await
                     .map_err(|e| {
                         error!("HTTP request failed: {e}");
-                        ExitError
                     })?;
 
                 println!("Server status: {:?}", response);

@@ -4,8 +4,6 @@ pub mod policy;
 pub mod status;
 pub mod zone;
 
-use crate::log::ExitError;
-
 use super::client::NameshedApiClient;
 
 #[derive(Clone, Debug, clap::Subcommand)]
@@ -42,7 +40,7 @@ pub enum Command {
 }
 
 impl Command {
-    pub async fn execute(self, client: NameshedApiClient) -> Result<(), ExitError> {
+    pub async fn execute(self, client: NameshedApiClient) -> Result<(), ()> {
         match self {
             Self::Zone(zone) => zone.execute(client).await,
             Self::Status(status) => status.execute(client).await,

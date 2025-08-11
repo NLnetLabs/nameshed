@@ -7,7 +7,8 @@ use serde::Deserialize;
 
 use crate::config::{
     Config, DaemonConfig, GroupId, KeyManagerConfig, LoaderConfig, LogLevel, LogTarget,
-    ReviewConfig, ServerConfig, Setting, SettingSource, SignerConfig, SocketConfig, UserId,
+    LoggingConfig, ReviewConfig, ServerConfig, Setting, SettingSource, SignerConfig, SocketConfig,
+    UserId,
 };
 
 //----------- Spec -------------------------------------------------------------
@@ -77,8 +78,8 @@ pub struct DaemonSpec {
 impl DaemonSpec {
     /// Build the internal configuration.
     pub fn build(self, config_file: Setting<Box<Utf8Path>>) -> DaemonConfig {
-        DaemonConfig {
-            log_level: self
+        let logging = LoggingConfig {
+            level: self
                 .log_level
                 .map(|log_level| Setting {
                     source: SettingSource::File,
@@ -88,7 +89,7 @@ impl DaemonSpec {
                     source: SettingSource::Default,
                     value: LogLevel::Info,
                 }),
-            log_target: self
+            target: self
                 .log_target
                 .map(|log_target| Setting {
                     source: SettingSource::File,
@@ -98,6 +99,11 @@ impl DaemonSpec {
                     source: SettingSource::Default,
                     value: LogTarget::File("/var/log/nameshed.log".into()),
                 }),
+            trace_targets: Default::default(),
+        };
+
+        DaemonConfig {
+            logging,
             config_file,
             daemonize: self
                 .daemonize

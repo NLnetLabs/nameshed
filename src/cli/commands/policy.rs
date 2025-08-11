@@ -4,7 +4,6 @@ use log::error;
 use crate::{
     api::{PolicyListResult, PolicyReloadResult},
     cli::client::NameshedApiClient,
-    log::ExitError,
 };
 
 #[derive(Clone, Debug, clap::Args)]
@@ -28,7 +27,7 @@ pub enum PolicyCommand {
 }
 
 impl Policy {
-    pub async fn execute(self, client: NameshedApiClient) -> Result<(), ExitError> {
+    pub async fn execute(self, client: NameshedApiClient) -> Result<(), ()> {
         match self.command {
             PolicyCommand::List => {
                 let res: PolicyListResult = client
@@ -38,7 +37,6 @@ impl Policy {
                     .await
                     .map_err(|e| {
                         error!("HTTP request failed: {e}");
-                        ExitError
                     })?;
 
                 for policy in res.policies {
@@ -53,7 +51,6 @@ impl Policy {
                     .await
                     .map_err(|e| {
                         error!("HTTP request failed: {e}");
-                        ExitError
                     })?;
 
                 println!("Policy info: {res:?}");
@@ -66,7 +63,6 @@ impl Policy {
                     .await
                     .map_err(|e| {
                         error!("HTTP request failed: {e}");
-                        ExitError
                     })?;
 
                 println!("Policies reloaded");
