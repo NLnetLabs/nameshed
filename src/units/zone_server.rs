@@ -371,6 +371,10 @@ impl ZoneServer {
                                         error!(
                                             "[{unit_name}]: Failed to execute hook '{hook}' for {zone_type} zone '{zone_name}' at serial {zone_serial}: {err}",
                                         );
+                                        arc_self.pending_approvals
+                                            .write()
+                                            .await
+                                            .remove(&(zone_name.clone(), *zone_serial));
                                     }
                                 }
                             }
