@@ -168,7 +168,6 @@ impl WritableZone for SimpleZoneInner {
             "COMMITTING: Skipped {} records",
             self.skipped.load(Ordering::SeqCst)
         );
-        dbg!(self);
         Box::pin(ready(Ok(None)))
     }
 }
