@@ -11,6 +11,7 @@ use domain::{
     },
     utils::dst::UnsizedCopy,
 };
+use log::trace;
 
 use crate::zone::{
     contents::{RegularRecord, SoaRecord, Uncompressed},
@@ -110,6 +111,8 @@ pub fn refresh(
 
 /// Load a zone from a zonefile.
 pub fn load(zone: &Arc<Zone>, path: &Utf8Path) -> Result<Uncompressed, Error> {
+    trace!("Reloading {:?} from zonefile {path}", zone.name);
+
     // Open the zonefile.
     let file = BufReader::new(File::open(path).map_err(Error::Open)?);
     let mut scanner = ZonefileScanner::new(file, Some(&zone.name));
