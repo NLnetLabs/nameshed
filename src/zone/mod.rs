@@ -123,6 +123,9 @@ impl Zones {
             .get(name)
             .map(|zone| zone.0.clone())
     }
+
+    // TODO: Careful (prepare->consistency->apply) zone operations.
+    // TODO: How to remove a zone?
 }
 
 //----------- ZoneByName -------------------------------------------------------
