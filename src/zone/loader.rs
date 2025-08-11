@@ -8,7 +8,6 @@ use std::{
 
 use camino::Utf8Path;
 use domain::new::base::wire::BuildBytes;
-use log::trace;
 
 use crate::{
     loader::{self, Loader, RefreshMonitor},
@@ -84,7 +83,7 @@ impl LoaderState {
         reload: bool,
         loader: &Arc<Loader>,
     ) {
-        trace!("Enqueueing a refresh for {:?}", zone.name);
+        log::debug!("Enqueueing a refresh for {:?}", zone.name);
 
         let refresh = match reload {
             false => EnqueuedRefresh::Refresh,
@@ -137,6 +136,8 @@ impl LoaderState {
         latest: Option<Arc<Uncompressed>>,
         loader: Arc<Loader>,
     ) {
+        log::debug!("Refreshing {:?}", zone.name);
+
         // Perform the source-specific reload into the zone contents.
         let (result, lock) = loader::refresh(&zone, &source, latest).await;
 
@@ -161,10 +162,14 @@ impl LoaderState {
         // Process the result of the reload.
         match result {
             Ok(None) => {
+                log::debug!("{:?} is up-to-date", zone.name);
+
                 // Nothing to do.
             }
 
             Ok(Some(serial)) => {
+                log::debug!("Loaded serial {serial:?} for {:?}", zone.name);
+
                 // Update the old-base contents.
                 let latest = state.contents.as_ref().unwrap().latest.clone();
                 let zone_copy = zone.clone();
@@ -189,8 +194,7 @@ impl LoaderState {
             }
 
             Err(error) => {
-                // TODO: Log the error?
-                let _ = error;
+                log::error!("Could not refresh {:?}: {error}", zone.name);
             }
         }
 
@@ -212,7 +216,7 @@ impl LoaderState {
 
     /// Reload this zone.
     async fn reload(zone: Arc<Zone>, start: Instant, source: Source, loader: Arc<Loader>) {
-        trace!("Reloading {:?}", zone.name);
+        log::debug!("Reloading {:?}", zone.name);
 
         let update;
         let update_tx;
@@ -246,11 +250,15 @@ impl LoaderState {
             // Process the result of the reload.
             update = match result {
                 Ok(None) => {
+                    log::debug!("{:?} is up-to-date and consistent", zone.name);
+
                     // Nothing to do.
                     None
                 }
 
                 Ok(Some(serial)) => {
+                    log::debug!("Loaded serial {serial:?} for {:?}", zone.name);
+
                     // Update the old-base contents.
                     let latest = state.contents.as_ref().unwrap().latest.clone();
                     let zone_copy = zone.clone();
@@ -272,7 +280,7 @@ impl LoaderState {
                 }
 
                 Err(error) => {
-                    trace!("Reloading failed: {error}");
+                    log::error!("Could not reload {:?}: {error}", zone.name);
                     None
                 }
             };

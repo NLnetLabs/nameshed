@@ -73,9 +73,15 @@ pub async fn refresh<'z>(
     // Perform the source-specific refresh operation.
     let refresh = match source {
         // Refreshing a zone without a source is a no-op.
-        zone::loader::Source::None => return (Ok(None), None),
+        zone::loader::Source::None => {
+            log::trace!("Cannot refresh {:?} because no source is set", zone.name);
+
+            return (Ok(None), None);
+        }
 
         zone::loader::Source::Zonefile { path } => {
+            log::trace!("Refreshing {:?} from zonefile {path:?}", zone.name);
+
             let zone = zone.clone();
             let path = path.clone();
             tokio::task::spawn_blocking(move || zonefile::refresh(&zone, &path, latest))
@@ -83,7 +89,11 @@ pub async fn refresh<'z>(
                 .unwrap()
         }
 
-        zone::loader::Source::Server { addr } => server::refresh(zone, addr, latest).await,
+        zone::loader::Source::Server { addr } => {
+            log::trace!("Refreshing {:?} from server {addr:?}", zone.name);
+
+            server::refresh(zone, addr, latest).await
+        }
     };
 
     // Process the result.
@@ -221,9 +231,15 @@ pub async fn reload<'z>(
     // Perform the source-specific reload operation.
     let reload = match source {
         // Reloading a zone without a source is a no-op.
-        zone::loader::Source::None => return (Ok(None), None),
+        zone::loader::Source::None => {
+            log::trace!("Cannot reload {:?} because no source is set", zone.name);
+
+            return (Ok(None), None);
+        }
 
         zone::loader::Source::Zonefile { path } => {
+            log::trace!("Reloading {:?} from zonefile {path:?}", zone.name);
+
             let zone = zone.clone();
             let path = path.clone();
             tokio::task::spawn_blocking(move || zonefile::load(&zone, &path))
@@ -233,6 +249,8 @@ pub async fn reload<'z>(
         }
 
         zone::loader::Source::Server { addr } => {
+            log::trace!("Reloading {:?} from server {addr:?}", zone.name);
+
             server::axfr(zone, addr).await.map_err(ReloadError::Axfr)
         }
     };

@@ -11,7 +11,6 @@ use domain::{
     },
     utils::dst::UnsizedCopy,
 };
-use log::trace;
 
 use crate::zone::{
     contents::{RegularRecord, SoaRecord, Uncompressed},
@@ -30,6 +29,8 @@ pub fn refresh(
     path: &Utf8Path,
     latest: Option<Arc<Uncompressed>>,
 ) -> Result<Option<super::Refresh>, RefreshError> {
+    log::trace!("Scanning zonefile {path:?} for {:?}", zone.name);
+
     // Open the zonefile.
     let file =
         BufReader::new(File::open(path).map_err(|err| RefreshError::Zonefile(Error::Open(err)))?);
@@ -80,6 +81,11 @@ pub fn refresh(
         }
     }
 
+    log::trace!(
+        "Local copy of {:?} is outdated, reading full zonefile",
+        zone.name
+    );
+
     // Fetch the rest of the zonefile.
     let mut all = Vec::<RegularRecord>::new();
     while let Some(entry) = scanner.scan().map_err(Error::Misformatted)? {
@@ -111,8 +117,6 @@ pub fn refresh(
 
 /// Load a zone from a zonefile.
 pub fn load(zone: &Arc<Zone>, path: &Utf8Path) -> Result<Uncompressed, Error> {
-    trace!("Reloading {:?} from zonefile {path}", zone.name);
-
     // Open the zonefile.
     let file = BufReader::new(File::open(path).map_err(Error::Open)?);
     let mut scanner = ZonefileScanner::new(file, Some(&zone.name));

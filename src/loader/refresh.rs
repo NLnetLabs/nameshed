@@ -46,6 +46,11 @@ impl RefreshMonitor {
     /// be updated, so that the zone is refreshed at the new scheduled time (if
     /// any).
     pub fn update(&self, zone: &Arc<Zone>, old: Option<Instant>, new: Option<Instant>) {
+        log::debug!(
+            "Updating the scheduling of '{:?}' from {old:?} to {new:?}",
+            zone.name
+        );
+
         let [old, new] = [old, new].map(|time| {
             time.map(|time| ZoneByRefreshTime {
                 time,

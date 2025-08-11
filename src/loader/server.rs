@@ -50,6 +50,8 @@ pub async fn refresh(
     latest: Option<Arc<contents::Uncompressed>>,
 ) -> Result<Option<super::Refresh>, RefreshError> {
     let Some(latest) = latest else {
+        log::trace!("Attempting an AXFR against {addr:?} for {:?}", zone.name);
+
         // Fetch the whole zone.
         let remote = axfr(zone, addr).await?;
 
@@ -58,6 +60,8 @@ pub async fn refresh(
             compressed: None,
         }));
     };
+
+    log::trace!("Attempting an IXFR against {addr:?} for {:?}", zone.name);
 
     // Fetch the zone relative to the latest local copy.
     match ixfr(zone, addr, &latest.soa).await? {
