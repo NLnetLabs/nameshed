@@ -7,7 +7,6 @@
 //! Server configuration happens via the [`Server`] struct that normally is
 //! part of the [`Config`](crate::config::Config).
 
-use crate::log::ExitError;
 use crate::metrics;
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
@@ -66,11 +65,7 @@ impl Server {
     ///
     /// The server will use `metrics` to produce information on its metrics
     /// related endpoints.
-    pub fn run(
-        &self,
-        metrics: metrics::Collection,
-        mut resources: Resources,
-    ) -> Result<(), ExitError> {
+    pub fn run(&self, metrics: metrics::Collection, mut resources: Resources) -> Result<(), ()> {
         // Bind and collect all listeners first so we can error out
         // if any of them fails.
         let mut listeners = Vec::new();
@@ -81,14 +76,12 @@ impl Server {
                 Ok(listener) => listener,
                 Err(err) => {
                     error!("Fatal: error listening on {addr}: {err}");
-                    return Err(ExitError);
+                    return Err(());
                 }
             };
             if let Err(err) = listener.set_nonblocking(true) {
-                error!(
-                    "Fatal: failed to set listener {addr} to non-blocking: {err}."
-                );
-                return Err(ExitError);
+                error!("Fatal: failed to set listener {addr} to non-blocking: {err}.");
+                return Err(());
             }
             info!("Listening for HTTP connections on {addr}");
             listeners.push(listener);

@@ -85,9 +85,10 @@ impl ArgsSpec {
     pub fn merge(self, config: &mut Config) {
         let daemon = &mut config.daemon;
         let source = SettingSource::Args;
-        daemon.log_level.merge_value(self.log_level, source);
+        daemon.logging.level.merge_value(self.log_level, source);
         daemon
-            .log_target
+            .logging
+            .target
             .merge_value(self.log_target.map(|t| t.build()), source);
         daemon.config_file.merge_value(self.config, source);
         daemon
