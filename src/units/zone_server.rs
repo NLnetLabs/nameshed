@@ -14,7 +14,7 @@ use std::process::Command;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
 use std::sync::{Arc, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
@@ -259,6 +259,7 @@ struct ZoneServer {
     listen: Vec<ListenAddr>,
     #[allow(clippy::type_complexity)]
     pending_approvals: Arc<RwLock<HashMap<(Name<Bytes>, Serial), Vec<Uuid>>>>,
+    last_approvals: Arc<RwLock<HashMap<(Name<Bytes>, Serial), Instant>>>,
     zones: XfrDataProvidingZonesWrapper,
 }
 
@@ -280,6 +281,7 @@ impl ZoneServer {
             source,
             hooks,
             pending_approvals: Default::default(),
+            last_approvals: Default::default(),
             listen,
             zones,
         }
@@ -298,6 +300,7 @@ impl ZoneServer {
             self.http_api_path.clone(),
             update_tx.clone(),
             self.pending_approvals.clone(),
+            self.last_approvals.clone(),
             self.zones.clone(),
             self.mode,
             self.source,
@@ -344,6 +347,13 @@ impl ZoneServer {
                                 } => "signed",
                                 _ => unreachable!(),
                             };
+
+                            // Only if not already approved...
+                            if arc_self.last_approvals.read().await.contains_key(&(zone_name.clone(), *zone_serial)) {
+                                trace!("Skipping approval request for already approved {zone_type} zone '{zone_name}' at serial {zone_serial}.");
+                                continue;
+                            }
+
                             info!("[{unit_name}]: Seeking approval for {zone_type} zone '{zone_name}' at serial {zone_serial}.");
                             for hook in &arc_self.hooks {
                                 let approval_token = Uuid::new_v4();
@@ -552,6 +562,7 @@ struct ZoneReviewApi {
     update_tx: mpsc::Sender<Update>,
     #[allow(clippy::type_complexity)]
     pending_approvals: Arc<RwLock<HashMap<(Name<Bytes>, Serial), Vec<Uuid>>>>,
+    last_approvals: Arc<RwLock<HashMap<(Name<Bytes>, Serial), Instant>>>,
     zones: XfrDataProvidingZonesWrapper,
     mode: Mode,
     source: Source,
@@ -564,6 +575,7 @@ impl ZoneReviewApi {
         http_api_path: Arc<String>,
         update_tx: mpsc::Sender<Update>,
         pending_approvals: Arc<RwLock<HashMap<(Name<Bytes>, Serial), Vec<Uuid>>>>,
+        last_approvals: Arc<RwLock<HashMap<(Name<Bytes>, Serial), Instant>>>,
         zones: XfrDataProvidingZonesWrapper,
         mode: Mode,
         source: Source,
@@ -573,6 +585,7 @@ impl ZoneReviewApi {
             http_api_path,
             update_tx,
             pending_approvals,
+            last_approvals,
             zones,
             mode,
             source,
@@ -675,6 +688,15 @@ impl ProcessRequest for ZoneReviewApi {
                                                         Source::PublishedZones => unreachable!(),
                                                     };
                                                     info!("Pending {zone_type} zone '{zone_name}' approved at serial {zone_serial}.");
+                                                    let approved_at = Instant::now();
+                                                    self.last_approvals
+                                                        .write()
+                                                        .await
+                                                        .entry((zone_name.clone(), zone_serial))
+                                                        .and_modify(|instant| {
+                                                            *instant = approved_at
+                                                        })
+                                                        .or_insert(approved_at);
                                                     self.update_tx.send(event).await.unwrap();
                                                     remove_approvals = true;
                                                 }
