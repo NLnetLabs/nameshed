@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 
 use clap::{command, Parser};
 
-use crate::log::ExitError;
+use crate::config::LogLevel;
 
 use super::client::NameshedApiClient;
 use super::commands::Command;
@@ -19,21 +19,16 @@ pub struct Args {
     )]
     pub server: SocketAddr,
 
-    /// Verbosity: 0-5 or a level name ("off", "error", "warn", "info", "debug" or "trace")
-    #[arg(
-        short = 'v',
-        long = "verbosity",
-        value_name = "LEVEL",
-        default_value = "warn"
-    )]
-    pub verbosity: crate::log::LogFilter,
+    /// The minimum severity of messages to log
+    #[arg(long = "log-level", value_name = "LEVEL", default_value = "warning")]
+    pub log_level: LogLevel,
 
     #[command(subcommand)]
     pub command: Command,
 }
 
 impl Args {
-    pub async fn execute(self) -> Result<(), ExitError> {
+    pub async fn execute(self) -> Result<(), ()> {
         let client = NameshedApiClient::new(format!("http://{}", self.server));
         self.command.execute(client).await
     }

@@ -4,7 +4,12 @@
 //! most specific): configuration files, environment variables, and command-line
 //! arguments.  This module defines and collects together these sources.
 
-use std::{fmt, net::SocketAddr};
+use std::{
+    borrow::{Borrow, BorrowMut},
+    fmt,
+    hash::{Hash, Hasher},
+    net::SocketAddr,
+};
 
 use camino::Utf8Path;
 
@@ -92,11 +97,8 @@ impl Config {
 /// Daemon-related configuration for Nameshed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DaemonConfig {
-    /// The minimum severity of messages to log.
-    pub log_level: Setting<LogLevel>,
-
-    /// Where to log messages to.
-    pub log_target: Setting<LogTarget>,
+    /// Logging configuration.
+    pub logging: LoggingConfig,
 
     /// The location of the configuration file.
     pub config_file: Setting<Box<Utf8Path>>,
@@ -112,6 +114,21 @@ pub struct DaemonConfig {
 
     /// The identity to assume after startup.
     pub identity: Option<(UserId, GroupId)>,
+}
+
+//----------- LogConfig --------------------------------------------------------
+
+/// Logging configuration for Nameshed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoggingConfig {
+    /// The minimum severity of messages to log.
+    pub level: Setting<LogLevel>,
+
+    /// Where to log messages to.
+    pub target: Setting<LogTarget>,
+
+    /// Targets to log trace messages for.
+    pub trace_targets: foldhash::HashSet<Setting<Box<str>>>,
 }
 
 //----------- UserId -----------------------------------------------------------
@@ -295,6 +312,18 @@ impl<T> Setting<T> {
     }
 }
 
+impl<T> Borrow<T> for Setting<T> {
+    fn borrow(&self) -> &T {
+        &self.value
+    }
+}
+
+impl<T> BorrowMut<T> for Setting<T> {
+    fn borrow_mut(&mut self) -> &mut T {
+        &mut self.value
+    }
+}
+
 impl<T: PartialEq> PartialEq for Setting<T> {
     fn eq(&self, other: &Self) -> bool {
         self.value == other.value
@@ -302,6 +331,12 @@ impl<T: PartialEq> PartialEq for Setting<T> {
 }
 
 impl<T: Eq> Eq for Setting<T> {}
+
+impl<T: Hash> Hash for Setting<T> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.value.hash(state)
+    }
+}
 
 //----------- SettingSource ----------------------------------------------------
 
