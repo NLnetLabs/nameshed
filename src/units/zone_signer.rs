@@ -72,8 +72,8 @@ use domain::zonefile::inplace::{self, Entry, Zonefile};
 use domain::zonetree::types::{StoredRecordData, ZoneUpdate};
 use domain::zonetree::update::ZoneUpdater;
 use domain::zonetree::{
-    InMemoryZoneDiff, ReadableZone, StoredName, StoredRecord, WritableZone, WritableZoneNode, Zone,
-    ZoneBuilder, ZoneStore, ZoneTree,
+    ReadableZone, StoredName, StoredRecord, Zone,
+    ZoneBuilder,
 };
 use futures::future::{select, Either};
 use futures::{pin_mut, Future, SinkExt};
@@ -604,8 +604,14 @@ impl ZoneSigner {
             s.threads_used = Some(parallelism);
         });
 
-        // Create a zone updater which will be used to add RRs resulting from
-        // RRSIG generation to the signed zone.
+        // Create a zone updater which will be used to add RRs resulting
+        // from RRSIG generation to the signed zone. We set the create_diff
+        // argument to false because we sign the zone by deleting all records
+        // so from the point of view of the automatic diff creation logic all
+        // records added to the zone appear to be new. Once we add support for
+        // incremental signing (i.e. only regenerate, add and remove RRSIGs,
+        // and update the NSEC(3) chain as needed, we can capture a diff of
+        // the changes we make).
         let mut updater = ZoneUpdater::new(zone.clone(), false).await.unwrap();
 
         // Clear out any RRs in the current version of the signed zone. If the zone
