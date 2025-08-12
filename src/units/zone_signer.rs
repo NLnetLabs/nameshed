@@ -884,16 +884,26 @@ fn sign_rr_chunk(
             match key.raw_secret_key() {
                 KeyPair::Ring(key_pair) => {
                     let signature = key_pair.sign_raw(&data).unwrap();
-                    let rrsig =
-                        signature_to_record(signature, rrsig, rrset_owner, rrset_class, rrset_ttl)
-                            .map_err(|err| err.to_string())?;
+                    let rrsig = sign_sorted_rrset_in_post(
+                        signature,
+                        rrsig,
+                        rrset_owner,
+                        rrset_class,
+                        rrset_ttl,
+                    )
+                    .map_err(|err| err.to_string())?;
                     rrsigs.push(rrsig);
                 }
                 KeyPair::OpenSSL(key_pair) => {
                     let signature = key_pair.sign_raw(&data).unwrap();
-                    let rrsig =
-                        signature_to_record(signature, rrsig, rrset_owner, rrset_class, rrset_ttl)
-                            .map_err(|err| err.to_string())?;
+                    let rrsig = sign_sorted_rrset_in_post(
+                        signature,
+                        rrsig,
+                        rrset_owner,
+                        rrset_class,
+                        rrset_ttl,
+                    )
+                    .map_err(|err| err.to_string())?;
                     rrsigs.push(rrsig);
                 }
                 KeyPair::Kmip(key_pair) => {
@@ -919,7 +929,7 @@ fn sign_rr_chunk(
                         for (signature, (rrsig, rrset_owner, rrset_class, rrset_ttl)) in
                             other_sigs.into_iter().zip(other_saved.into_iter())
                         {
-                            let rrsig = signature_to_record(
+                            let rrsig = sign_sorted_rrset_in_post(
                                 signature,
                                 rrsig,
                                 rrset_owner,
