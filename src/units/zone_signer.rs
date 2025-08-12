@@ -32,10 +32,10 @@ use domain::base::{
 };
 use domain::crypto::kmip::sign::KeyUrl;
 use domain::crypto::kmip::{self, ClientCertificate, ConnectionSettings};
-use domain::crypto::kmip_pool::{ConnectionManager, SyncConnPool};
 use domain::crypto::sign::{
     generate, FromBytesError, GenerateParams, KeyPair, SecretKeyBytes, SignError, SignRaw
 };
+use domain::dep::kmip::client::pool::{ConnectionManager, SyncConnPool};
 use domain::dnssec::common::parse_from_bind;
 use domain::dnssec::sign::denial::config::DenialConfig;
 use domain::dnssec::sign::denial::nsec::GenerateNsecConfig;
