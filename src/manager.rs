@@ -17,6 +17,7 @@ use crate::common::file_io::TheFileIo;
 use crate::common::tsig::TsigKeyStore;
 use crate::comms::ApplicationCommand;
 use crate::loader::Loader;
+use crate::metrics;
 use crate::targets::central_command::{self, CentralCommandTarget};
 use crate::targets::Target;
 use crate::units::key_manager::KeyManagerUnit;
@@ -27,7 +28,6 @@ use crate::units::zone_signer::{
 use crate::units::Unit;
 use crate::zone::loader::{DnsServerAddr, Source};
 use crate::zone::{LoaderState, Zones};
-use crate::{http, metrics};
 use domain::zonetree::ZoneTree;
 
 //------------ Component -----------------------------------------------------
@@ -42,9 +42,6 @@ pub struct Component {
 
     /// A reference to the metrics collection.
     metrics: Option<metrics::Collection>,
-
-    /// A reference to the HTTP resources collection.
-    http_resources: http::Resources,
 
     /// A reference to the unsigned zones.
     unsigned_zones: Arc<ArcSwap<ZoneTree>>,
@@ -69,7 +66,6 @@ impl Default for Component {
         Self {
             http_client: Default::default(),
             metrics: Default::default(),
-            http_resources: Default::default(),
             unsigned_zones: Default::default(),
             signed_zones: Default::default(),
             published_zones: Default::default(),
@@ -85,7 +81,6 @@ impl Component {
     fn new(
         http_client: HttpClient,
         metrics: metrics::Collection,
-        http_resources: http::Resources,
         unsigned_zones: Arc<ArcSwap<ZoneTree>>,
         signed_zones: Arc<ArcSwap<ZoneTree>>,
         published_zones: Arc<ArcSwap<ZoneTree>>,
@@ -95,7 +90,6 @@ impl Component {
         Component {
             http_client: Some(http_client),
             metrics: Some(metrics),
-            http_resources,
             unsigned_zones,
             signed_zones,
             published_zones,
@@ -107,10 +101,6 @@ impl Component {
     /// Returns a reference to an HTTP Client.
     pub fn http_client(&self) -> &HttpClient {
         self.http_client.as_ref().unwrap()
-    }
-
-    pub fn http_resources(&self) -> &http::Resources {
-        &self.http_resources
     }
 
     pub fn unsigned_zones(&self) -> &Arc<ArcSwap<ZoneTree>> {
@@ -127,34 +117,6 @@ impl Component {
 
     pub fn tsig_key_store(&self) -> &TsigKeyStore {
         &self.tsig_key_store
-    }
-
-    /// Register an HTTP resource.
-    pub fn register_http_resource(
-        &mut self,
-        process: Arc<dyn http::ProcessRequest>,
-        rel_base_url: &str,
-    ) {
-        debug!("registering resource {:?}", &rel_base_url);
-        self.http_resources.register(
-            Arc::downgrade(&process),
-            rel_base_url,
-            false,
-        )
-    }
-
-    /// Register a sub HTTP resource.
-    pub fn register_sub_http_resource(
-        &mut self,
-        process: Arc<dyn http::ProcessRequest>,
-        rel_base_url: &str,
-    ) {
-        debug!("registering resource {:?}", &rel_base_url);
-        self.http_resources.register(
-            Arc::downgrade(&process),
-            rel_base_url,
-            true,
-        )
     }
 
     pub async fn send_command(
@@ -222,9 +184,6 @@ pub struct Manager {
     /// The metrics collection maintained by this manager.
     metrics: metrics::Collection,
 
-    /// The HTTP resources collection maintained by this manager.
-    http_resources: http::Resources,
-
     #[allow(dead_code)]
     file_io: TheFileIo,
 
@@ -269,7 +228,6 @@ impl Manager {
             center_tx: None,
             http_client: Default::default(),
             metrics: Default::default(),
-            http_resources: Default::default(),
             #[allow(clippy::default_constructed_unit_structs)]
             file_io: TheFileIo::default(),
             unsigned_zones,
@@ -482,7 +440,6 @@ impl Manager {
             let component = Component::new(
                 self.http_client.clone(),
                 self.metrics.clone(),
-                self.http_resources.clone(),
                 self.unsigned_zones.clone(),
                 self.signed_zones.clone(),
                 self.published_zones.clone(),
@@ -712,7 +669,6 @@ impl Manager {
             let component = Component::new(
                 self.http_client.clone(),
                 self.metrics.clone(),
-                self.http_resources.clone(),
                 self.unsigned_zones.clone(),
                 self.signed_zones.clone(),
                 self.published_zones.clone(),
@@ -775,11 +731,6 @@ impl Manager {
     /// Returns a new reference to the manager’s metrics collection.
     pub fn metrics(&self) -> metrics::Collection {
         self.metrics.clone()
-    }
-
-    /// Returns a new reference the the HTTP resources collection.
-    pub fn http_resources(&self) -> http::Resources {
-        self.http_resources.clone()
     }
 }
 

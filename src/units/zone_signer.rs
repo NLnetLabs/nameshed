@@ -114,8 +114,6 @@ use crate::common::tsig::{parse_key_strings, TsigKeyStore};
 use crate::common::xfr::parse_xfr_acl;
 use crate::comms::ApplicationCommand;
 use crate::comms::{GraphStatus, Terminated};
-use crate::http::PercentDecodedPath;
-use crate::http::ProcessRequest;
 use crate::log::ExitError;
 use crate::manager::Component;
 use crate::metrics::{
@@ -366,7 +364,7 @@ impl ZoneSigner {
     }
 
     async fn run(
-        mut self,
+        self,
         mut cmd_rx: mpsc::Receiver<ApplicationCommand>,
     ) -> Result<(), crate::comms::Terminated> {
         // Setup REST API endpoint
@@ -374,10 +372,6 @@ impl ZoneSigner {
             self.http_api_path.clone(),
             self.signer_status.clone(),
         ));
-        self.component.register_http_resource(
-            http_processor.clone(),
-            &self.http_api_path,
-        );
 
         while let Some(cmd) = cmd_rx.recv().await {
             info!("[ZS]: Received command: {cmd:?}");
@@ -1325,37 +1319,6 @@ impl SigningHistoryApi {
             http_api_path,
             signing_status,
         }
-    }
-}
-
-#[async_trait]
-impl ProcessRequest for SigningHistoryApi {
-    async fn process_request(
-        &self,
-        request: &hyper::Request<hyper::Body>,
-    ) -> Option<hyper::Response<hyper::Body>> {
-        let req_path = request.uri().decoded_path();
-        #[allow(clippy::collapsible_if)]
-        if request.method() == hyper::Method::GET {
-            if req_path.starts_with(&*self.http_api_path) {
-                if req_path == format!("{}status.json", *self.http_api_path) {
-                    return Some(self.build_json_status_response().await);
-                } else if req_path.ends_with("/status.json") {
-                    let (_, parts) =
-                        req_path.split_at(self.http_api_path.len());
-                    if let Some((zone_name, status_rel_url)) =
-                        parts.split_once('/')
-                    {
-                        if status_rel_url == "status.json" {
-                            return self
-                                .build_json_zone_status_response(zone_name)
-                                .await;
-                        }
-                    }
-                }
-            }
-        }
-        None
     }
 }
 

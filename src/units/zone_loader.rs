@@ -73,8 +73,6 @@ use crate::common::net::{
 use crate::common::tsig::{parse_key_strings, TsigKeyStore};
 use crate::common::xfr::parse_xfr_acl;
 use crate::comms::{ApplicationCommand, GraphStatus, Terminated};
-use crate::http::PercentDecodedPath;
-use crate::http::ProcessRequest;
 use crate::log::ExitError;
 use crate::manager::Component;
 use crate::metrics::{
@@ -159,10 +157,6 @@ impl ZoneLoader {
             self.xfr_in.clone(),
             zone_maintainer.clone(),
         ));
-        component.register_http_resource(
-            http_processor.clone(),
-            &self.http_api_path,
-        );
 
         // Load primary zones.
         // Create secondary zones.
@@ -536,28 +530,6 @@ impl ZoneListApi {
             zones,
             xfr_in,
             zone_maintainer,
-        }
-    }
-}
-
-#[async_trait]
-impl ProcessRequest for ZoneListApi {
-    async fn process_request(
-        &self,
-        request: &hyper::Request<hyper::Body>,
-    ) -> Option<hyper::Response<hyper::Body>> {
-        let req_path = request.uri().decoded_path();
-        if request.method() == hyper::Method::GET {
-            if req_path == *self.http_api_path {
-                Some(self.build_response().await)
-            } else if req_path == format!("{}status.json", *self.http_api_path)
-            {
-                Some(self.build_json_response().await)
-            } else {
-                None
-            }
-        } else {
-            None
         }
     }
 }
