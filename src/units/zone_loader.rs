@@ -190,7 +190,7 @@ impl ZoneLoader {
                     for (name, err) in errors.into_iter() {
                         msg.push_str(&format!("  {name}: {err}\n"));
                     }
-                    error!("[ZL]: Error parsing zone '{zone_name}': {}", msg);
+                    error!("[ZL]: Error parsing zone '{zone_name}': {msg}");
                     return Err(Terminated);
                 };
 
@@ -260,11 +260,11 @@ impl ZoneLoader {
         let svc = Arc::new(svc);
 
         for addr in self.listen.iter().cloned() {
-            info!("[ZL]: Binding on {:?}", addr);
+            info!("[ZL]: Binding on {addr:?}");
             let svc = svc.clone();
             tokio::spawn(async move {
                 if let Err(err) = Self::server(addr, svc).await {
-                    error!("[ZL]: {}", err);
+                    error!("[ZL]: {err}");
                 }
             });
         }

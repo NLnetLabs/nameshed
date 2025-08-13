@@ -80,18 +80,17 @@ impl Server {
             let listener = match StdListener::bind(addr) {
                 Ok(listener) => listener,
                 Err(err) => {
-                    error!("Fatal: error listening on {}: {}", addr, err);
+                    error!("Fatal: error listening on {addr}: {err}");
                     return Err(ExitError);
                 }
             };
             if let Err(err) = listener.set_nonblocking(true) {
                 error!(
-                    "Fatal: failed to set listener {} to non-blocking: {}.",
-                    addr, err
+                    "Fatal: failed to set listener {addr} to non-blocking: {err}."
                 );
                 return Err(ExitError);
             }
-            info!("Listening for HTTP connections on {}", addr);
+            info!("Listening for HTTP connections on {addr}");
             listeners.push(listener);
         }
 
@@ -157,7 +156,7 @@ impl Server {
         let listener = match TcpListener::from_std(listener) {
             Ok(listener) => listener,
             Err(err) => {
-                error!("Error on HTTP listener: {}", err);
+                error!("Error on HTTP listener: {err}");
                 return;
             }
         };
@@ -165,7 +164,7 @@ impl Server {
             .serve(make_service)
             .await
         {
-            error!("HTTP server error: {}", err);
+            error!("HTTP server error: {err}");
         }
     }
 
@@ -355,7 +354,7 @@ impl Resources {
 impl fmt::Debug for Resources {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let len = self.sources.load().len();
-        write!(f, "Resource({} processors)", len)
+        write!(f, "Resource({len} processors)")
     }
 }
 
@@ -596,7 +595,7 @@ impl Display for MatchedParam<'_> {
         match self {
             MatchedParam::Exact(value) => f.write_str(value),
             MatchedParam::Family(family, value) => {
-                write!(f, "{}[{}]", family, value)
+                write!(f, "{family}[{value}]")
             }
         }
     }

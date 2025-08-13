@@ -466,7 +466,7 @@ impl Manager {
                 self.app_cmd_tx.clone(),
             );
 
-            info!("Starting target '{}'", name);
+            info!("Starting target '{name}'");
             let (cmd_tx, cmd_rx) = mpsc::channel(100);
             spawn_target(component, new_target, cmd_rx);
             self.center_tx = Some(cmd_tx);
@@ -477,7 +477,7 @@ impl Manager {
         let hsm_relay_host = std::env::var("NAMESHED_HSM_RELAY_HOST").ok();
         let hsm_relay_port = std::env::var("NAMESHED_HSM_RELAY_PORT")
             .ok()
-            .and_then(|v| u16::from_str_radix(&v, 10).ok());
+            .and_then(|v| v.parse::<u16>().ok());
 
         if let Some(server_addr) = hsm_relay_host {
             if let Some(server_port) = hsm_relay_port {
@@ -651,7 +651,7 @@ impl Manager {
             );
 
             let unit_type = std::mem::discriminant(&new_unit);
-            info!("Starting unit '{}'", name);
+            info!("Starting unit '{name}'");
             spawn_unit(component, new_unit);
         }
     }
@@ -665,7 +665,7 @@ impl Manager {
             ("PS", self.publish_tx.take().unwrap()),
         ];
         for (name, tx) in units {
-            info!("Stopping unit '{}'", name);
+            info!("Stopping unit '{name}'");
             tokio::spawn(async move {
                 let _ = tx.send(ApplicationCommand::Terminate).await;
                 tx.closed().await;
@@ -690,7 +690,7 @@ impl Manager {
     }
 
     fn terminate_target(name: &str, sender: Arc<Sender<TargetCommand>>) {
-        info!("Stopping target '{}'", name);
+        info!("Stopping target '{name}'");
         tokio::spawn(async move {
             let _ = sender.send(TargetCommand::Terminate).await;
         });

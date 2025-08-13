@@ -175,12 +175,12 @@ impl ZoneServerUnit {
         let svc = Arc::new(svc);
 
         for addr in self.listen.iter().cloned() {
-            info!("[{unit_name}]: Binding on {:?}", addr);
+            info!("[{unit_name}]: Binding on {addr:?}");
             let svc = svc.clone();
             let unit_name: Box<str> = unit_name.into();
             tokio::spawn(async move {
                 if let Err(err) = Self::server(addr, svc).await {
-                    error!("[{unit_name}]: {}", err);
+                    error!("[{unit_name}]: {err}");
                 }
             });
         }
