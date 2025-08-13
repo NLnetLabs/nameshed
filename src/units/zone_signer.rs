@@ -33,7 +33,7 @@ use domain::base::{
 use domain::crypto::kmip::sign::KeyUrl;
 use domain::crypto::kmip::{self, ClientCertificate, ConnectionSettings};
 use domain::crypto::sign::{
-    generate, FromBytesError, GenerateParams, KeyPair, SecretKeyBytes, SignError, SignRaw
+    generate, FromBytesError, GenerateParams, KeyPair, SecretKeyBytes, SignError, SignRaw,
 };
 use domain::dep::kmip::client::pool::{ConnectionManager, SyncConnPool};
 use domain::dnssec::common::parse_from_bind;
@@ -71,10 +71,7 @@ use domain::utils::base64;
 use domain::zonefile::inplace::{self, Entry, Zonefile};
 use domain::zonetree::types::{StoredRecordData, ZoneUpdate};
 use domain::zonetree::update::ZoneUpdater;
-use domain::zonetree::{
-    ReadableZone, StoredName, StoredRecord, Zone,
-    ZoneBuilder,
-};
+use domain::zonetree::{ReadableZone, StoredName, StoredRecord, Zone, ZoneBuilder};
 use futures::future::{select, Either};
 use futures::{pin_mut, Future, SinkExt};
 use indoc::formatdoc;
@@ -492,7 +489,7 @@ impl ZoneSigner {
 
                         let public_key = ZoneSignerUnit::load_public_key(Path::new(pub_key_path))
                             .map_err(|_| format!("Failed to load public key from '{}'", pub_key_path))?;
-        
+
                         let key_pair = KeyPair::from_bytes(&private_key, public_key.data())
                             .map_err(|err| format!("Failed to create key pair for zone {zone_name} using key files {pub_key_path} and {priv_key_path}: {err}"))?;
                         let signing_key =
@@ -916,7 +913,11 @@ async fn rrsig_inserter(
         insertion_time = insertion_time.saturating_add(insert_start.elapsed());
         if rrsig_count % 100 == 0 {
             let elapsed = start.elapsed().as_secs();
-            let rate = if elapsed > 0 { rrsig_count / (elapsed as usize) } else { rrsig_count }; // TODO: Use floating point arithmetic?
+            let rate = if elapsed > 0 {
+                rrsig_count / (elapsed as usize)
+            } else {
+                rrsig_count
+            }; // TODO: Use floating point arithmetic?
             info!("Inserted {rrsig_count} RRSIGs in {elapsed} seconds at a rate of {rate} RRSIGs/second");
         }
     }
