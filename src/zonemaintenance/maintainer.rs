@@ -1545,7 +1545,7 @@ where
 
                     if log_enabled!(log::Level::Info) {
                         if let Some(report) =
-                            progress_reporter.create_report(1, num_updates_applied)
+                            progress_reporter.create_report(1, num_updates_applied, false)
                         {
                             info!("{}", report);
                         }
@@ -1558,7 +1558,9 @@ where
                 }
 
                 if log_enabled!(log::Level::Info) {
-                    if let Some(report) = progress_reporter.create_report(1, num_updates_applied) {
+                    if let Some(report) =
+                        progress_reporter.create_report(1, num_updates_applied, true)
+                    {
                         info!("{}", report);
                     }
                 }
@@ -1640,9 +1642,11 @@ where
                         }
 
                         if log_enabled!(log::Level::Info) {
-                            if let Some(report) = progress_reporter
-                                .create_report(num_responses_received, num_updates_applied)
-                            {
+                            if let Some(report) = progress_reporter.create_report(
+                                num_responses_received,
+                                num_updates_applied,
+                                false,
+                            ) {
                                 info!("{}", report);
                             }
                         }
@@ -1652,9 +1656,11 @@ where
                 }
 
                 if log_enabled!(log::Level::Info) {
-                    if let Some(report) =
-                        progress_reporter.create_report(num_responses_received, num_updates_applied)
-                    {
+                    if let Some(report) = progress_reporter.create_report(
+                        num_responses_received,
+                        num_updates_applied,
+                        true,
+                    ) {
                         info!("{}", report);
                     }
                 }
@@ -1927,15 +1933,19 @@ impl XfrProgressReporter {
         &mut self,
         num_responses_received: usize,
         num_updates_applied: usize,
+        force: bool,
     ) -> Option<String> {
         let now = Instant::now();
-        if now.duration_since(
-            self.last_reported_at
-                .unwrap_or(self.start_time - self.report_every),
-        ) >= self.report_every
+        if force
+            || (self
+                .last_reported_at
+                .map(|last| now.duration_since(last))
+                .unwrap_or(self.start_time.elapsed().saturating_sub(self.report_every))
+                >= self.report_every)
         {
             let seconds_so_far = now.duration_since(self.start_time).as_secs() as f64;
             let records_per_second = ((num_updates_applied as f64) / seconds_so_far).floor() as i64;
+            let records_per_second = records_per_second.clamp(0, num_updates_applied as i64);
 
             let report = format!("XFR progress report for zone '{}': Received {} records in {} responses in {} seconds ({} records/second)",
                 self.zone_apex,

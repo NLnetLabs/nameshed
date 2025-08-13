@@ -32,10 +32,10 @@ use domain::base::{
 };
 use domain::crypto::kmip::sign::KeyUrl;
 use domain::crypto::kmip::{self, ClientCertificate, ConnectionSettings};
-use domain::crypto::kmip_pool::{ConnectionManager, SyncConnPool};
 use domain::crypto::sign::{
-    generate, FromBytesError, GenerateParams, KeyPair, SecretKeyBytes, SignError, SignRaw
+    generate, FromBytesError, GenerateParams, KeyPair, SecretKeyBytes, SignError, SignRaw,
 };
+use domain::dep::kmip::client::pool::{ConnectionManager, SyncConnPool};
 use domain::dnssec::common::parse_from_bind;
 use domain::dnssec::sign::denial::config::DenialConfig;
 use domain::dnssec::sign::denial::nsec::GenerateNsecConfig;
@@ -71,10 +71,7 @@ use domain::utils::base64;
 use domain::zonefile::inplace::{self, Entry, Zonefile};
 use domain::zonetree::types::{StoredRecordData, ZoneUpdate};
 use domain::zonetree::update::ZoneUpdater;
-use domain::zonetree::{
-    InMemoryZoneDiff, ReadableZone, StoredName, StoredRecord, WritableZone, WritableZoneNode, Zone,
-    ZoneBuilder, ZoneStore, ZoneTree,
-};
+use domain::zonetree::{ReadableZone, StoredName, StoredRecord, Zone, ZoneBuilder};
 use futures::future::{select, Either};
 use futures::{pin_mut, Future, SinkExt};
 use indoc::formatdoc;
@@ -482,17 +479,17 @@ impl ZoneSigner {
                 match (priv_url.scheme(), pub_url.scheme()) {
                     ("file", "file") => {
                         let priv_key_path = priv_url.path();
-                        debug!("Attempting to load private key '{}'.", priv_key_path);
+                        debug!("Attempting to load private key '{priv_key_path}'.");
 
                         let private_key = ZoneSignerUnit::load_private_key(Path::new(priv_key_path))
-                            .map_err(|_| format!("Failed to load private key from '{}'", priv_key_path))?;
+                            .map_err(|_| format!("Failed to load private key from '{priv_key_path}'"))?;
 
                         let pub_key_path = pub_url.path();
-                        debug!("Attempting to load public key '{}'.", pub_key_path);
+                        debug!("Attempting to load public key '{pub_key_path}'.");
 
                         let public_key = ZoneSignerUnit::load_public_key(Path::new(pub_key_path))
-                            .map_err(|_| format!("Failed to load public key from '{}'", pub_key_path))?;
-        
+                            .map_err(|_| format!("Failed to load public key from '{pub_key_path}'"))?;
+
                         let key_pair = KeyPair::from_bytes(&private_key, public_key.data())
                             .map_err(|err| format!("Failed to create key pair for zone {zone_name} using key files {pub_key_path} and {priv_key_path}: {err}"))?;
                         let signing_key =
@@ -604,8 +601,14 @@ impl ZoneSigner {
             s.threads_used = Some(parallelism);
         });
 
-        // Create a zone updater which will be used to add RRs resulting from
-        // RRSIG generation to the signed zone.
+        // Create a zone updater which will be used to add RRs resulting
+        // from RRSIG generation to the signed zone. We set the create_diff
+        // argument to false because we sign the zone by deleting all records
+        // so from the point of view of the automatic diff creation logic all
+        // records added to the zone appear to be new. Once we add support for
+        // incremental signing (i.e. only regenerate, add and remove RRSIGs,
+        // and update the NSEC(3) chain as needed, we can capture a diff of
+        // the changes we make).
         let mut updater = ZoneUpdater::new(zone.clone(), false).await.unwrap();
 
         // Clear out any RRs in the current version of the signed zone. If the zone
@@ -674,7 +677,7 @@ impl ZoneSigner {
         let unsigned_records = rrsig_generation_complete.await.unwrap();
 
         if !signing_ok.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err(format!("RRSIG generation error"));
+            return Err("RRSIG generation error".to_string());
         }
 
         // Wait for RRSIG insertion to complete.
@@ -910,7 +913,11 @@ async fn rrsig_inserter(
         insertion_time = insertion_time.saturating_add(insert_start.elapsed());
         if rrsig_count % 100 == 0 {
             let elapsed = start.elapsed().as_secs();
-            let rate = if elapsed > 0 { rrsig_count / (elapsed as usize) } else { rrsig_count }; // TODO: Use floating point arithmetic?
+            let rate = if elapsed > 0 {
+                rrsig_count / (elapsed as usize)
+            } else {
+                rrsig_count
+            }; // TODO: Use floating point arithmetic?
             info!("Inserted {rrsig_count} RRSIGs in {elapsed} seconds at a rate of {rate} RRSIGs/second");
         }
     }

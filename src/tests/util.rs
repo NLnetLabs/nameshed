@@ -40,7 +40,7 @@ pub fn assert_json_eq(actual_json: serde_json::Value, expected_json: serde_json:
             "Expected JSON: {}",
             serde_json::to_string_pretty(&expected_json).unwrap()
         );
-        panic!("JSON doesn't match expectations: {}", err);
+        panic!("JSON doesn't match expectations: {err}");
     }
 }
 

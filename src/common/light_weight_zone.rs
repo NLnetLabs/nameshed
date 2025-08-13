@@ -23,22 +23,22 @@ use domain::{
         Name, NameBuilder, Rtype,
     },
     zonetree::{
-        error::OutOfZone, Answer, InMemoryZoneDiff, ReadableZone, Rrset, SharedRrset, StoredName,
-        WalkOp, WritableZone, WritableZoneNode, ZoneStore,
+        error::OutOfZone, Answer, InMemoryZoneDiff, ReadableZone, SharedRrset, StoredName, WalkOp,
+        WritableZone, WritableZoneNode, ZoneStore,
     },
 };
 use log::trace;
 
 #[derive(Debug, Eq)]
-struct HashedSharedRrset(SharedRrset);
+struct HashedByRtypeSharedRrset(SharedRrset);
 
-impl std::hash::Hash for HashedSharedRrset {
+impl std::hash::Hash for HashedByRtypeSharedRrset {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.0.rtype().hash(state);
     }
 }
 
-impl std::ops::Deref for HashedSharedRrset {
+impl std::ops::Deref for HashedByRtypeSharedRrset {
     type Target = SharedRrset;
 
     fn deref(&self) -> &Self::Target {
@@ -46,7 +46,7 @@ impl std::ops::Deref for HashedSharedRrset {
     }
 }
 
-impl PartialEq for HashedSharedRrset {
+impl PartialEq for HashedByRtypeSharedRrset {
     fn eq(&self, other: &Self) -> bool {
         self.0.rtype() == other.0.rtype()
     }
@@ -55,7 +55,7 @@ impl PartialEq for HashedSharedRrset {
 #[derive(Clone, Debug)]
 struct SimpleZoneInner {
     root: StoredName,
-    tree: Arc<std::sync::RwLock<BTreeMap<StoredName, HashSet<HashedSharedRrset>>>>,
+    tree: Arc<std::sync::RwLock<BTreeMap<StoredName, HashSet<HashedByRtypeSharedRrset>>>>,
     skipped: Arc<AtomicUsize>,
     skip_signed: bool,
 }
@@ -173,7 +173,7 @@ impl WritableZone for SimpleZoneInner {
 }
 
 struct SimpleZoneNode {
-    pub tree: Arc<std::sync::RwLock<BTreeMap<StoredName, HashSet<HashedSharedRrset>>>>,
+    pub tree: Arc<std::sync::RwLock<BTreeMap<StoredName, HashSet<HashedByRtypeSharedRrset>>>>,
     pub name: StoredName,
     pub skipped: Arc<AtomicUsize>,
     pub skip_signed: bool,
@@ -181,7 +181,7 @@ struct SimpleZoneNode {
 
 impl SimpleZoneNode {
     fn new(
-        tree: Arc<std::sync::RwLock<BTreeMap<StoredName, HashSet<HashedSharedRrset>>>>,
+        tree: Arc<std::sync::RwLock<BTreeMap<StoredName, HashSet<HashedByRtypeSharedRrset>>>>,
         name: StoredName,
         skipped: Arc<AtomicUsize>,
         skip_signed: bool,
@@ -251,37 +251,13 @@ impl WritableZoneNode for SimpleZoneNode {
             _ => {
                 match self.tree.write().unwrap().entry(self.name.clone()) {
                     Entry::Vacant(e) => {
-                        // trace!("Inserting first RRSET {rrset:?} at {}", self.name);
-                        let _ = e.insert(HashSet::from([HashedSharedRrset(rrset)]));
+                        let _ = e.insert(HashSet::from([HashedByRtypeSharedRrset(rrset)]));
                     }
                     Entry::Occupied(mut e) => {
-                        let new_rrset = HashedSharedRrset(rrset);
                         let rrsets = e.get_mut();
-                        match rrsets.take(&new_rrset) {
-                            Some(existing_rrset) => {
-                                // trace!("Merging {new_rrset:?} into existing RRSET of type {} at {}", new_rrset.rtype(), self.name);
-                                // Yeuch, inefficient.
-                                let mut new_data = HashSet::new();
-
-                                for data in existing_rrset.data() {
-                                    new_data.insert(data.clone());
-                                }
-                                for data in new_rrset.data() {
-                                    new_data.insert(data.clone());
-                                }
-                                let mut new_new_rrset =
-                                    Rrset::new(new_rrset.rtype(), new_rrset.ttl());
-                                for data in new_data.drain() {
-                                    new_new_rrset.push_data(data);
-                                }
-                                let _ =
-                                    rrsets.insert(HashedSharedRrset(new_new_rrset.into_shared()));
-                            }
-                            None => {
-                                // trace!("Inserting additional RRSET {new_rrset:?} of type {} at {}", new_rrset.rtype(), self.name);
-                                let _ = rrsets.insert(new_rrset);
-                            }
-                        }
+                        let new_rrset = HashedByRtypeSharedRrset(rrset);
+                        // There can only be one RRset of a given RType at a given name.
+                        let _ = rrsets.replace(new_rrset);
                     }
                 }
 

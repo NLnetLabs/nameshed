@@ -161,7 +161,7 @@ impl LogConfig {
             Some(value) => match T::from_str(value) {
                 Ok(value) => Ok(Some(value)),
                 Err(err) => {
-                    error!("Invalid value for {}: {}.", key, err);
+                    error!("Invalid value for {key}: {err}.");
                     Err(Terminate::error())
                 }
             },
@@ -179,7 +179,7 @@ impl LogConfig {
     pub fn init_logging() -> Result<(), Terminate> {
         log::set_max_level(log::LevelFilter::Warn);
         if let Err(err) = log_reroute::init() {
-            eprintln!("Failed to initialize logger: {}.", err);
+            eprintln!("Failed to initialize logger: {err}.");
             Err(ExitError)?;
         };
         let dispatch = fern::Dispatch::new()
@@ -242,7 +242,7 @@ impl LogConfig {
         match logger {
             Ok(logger) => Ok(Box::new(syslog::BasicLogger::new(logger))),
             Err(err) => {
-                error!("Cannot connect to syslog: {}", err);
+                error!("Cannot connect to syslog: {err}");
                 Err(Terminate::error())
             }
         }

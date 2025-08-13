@@ -445,7 +445,7 @@ dependencies = [
 [[package]]
 name = "domain"
 version = "0.11.1-dev"
-source = "git+https://github.com/NLnetLabs/domain?branch=aryas-nameshed-patches#45414e3d5240d9f3c74146d066f219781b57b8a1"
+source = "git+https://github.com/NLnetLabs/domain?branch=aryas-nameshed-patches#e1766d79621d5145421b571242f5b4c584257ec4"
 dependencies = [
  "arc-swap",
  "bcder",
@@ -462,7 +462,6 @@ dependencies = [
  "octseq",
  "openssl",
  "parking_lot 0.12.4",
- "r2d2",
  "rand 0.8.5",
  "ring 0.17.14",
  "rustversion",
@@ -481,7 +480,7 @@ dependencies = [
 [[package]]
 name = "domain-macros"
 version = "0.11.1-dev"
-source = "git+https://github.com/NLnetLabs/domain?branch=aryas-nameshed-patches#45414e3d5240d9f3c74146d066f219781b57b8a1"
+source = "git+https://github.com/NLnetLabs/domain?branch=aryas-nameshed-patches#e1766d79621d5145421b571242f5b4c584257ec4"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1159,7 +1158,7 @@ dependencies = [
 [[package]]
 name = "kmip-protocol"
 version = "0.5.0"
-source = "git+https://github.com/NLnetLabs/kmip-protocol?branch=next#d3c323caf199c982218a573ee7f5ab43075d0c27"
+source = "git+https://github.com/NLnetLabs/kmip-protocol?branch=next#36960114c4e4170c219add8c861c69610219c60d"
 dependencies = [
  "cfg-if",
  "enum-display-derive",
@@ -1169,6 +1168,7 @@ dependencies = [
  "log",
  "maybe-async",
  "openssl",
+ "r2d2",
  "rustc_version",
  "serde",
  "serde_bytes",

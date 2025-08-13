@@ -476,7 +476,7 @@ impl Manager {
                 self.app_cmd_tx.clone(),
             );
 
-            info!("Starting target '{}'", name);
+            info!("Starting target '{name}'");
             let (cmd_tx, cmd_rx) = mpsc::channel(100);
             spawn_target(component, new_target, cmd_rx);
             self.center_tx = Some(cmd_tx);
@@ -695,7 +695,7 @@ impl Manager {
             );
 
             let unit_type = std::mem::discriminant(&new_unit);
-            info!("Starting unit '{}'", name);
+            info!("Starting unit '{name}'");
             spawn_unit(component, new_unit);
         }
     }
@@ -711,7 +711,7 @@ impl Manager {
             ("PS", self.publish_tx.take().unwrap()),
         ];
         for (name, tx) in units {
-            info!("Stopping unit '{}'", name);
+            info!("Stopping unit '{name}'");
             tokio::spawn(async move {
                 let _ = tx.send(ApplicationCommand::Terminate).await;
                 tx.closed().await;
@@ -736,7 +736,7 @@ impl Manager {
     }
 
     fn terminate_target(name: &str, sender: Arc<Sender<TargetCommand>>) {
-        info!("Stopping target '{}'", name);
+        info!("Stopping target '{name}'");
         tokio::spawn(async move {
             let _ = sender.send(TargetCommand::Terminate).await;
         });
