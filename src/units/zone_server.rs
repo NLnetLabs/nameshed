@@ -52,7 +52,6 @@ use domain::zonetree::{
 use futures::future::{select, Either};
 use futures::stream::{once, Once};
 use futures::{pin_mut, Future};
-use hyper::StatusCode;
 use indoc::formatdoc;
 use log::warn;
 use log::{debug, error, info, trace};
@@ -76,7 +75,6 @@ use crate::common::tsig::{parse_key_strings, TsigKeyStore};
 use crate::common::xfr::parse_xfr_acl;
 use crate::comms::ApplicationCommand;
 use crate::comms::{GraphStatus, Terminated};
-use crate::http::{PercentDecodedPath, ProcessRequest};
 use crate::log::ExitError;
 use crate::manager::Component;
 use crate::metrics::{self, util::append_per_router_metric, Metric, MetricType, MetricUnit};
@@ -115,9 +113,6 @@ pub enum Source {
 
 #[derive(Debug)]
 pub struct ZoneServerUnit {
-    /// The relative path at which we should listen for HTTP query API requests
-    pub http_api_path: Arc<String>,
-
     /// Addresses and protocols to listen on.
     pub listen: Vec<ListenAddr>,
 
@@ -189,7 +184,6 @@ impl ZoneServerUnit {
 
         ZoneServer::new(
             component,
-            self.http_api_path,
             self.mode,
             self.source,
             self.hooks,
@@ -200,10 +194,6 @@ impl ZoneServerUnit {
         .await?;
 
         Ok(())
-    }
-
-    fn default_http_api_path() -> Arc<String> {
-        Arc::new("/zone-loader/".to_string())
     }
 
     async fn server<Svc>(addr: ListenAddr, svc: Svc) -> Result<(), std::io::Error>
@@ -251,8 +241,6 @@ impl ZoneServerUnit {
 struct ZoneServer {
     component: Arc<RwLock<Component>>,
     #[allow(dead_code)]
-    http_api_path: Arc<String>,
-    #[allow(dead_code)]
     mode: Mode,
     source: Source,
     hooks: Vec<String>,
@@ -267,7 +255,6 @@ impl ZoneServer {
     #[allow(clippy::too_many_arguments)]
     fn new(
         component: Arc<RwLock<Component>>,
-        http_api_path: Arc<String>,
         mode: Mode,
         source: Source,
         hooks: Vec<String>,
@@ -276,7 +263,6 @@ impl ZoneServer {
     ) -> Self {
         Self {
             component,
-            http_api_path,
             mode,
             source,
             hooks,
@@ -294,22 +280,6 @@ impl ZoneServer {
         mut cmd_rx: mpsc::Receiver<ApplicationCommand>,
     ) -> Result<(), crate::comms::Terminated> {
         // let status_reporter = self.status_reporter.clone();
-
-        // Setup REST API endpoint
-        let http_processor = Arc::new(ZoneReviewApi::new(
-            self.http_api_path.clone(),
-            update_tx.clone(),
-            self.pending_approvals.clone(),
-            self.last_approvals.clone(),
-            self.zones.clone(),
-            self.mode,
-            self.source,
-            self.listen.clone(),
-        ));
-        self.component
-            .write()
-            .await
-            .register_http_resource(http_processor.clone(), &self.http_api_path);
 
         let arc_self = Arc::new(self);
 
@@ -374,8 +344,6 @@ impl ZoneServer {
                                 {
                                     Ok(_) => {
                                         info!("[{unit_name}]: Executed hook '{hook}' for {zone_type} zone '{zone_name}' at serial {zone_serial}");
-                                        info!("[{unit_name}]: Confirm with HTTP GET {}approve/{approval_token}?zone={zone_name}&serial={zone_serial}", arc_self.http_api_path);
-                                        info!("[{unit_name}]: Reject with HTTP GET {}reject/{approval_token}?zone={zone_name}&serial={zone_serial}", arc_self.http_api_path);
                                     }
                                     Err(err) => {
                                         error!(
@@ -553,279 +521,4 @@ fn zone_server_service(
     let builder = mk_builder_for_target();
     let additional = answer.to_message(request.message(), builder);
     Ok(CallResult::new(additional))
-}
-
-//------------ ZoneReviewApi -------------------------------------------------
-
-struct ZoneReviewApi {
-    http_api_path: Arc<String>,
-    update_tx: mpsc::Sender<Update>,
-    #[allow(clippy::type_complexity)]
-    pending_approvals: Arc<RwLock<HashMap<(Name<Bytes>, Serial), Vec<Uuid>>>>,
-    last_approvals: Arc<RwLock<HashMap<(Name<Bytes>, Serial), Instant>>>,
-    zones: XfrDataProvidingZonesWrapper,
-    mode: Mode,
-    source: Source,
-    listen: Vec<ListenAddr>,
-}
-
-impl ZoneReviewApi {
-    #[allow(clippy::type_complexity)]
-    fn new(
-        http_api_path: Arc<String>,
-        update_tx: mpsc::Sender<Update>,
-        pending_approvals: Arc<RwLock<HashMap<(Name<Bytes>, Serial), Vec<Uuid>>>>,
-        last_approvals: Arc<RwLock<HashMap<(Name<Bytes>, Serial), Instant>>>,
-        zones: XfrDataProvidingZonesWrapper,
-        mode: Mode,
-        source: Source,
-        listen: Vec<ListenAddr>,
-    ) -> Self {
-        Self {
-            http_api_path,
-            update_tx,
-            pending_approvals,
-            last_approvals,
-            zones,
-            mode,
-            source,
-            listen,
-        }
-    }
-}
-
-// API: GET /<http api path>/{approve,reject}/<approval token>?zone=<zone name>&serial=<zone serial>
-//
-// NOTE: We use query parameters for the zone details because dots that appear in zone names are
-// decoded specially by HTTP standards compliant libraries, especially occurences of handling of /./
-// are problematic as that gets collapsed to /.
-//
-// TODO: Should we expire old pending approvals, e.g. a hook script failed and
-// they never got approved or rejected?
-#[async_trait]
-impl ProcessRequest for ZoneReviewApi {
-    async fn process_request(
-        &self,
-        request: &hyper::Request<hyper::Body>,
-    ) -> Option<hyper::Response<hyper::Body>> {
-        let req_path = request.uri().decoded_path();
-        if request.method() == hyper::Method::GET && req_path == *self.http_api_path {
-            return Some(self.build_status_response().await);
-        } else if self.mode == Mode::Prepublish && request.method() == hyper::Method::GET // should really be POST with POST body parameters.
-            && req_path.starts_with(self.http_api_path.deref())
-        {
-            let mut status = StatusCode::BAD_REQUEST;
-
-            let (_base_path, remainder) = req_path.split_at(self.http_api_path.len());
-
-            let mut parts = remainder.split('/');
-            let operation = parts.next();
-            let given_approval_token = parts.next();
-
-            // We don't use Url::parse() here because it doesn't like
-            // base-less URIs which is what we receive.
-            if let Some(query) = request.uri().query() {
-                let query_pairs_iter = url::form_urlencoded::parse(query.as_bytes());
-                let query_pairs: HashMap<_, _> = HashMap::from_iter(query_pairs_iter);
-                let zone_name = query_pairs.get("zone");
-                let zone_serial = query_pairs.get("serial");
-
-                // Is this a valid request?
-                if matches!(operation, Some("approve") | Some("reject"))
-                    && zone_name.is_some()
-                    && zone_serial.is_some()
-                    && given_approval_token.is_some()
-                    && parts.next().is_none()
-                {
-                    let operation = operation.unwrap();
-                    let zone_name = zone_name.unwrap();
-                    let zone_serial = zone_serial.unwrap();
-                    let given_approval_token = given_approval_token.unwrap();
-
-                    // Is the zone name valid?
-                    if let Ok(zone_name) = Name::<Bytes>::from_str(zone_name) {
-                        // Is the zone serial valid?
-                        if let Ok(zone_serial) = Serial::from_str(zone_serial) {
-                            let mut remove_approvals = false;
-
-                            // Are approvals pending for this serial of this zone?
-                            if let Some(pending_approvals) = self
-                                .pending_approvals
-                                .write()
-                                .await
-                                .get_mut(&(zone_name.clone(), zone_serial))
-                            {
-                                // Is this a valid approval token?
-                                if let Ok(given_uuid) = Uuid::from_str(given_approval_token) {
-                                    if let Some(idx) = pending_approvals
-                                        .iter()
-                                        .position(|&uuid| uuid == given_uuid)
-                                    {
-                                        // For a rejection remove all pending approvals for the zone.
-                                        // For an approval remove only the specified approval.
-                                        match operation {
-                                            "approve" => {
-                                                status = StatusCode::OK;
-                                                pending_approvals.remove(idx);
-
-                                                if pending_approvals.is_empty() {
-                                                    let evt_zone_name = zone_name.clone();
-                                                    let (zone_type, event) = match self.source {
-                                                        Source::UnsignedZones => (
-                                                            "unsigned",
-                                                            Update::UnsignedZoneApprovedEvent {
-                                                                zone_name: evt_zone_name,
-                                                                zone_serial,
-                                                            },
-                                                        ),
-                                                        Source::SignedZones => (
-                                                            "signed",
-                                                            Update::SignedZoneApprovedEvent {
-                                                                zone_name: evt_zone_name,
-                                                                zone_serial,
-                                                            },
-                                                        ),
-                                                        Source::PublishedZones => unreachable!(),
-                                                    };
-                                                    info!("Pending {zone_type} zone '{zone_name}' approved at serial {zone_serial}.");
-                                                    let approved_at = Instant::now();
-                                                    self.last_approvals
-                                                        .write()
-                                                        .await
-                                                        .entry((zone_name.clone(), zone_serial))
-                                                        .and_modify(|instant| {
-                                                            *instant = approved_at
-                                                        })
-                                                        .or_insert(approved_at);
-                                                    self.update_tx.send(event).await.unwrap();
-                                                    remove_approvals = true;
-                                                }
-                                            }
-                                            "reject" => {
-                                                info!("Pending zone '{zone_name}' rejected at serial {zone_serial}.");
-                                                status = StatusCode::OK;
-                                                remove_approvals = true;
-                                            }
-                                            _ => unreachable!(),
-                                        }
-                                    } else {
-                                        warn!("No pending approval found for zone name '{zone_name}' at serial {zone_serial} with approval token '{given_uuid}'.");
-                                    }
-                                } else {
-                                    warn!(
-                                        "Invalid approval token '{given_approval_token}' in request."
-                                    );
-                                }
-                            } else {
-                                debug!("No pending approvals for zone name '{zone_name}' at serial {zone_serial}.");
-                            }
-
-                            if remove_approvals {
-                                self.pending_approvals
-                                    .write()
-                                    .await
-                                    .remove(&(zone_name, zone_serial));
-                            }
-                        } else {
-                            warn!("Invalid zone serial '{zone_serial}' in request.");
-                        }
-                    } else {
-                        warn!("Invalid zone name '{zone_name}' in request.");
-                    }
-                }
-            }
-
-            if status == StatusCode::BAD_REQUEST {
-                debug!("Invalid request: {}", request.uri());
-            }
-
-            Some(
-                hyper::Response::builder()
-                    .status(status)
-                    .body(hyper::Body::empty())
-                    .unwrap(),
-            )
-        } else {
-            None
-        }
-    }
-}
-
-impl ZoneReviewApi {
-    pub async fn build_status_response(&self) -> hyper::Response<hyper::Body> {
-        let mut response_body = self.build_response_header().await;
-
-        self.build_status_response_body(&mut response_body).await;
-
-        self.build_response_footer(&mut response_body);
-
-        hyper::Response::builder()
-            .header("Content-Type", "text/html")
-            .body(hyper::Body::from(response_body))
-            .unwrap()
-    }
-
-    async fn build_response_header(&self) -> String {
-        let intro = match (self.mode, self.source) {
-            (Mode::Prepublish, Source::UnsignedZones) => {
-                "Pre-publication review server for unsigned zones"
-            }
-            (Mode::Prepublish, Source::SignedZones) => {
-                "Pre-publication review server for signed zones"
-            }
-            (Mode::Prepublish, Source::PublishedZones) => {
-                "Pre-publication review server for published zones"
-            }
-            (Mode::Publish, Source::UnsignedZones) => "Publication server for unsigned zones",
-            (Mode::Publish, Source::SignedZones) => "Publication server for signed zones",
-            (Mode::Publish, Source::PublishedZones) => "Publication server for published zones",
-        };
-
-        formatdoc! {
-            r#"
-            <!DOCTYPE html>
-            <html lang="en">
-                <head>
-                  <meta charset="UTF-8">
-                </head>
-                <body>
-                <pre>{intro}
-
-            "#,
-        }
-    }
-
-    async fn build_status_response_body(&self, response_body: &mut String) {
-        let num_zones = self.zones.zones.load().iter_zones().count();
-        response_body.push_str(&format!("Serving {num_zones} zones on:\n"));
-
-        for addr in &self.listen {
-            response_body.push_str(&format!("  - {addr}\n"));
-        }
-        response_body.push('\n');
-
-        for zone in self.zones.zones.load().iter_zones() {
-            response_body.push_str(&format!("zone:   {}\n", zone.apex_name()));
-            if self.mode == Mode::Prepublish {
-                for ((zone_name, zone_serial), pending_approvals) in self
-                    .pending_approvals
-                    .read()
-                    .await
-                    .iter()
-                    .filter(|((zone_name, _), _)| zone_name == zone.apex_name())
-                {
-                    response_body.push_str(&format!(
-                        "        pending approvals for serial {zone_serial}: {}\n",
-                        pending_approvals.len()
-                    ));
-                }
-            }
-        }
-    }
-
-    fn build_response_footer(&self, response_body: &mut String) {
-        response_body.push_str("    </pre>\n");
-        response_body.push_str("  </body>\n");
-        response_body.push_str("</html>\n");
-    }
 }

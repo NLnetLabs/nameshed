@@ -101,8 +101,6 @@ use crate::common::tsig::{parse_key_strings, TsigKeyStore};
 use crate::common::xfr::parse_xfr_acl;
 use crate::comms::ApplicationCommand;
 use crate::comms::{GraphStatus, Terminated};
-use crate::http::PercentDecodedPath;
-use crate::http::ProcessRequest;
 use crate::log::ExitError;
 use crate::manager::Component;
 use crate::metrics::{self, util::append_per_router_metric, Metric, MetricType, MetricUnit};
@@ -119,9 +117,6 @@ use core::sync::atomic::AtomicBool;
 
 #[derive(Debug)]
 pub struct ZoneSignerUnit {
-    /// The relative path at which we should listen for HTTP query API requests
-    pub http_api_path: Arc<String>,
-
     pub keys_path: PathBuf,
 
     pub rrsig_inception_offset_secs: u32,
@@ -146,10 +141,6 @@ pub struct ZoneSignerUnit {
 }
 
 impl ZoneSignerUnit {
-    fn default_http_api_path() -> Arc<String> {
-        Arc::new("/zone-signer/".to_string())
-    }
-
     fn default_rrsig_inception_offset_secs() -> u32 {
         60 * 90 // 90 minutes ala Knot
     }
@@ -225,7 +216,6 @@ impl ZoneSignerUnit {
 
         ZoneSigner::new(
             component,
-            self.http_api_path,
             self.rrsig_inception_offset_secs,
             self.rrsig_expiration_offset_secs,
             self.denial_config,
@@ -291,8 +281,6 @@ impl ZoneSignerUnit {
 
 struct ZoneSigner {
     component: Component,
-    #[allow(dead_code)]
-    http_api_path: Arc<String>,
     inception_offset_secs: u32,
     expiration_offset: u32,
     denial_config: TomlDenialConfig,
@@ -310,7 +298,6 @@ impl ZoneSigner {
     #[allow(clippy::too_many_arguments)]
     fn new(
         component: Component,
-        http_api_path: Arc<String>,
         inception_offset_secs: u32,
         expiration_offset: u32,
         denial_config: TomlDenialConfig,
@@ -324,7 +311,6 @@ impl ZoneSigner {
     ) -> Self {
         Self {
             component,
-            http_api_path,
             inception_offset_secs,
             expiration_offset,
             denial_config,
@@ -340,17 +326,9 @@ impl ZoneSigner {
     }
 
     async fn run(
-        mut self,
+        self,
         mut cmd_rx: mpsc::Receiver<ApplicationCommand>,
     ) -> Result<(), crate::comms::Terminated> {
-        // Setup REST API endpoint
-        let http_processor = Arc::new(SigningHistoryApi::new(
-            self.http_api_path.clone(),
-            self.signer_status.clone(),
-        ));
-        self.component
-            .register_http_resource(http_processor.clone(), &self.http_api_path);
-
         while let Some(cmd) = cmd_rx.recv().await {
             info!("[ZS]: Received command: {cmd:?}");
             match &cmd {
@@ -1237,79 +1215,6 @@ impl Default for ZoneSignerStatus {
         Self {
             zones_being_signed: VecDeque::with_capacity(MAX_SIGNING_HISTORY),
         }
-    }
-}
-
-//------------ ZoneListApi ---------------------------------------------------
-
-struct SigningHistoryApi {
-    http_api_path: Arc<String>,
-    signing_status: Arc<RwLock<ZoneSignerStatus>>,
-}
-
-impl SigningHistoryApi {
-    fn new(http_api_path: Arc<String>, signing_status: Arc<RwLock<ZoneSignerStatus>>) -> Self {
-        Self {
-            http_api_path,
-            signing_status,
-        }
-    }
-}
-
-#[async_trait]
-impl ProcessRequest for SigningHistoryApi {
-    async fn process_request(
-        &self,
-        request: &hyper::Request<hyper::Body>,
-    ) -> Option<hyper::Response<hyper::Body>> {
-        let req_path = request.uri().decoded_path();
-        #[allow(clippy::collapsible_if)]
-        if request.method() == hyper::Method::GET {
-            if req_path.starts_with(&*self.http_api_path) {
-                if req_path == format!("{}status.json", *self.http_api_path) {
-                    return Some(self.build_json_status_response().await);
-                } else if req_path.ends_with("/status.json") {
-                    let (_, parts) = req_path.split_at(self.http_api_path.len());
-                    if let Some((zone_name, status_rel_url)) = parts.split_once('/') {
-                        if status_rel_url == "status.json" {
-                            return self.build_json_zone_status_response(zone_name).await;
-                        }
-                    }
-                }
-            }
-        }
-        None
-    }
-}
-
-impl SigningHistoryApi {
-    pub async fn build_json_status_response(&self) -> hyper::Response<hyper::Body> {
-        let json = serde_json::to_string(&*self.signing_status.read().await).unwrap();
-
-        hyper::Response::builder()
-            .header("Content-Type", "application/json")
-            .header("Access-Control-Allow-Origin", "*")
-            .body(hyper::Body::from(json))
-            .unwrap()
-    }
-
-    pub async fn build_json_zone_status_response(
-        &self,
-        zone_name: &str,
-    ) -> Option<hyper::Response<hyper::Body>> {
-        if let Ok(zone_name) = StoredName::from_str(zone_name) {
-            if let Some(status) = self.signing_status.read().await.get(&zone_name) {
-                let json = serde_json::to_string(status).unwrap();
-                return Some(
-                    hyper::Response::builder()
-                        .header("Content-Type", "application/json")
-                        .header("Access-Control-Allow-Origin", "*")
-                        .body(hyper::Body::from(json))
-                        .unwrap(),
-                );
-            }
-        }
-        None
     }
 }
 
