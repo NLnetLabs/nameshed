@@ -2,7 +2,6 @@
 
 use arc_swap::ArcSwap;
 use log::{debug, info};
-use reqwest::Client as HttpClient;
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::sync::Arc;
@@ -29,9 +28,6 @@ use domain::zonetree::ZoneTree;
 /// Upon being started, every component receives one of these. It provides
 /// access to information and services available to all components.
 pub struct Component {
-    /// An HTTP client.
-    http_client: Option<HttpClient>,
-
     /// A reference to the metrics collection.
     metrics: Option<metrics::Collection>,
 
@@ -56,7 +52,6 @@ pub struct Component {
 impl Default for Component {
     fn default() -> Self {
         Self {
-            http_client: Default::default(),
             metrics: Default::default(),
             unsigned_zones: Default::default(),
             signed_zones: Default::default(),
@@ -71,7 +66,6 @@ impl Component {
     /// Creates a new component from its, well, components.
     #[allow(clippy::too_many_arguments)]
     fn new(
-        http_client: HttpClient,
         metrics: metrics::Collection,
         unsigned_zones: Arc<ArcSwap<ZoneTree>>,
         signed_zones: Arc<ArcSwap<ZoneTree>>,
@@ -80,7 +74,6 @@ impl Component {
         app_cmd_tx: Sender<(String, ApplicationCommand)>,
     ) -> Self {
         Component {
-            http_client: Some(http_client),
             metrics: Some(metrics),
             unsigned_zones,
             signed_zones,
@@ -88,11 +81,6 @@ impl Component {
             tsig_key_store,
             app_cmd_tx,
         }
-    }
-
-    /// Returns a reference to an HTTP Client.
-    pub fn http_client(&self) -> &HttpClient {
-        self.http_client.as_ref().unwrap()
     }
 
     pub fn unsigned_zones(&self) -> &Arc<ArcSwap<ZoneTree>> {
@@ -160,9 +148,6 @@ pub struct Manager {
     /// Commands for the central command.
     center_tx: Option<mpsc::Sender<TargetCommand>>,
 
-    /// An HTTP client.
-    http_client: HttpClient,
-
     /// The metrics collection maintained by this manager.
     metrics: metrics::Collection,
 
@@ -207,7 +192,6 @@ impl Manager {
             review2_tx: None,
             publish_tx: None,
             center_tx: None,
-            http_client: Default::default(),
             metrics: Default::default(),
             file_io: TheFileIo::default(),
             unsigned_zones,
@@ -420,7 +404,6 @@ impl Manager {
 
             // Spawn the new target
             let component = Component::new(
-                self.http_client.clone(),
                 self.metrics.clone(),
                 self.unsigned_zones.clone(),
                 self.signed_zones.clone(),
@@ -505,7 +488,6 @@ impl Manager {
             (
                 String::from("ZL"),
                 Unit::ZoneLoader(ZoneLoader {
-                    http_api_path: Arc::new(String::from("/zl/")),
                     listen: vec![
                         "tcp:127.0.0.1:8054".parse().unwrap(),
                         "udp:127.0.0.1:8054".parse().unwrap(),
@@ -520,7 +502,6 @@ impl Manager {
             (
                 String::from("RS"),
                 Unit::ZoneServer(ZoneServerUnit {
-                    http_api_path: Arc::new(String::from("/rs/")),
                     listen: vec![
                         "tcp:127.0.0.1:8056".parse().unwrap(),
                         "udp:127.0.0.1:8056".parse().unwrap(),
@@ -548,7 +529,6 @@ impl Manager {
             (
                 String::from("ZS"),
                 Unit::ZoneSigner(ZoneSignerUnit {
-                    http_api_path: Arc::new(String::from("/zs/")),
                     keys_path: "/tmp/keys".into(),
                     treat_single_keys_as_csks: true,
                     max_concurrent_operations: 1,
@@ -565,7 +545,6 @@ impl Manager {
             (
                 String::from("RS2"),
                 Unit::ZoneServer(ZoneServerUnit {
-                    http_api_path: Arc::new(String::from("/rs2/")),
                     listen: vec![
                         "tcp:127.0.0.1:8057".parse().unwrap(),
                         "udp:127.0.0.1:8057".parse().unwrap(),
@@ -584,7 +563,6 @@ impl Manager {
             (
                 String::from("PS"),
                 Unit::ZoneServer(ZoneServerUnit {
-                    http_api_path: Arc::new(String::from("/ps/")),
                     listen: vec![
                         "tcp:127.0.0.1:8058".parse().unwrap(),
                         "udp:127.0.0.1:8058".parse().unwrap(),
@@ -603,7 +581,6 @@ impl Manager {
         for (name, new_unit) in units {
             // Spawn the new unit
             let component = Component::new(
-                self.http_client.clone(),
                 self.metrics.clone(),
                 self.unsigned_zones.clone(),
                 self.signed_zones.clone(),
