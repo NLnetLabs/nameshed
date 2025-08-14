@@ -1,5 +1,6 @@
 [package]
 name = "nameshed"
+default-run = "nameshed"
 version = "0.1.0"
 edition = "2021"
 
@@ -7,7 +8,7 @@ edition = "2021"
 arc-swap       = "1.7.0"
 bytes	       = "1.0"
 chrono         = "0.4.11"
-clap           = { version = "4.4", features = [ "cargo", "wrap_help" ] }
+clap           = { version = "4.5", features = [ "cargo", "wrap_help", "derive" ] }
 dirs           = "4.0"
 domain         = { git = "https://github.com/NLnetLabs/domain", branch = "patches-for-nameshed-prototype", features = [
     "openssl",
@@ -35,6 +36,13 @@ tokio-stream   = { version = "0.1.1" }
 rustls-pemfile = { version = "1.0", optional = true }
 tracing        = { version = "0.1.40" }
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+# Added for HTTP API
+hyper              = { version = "1.6.0", features = ["server"] }
+# For hyper-tokio integration
+hyper-util         = { version = "0.1.16" }
+# Added for CLI to access HTTP API
+# `default-features = false` was copied from previous import from the Rotonda base
+reqwest            = { version = "0.12", default-features = false, features = ["http2", "json"] }
 
 # From Rotonda
 allocator-api2     = "0.2"
@@ -45,12 +53,10 @@ crossbeam-utils    = "0.8"
 env_logger         = "0.10"
 flate2             = "*"
 hashbrown          = "0.14"
-# hyper              = { version = "0.14", features = ["server", "stream"] }
 layout-rs          = { version = "0.1" }
 non-empty-vec      = { version = "0.2", features = ["serde"]}
 percent-encoding   = "2.3"
 prometheus-parse   = "0.2"
-# reqwest            = { version = "0.11", default-features = false }
 serde_json         = "1.0"
 serde_with         = "3"
 smallvec           = { version = "1.11", features = ["const_generics", "const_new", "union"] }
