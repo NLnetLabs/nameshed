@@ -22,9 +22,11 @@
 pub mod key_manager;
 pub mod zone_server;
 pub mod zone_signer;
+pub mod http_server;
 
 //------------ Unit ----------------------------------------------------------
 
+use crate::http;
 use crate::manager::Component;
 use serde::Deserialize;
 
@@ -37,6 +39,8 @@ pub enum Unit {
     ZoneServer(zone_server::ZoneServerUnit),
 
     ZoneSigner(zone_signer::ZoneSignerUnit),
+
+    HttpServer(http_server::HttpServer),
 }
 
 impl Unit {
@@ -45,6 +49,7 @@ impl Unit {
             Unit::KeyManager(unit) => unit.run(component).await,
             Unit::ZoneServer(unit) => unit.run(component).await,
             Unit::ZoneSigner(unit) => unit.run(component).await,
+            Unit::HttpServer(unit) => unit.run(component).await,
         };
     }
 
@@ -53,6 +58,7 @@ impl Unit {
             Unit::KeyManager(_) => "key-manager",
             Unit::ZoneServer(_) => "zone-server",
             Unit::ZoneSigner(_) => "zone-signer",
+            Unit::HttpServer(_) => "http-server",
         }
     }
 }
