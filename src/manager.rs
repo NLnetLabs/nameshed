@@ -14,6 +14,7 @@ use crate::comms::ApplicationCommand;
 use crate::metrics;
 use crate::targets::central_command::{self, CentralCommandTarget};
 use crate::targets::Target;
+use crate::units::http_server::HttpServer;
 use crate::units::key_manager::KeyManagerUnit;
 use crate::units::zone_loader::ZoneLoader;
 use crate::units::zone_server::{self, ZoneServerUnit};
@@ -149,6 +150,9 @@ pub struct Manager {
     /// Commands for the central command.
     center_tx: Option<mpsc::Sender<TargetCommand>>,
 
+    /// Commands for the http server.
+    http_tx: Option<mpsc::Sender<ApplicationCommand>>,
+
     /// The metrics collection maintained by this manager.
     metrics: metrics::Collection,
 
@@ -193,6 +197,7 @@ impl Manager {
             review2_tx: None,
             publish_tx: None,
             center_tx: None,
+            http_tx: None,
             metrics: Default::default(),
             file_io: TheFileIo::default(),
             unsigned_zones,
@@ -220,6 +225,7 @@ impl Manager {
                 "ZS" => self.signer_tx.as_ref(),
                 "RS2" => self.review2_tx.as_ref(),
                 "PS" => self.publish_tx.as_ref(),
+                "HS" => self.http_tx.as_ref(),
                 _ => None,
             }) else {
                 continue;
@@ -386,6 +392,7 @@ impl Manager {
         let (zs_tx, zs_rx) = mpsc::channel(10);
         let (rs2_tx, rs2_rx) = mpsc::channel(10);
         let (ps_tx, ps_rx) = mpsc::channel(10);
+        let (http_tx, http_rx) = mpsc::channel(10);
 
         self.loader_tx = Some(zl_tx);
         self.review_tx = Some(rs_tx);
@@ -393,6 +400,7 @@ impl Manager {
         self.signer_tx = Some(zs_tx);
         self.review2_tx = Some(rs2_tx);
         self.publish_tx = Some(ps_tx);
+        self.http_tx = Some(http_tx);
 
         let (update_tx, update_rx) = mpsc::channel(10);
 
@@ -578,6 +586,14 @@ impl Manager {
                     cmd_rx: ps_rx,
                 }),
             ),
+            (
+                String::from("HS"),
+                Unit::HttpServer(HttpServer {
+                    // TODO: config/argument option
+                    listen_addr: "127.0.0.1:8950".parse().unwrap(),
+                    cmd_rx: http_rx,
+                }),
+            ),
         ];
 
         // Spawn and terminate units
@@ -605,6 +621,7 @@ impl Manager {
             ("ZS", self.signer_tx.take().unwrap()),
             ("RS2", self.review2_tx.take().unwrap()),
             ("PS", self.publish_tx.take().unwrap()),
+            ("HS", self.http_tx.take().unwrap()),
         ];
         for (name, tx) in units {
             info!("Stopping unit '{name}'");
