@@ -124,6 +124,20 @@ impl Zones {
             .map(|zone| zone.0.clone())
     }
 
+    /// List available zones.
+    pub fn list(&self) -> Vec<Box<RevName>> {
+        let mut names = Vec::new();
+        for zone in self
+            .map
+            .read()
+            .expect("the internal RwLock cannot be corrupted") // TODO: check statement
+            .iter()
+        {
+            names.push(zone.0.name.clone())
+        }
+        names
+    }
+
     // TODO: Careful (prepare->consistency->apply) zone operations.
     // TODO: How to remove a zone?
 }
