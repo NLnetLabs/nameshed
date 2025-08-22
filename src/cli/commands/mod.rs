@@ -1,14 +1,23 @@
 //! The commands of _nameshedc_.
 
 pub mod zone;
+pub mod status;
 
 use crate::log::ExitError;
+
+use super::client::NameshedApiClient;
 
 #[derive(Clone, Debug, clap::Subcommand)]
 pub enum Command {
     /// Manage zones
     #[command(name = "zone")]
     Zone(self::zone::Zone),
+
+    /// Get the status of different systems
+    #[command(name = "status")]
+    Status(self::status::Status),
+    // - get status (what zones are there, what are things doing)
+    // - get dnssec status on zone
 
     // /// Manage keys
     // #[command(name = "key")]
@@ -28,9 +37,9 @@ pub enum Command {
 }
 
 impl Command {
-    pub async fn execute(self) -> Result<(), ExitError> {
+    pub async fn execute(self, client: NameshedApiClient) -> Result<(), ExitError> {
         match self {
-            Self::Zone(zone) => zone.execute().await,
+            Self::Zone(zone) => zone.execute(client).await,
             // Self::Help(help) => help.execute(),
         }
     }
