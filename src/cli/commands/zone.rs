@@ -1,5 +1,12 @@
+use bytes::Bytes;
+use domain::base::Name;
 use log::error;
 
+use crate::api::{
+    ZoneRegister, ZoneRegisterResult, ZoneSource, ZoneStatusResult,
+    ZonesListResult,
+};
+use crate::cli::client::NameshedApiClient;
 use crate::http;
 use crate::log::ExitError;
 
@@ -13,33 +20,98 @@ pub struct Zone {
 pub enum ZoneCommand {
     /// Register a new zone
     #[command(name = "register")]
-    Register,
+    Register {
+        name: Name<Bytes>,
+        /// The zone source can be an IP address (with or without port,
+        /// defaults to port 53) or a file path.
+        // TODO: allow supplying different tcp and/or udp port?
+        source: ZoneSource,
+    },
 
     /// List registered zones
     #[command(name = "list")]
     List,
+
+    /// Reload a zone
+    #[command(name = "reload")]
+    Reload { zone: Name<Bytes> },
+
+    /// Get the status of a single zone
+    #[command(name = "status")]
+    Status { zone: Name<Bytes> },
 }
 
 // From brainstorm in beginning of April 2025
-// - Command: process an UPDATE message
-// - Command: process a NOTIFY message
 // - Command: reload a zone immediately
 // - Command: register a new zone
 // - Command: de-register a zone
 // - Command: reconfigure a zone
 
+// From discussion in August 2025
+// At least:
+// - register zone
+// - list zones
+// - get status (what zones are there, what are things doing)
+// - get dnssec status on zone
+// - reload zone (i.e. from file)
+
 impl Zone {
-    pub async fn execute(self) -> Result<(), ExitError> {
+    pub async fn execute(
+        self,
+        client: NameshedApiClient,
+    ) -> Result<(), ExitError> {
         match self.command {
-            ZoneCommand::Register => {}
-            ZoneCommand::List => {
-                println!(
-                    "Response: {:?}",
-                    http::get_text("http://127.0.0.1:8950/hallo").await.map_err(|e| {
+            ZoneCommand::Register { name, source } => {
+                let res: ZoneRegisterResult =
+                    http::post_json_with_response(
+                        &client.uri_with("/zone/register"),
+                        ZoneRegister { name, source },
+                    )
+                    .await
+                    .map_err(|e| {
                         error!("HTTP request failed: {e}");
                         ExitError
-                    })?
-                )
+                    })?;
+                println!("Registered zone {}", res.name)
+            }
+            ZoneCommand::List => {
+                let res: ZonesListResult =
+                    http::get_json(&client.uri_with("/zones/list"))
+                        .await
+                        .map_err(|e| {
+                            error!("HTTP request failed: {e}");
+                            ExitError
+                        })?;
+                println!("Response: {:?}", res)
+            }
+            ZoneCommand::Reload { zone } => {
+                http::post_empty(&format!(
+                    // TODO: maybe add a client.format_uri method?
+                    "{}/zone/{}/reload",
+                    client.base_uri(),
+                    zone
+                ))
+                .await
+                .map_err(|e| {
+                    error!("HTTP request failed: {e}");
+                    ExitError
+                })?;
+                println!("Success: Sent zone reload command for {}", zone)
+            }
+            ZoneCommand::Status { zone } => {
+                // TODO: move to function that can be called by the general
+                // status command with a zone arg?
+                let res: ZoneStatusResult = http::get_json(&format!(
+                    "{}/zone/{}/status",
+                    client.base_uri(),
+                    zone
+                ))
+                .await
+                .map_err(|e| {
+                    error!("HTTP request failed: {e}");
+                    ExitError
+                })?;
+                println!("Success: Sent zone reload command for {}", zone)
             }
         }
         Ok(())

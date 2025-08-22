@@ -147,7 +147,7 @@ pub struct Manager {
     loader_runner: Option<tokio::task::AbortHandle>,
 
     /// Zones known to Nameshed.
-    zones: Zones,
+    zones: Arc<Zones>,
 
     /// Commands for the review server.
     review_tx: Option<mpsc::Sender<ApplicationCommand>>,
@@ -208,7 +208,7 @@ impl Manager {
         Self {
             loader: None,
             loader_runner: None,
-            zones: Zones::default(),
+            zones: Arc::new(Zones::default()),
             review_tx: None,
             key_manager_tx: None,
             signer_tx: None,
@@ -646,7 +646,8 @@ impl Manager {
                 Unit::HttpServer(HttpServer {
                     // TODO: config/argument option
                     listen_addr: "127.0.0.1:8950".parse().unwrap(),
-                    cmd_rx: http_rx,
+                    zones: self.zones.clone(),
+                    cmd_rx: Some(http_rx),
                 }),
             ),
         ];
