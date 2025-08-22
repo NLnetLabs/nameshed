@@ -33,7 +33,6 @@ use serde::Deserialize;
 
 /// The fundamental entity for data processing.
 #[allow(clippy::enum_variant_names)]
-#[derive(Debug)]
 pub enum Unit {
     ZoneLoader(zone_loader::ZoneLoader),
 

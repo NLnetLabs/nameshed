@@ -591,7 +591,8 @@ impl Manager {
                 Unit::HttpServer(HttpServer {
                     // TODO: config/argument option
                     listen_addr: "127.0.0.1:8950".parse().unwrap(),
-                    cmd_rx: http_rx,
+                    // zones: self.zones.clone(),
+                    cmd_rx: Some(http_rx),
                 }),
             ),
         ];
