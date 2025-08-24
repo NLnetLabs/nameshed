@@ -59,9 +59,6 @@ fn main() -> ExitCode {
 
         LogConfig::default().switch_logging(true).unwrap();
         let mut manager = Manager::new();
-        nameshed::http::Server::new(vec!["0.0.0.0:8080".parse().unwrap()])
-            .run(manager.metrics(), manager.http_resources())
-            .unwrap();
         manager.spawn();
 
         // Let the manager run and handle external events.
