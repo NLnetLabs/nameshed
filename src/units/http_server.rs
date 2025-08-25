@@ -11,6 +11,7 @@ use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::Arc;
 
+use arc_swap::ArcSwap;
 use axum::extract;
 use axum::extract::Path;
 use axum::extract::State;
@@ -19,22 +20,40 @@ use axum::routing::post;
 use axum::Json;
 use axum::Router;
 use bytes::Bytes;
+use chrono::DateTime;
 use domain::base::Name;
+use domain::base::ToName;
+use domain::new::base::name::RevNameBuf;
+use domain::new::base::wire::BuildBytes;
+use domain::new::base::wire::ParseBytes;
+use domain::utils::dst::UnsizedCopy;
 use domain::zonetree::StoredName;
+use domain::zonetree::ZoneTree;
 use log::{debug, error, info};
 use serde::Deserialize;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio::sync::RwLock;
 
+use crate::api::LoadType;
 use crate::api::ServerStatusResult;
+use crate::api::ZoneListEntry;
 use crate::api::ZoneRegister;
 use crate::api::ZoneRegisterResult;
 use crate::api::ZoneReloadResult;
+use crate::api::ZoneSource;
 use crate::api::ZoneStatusResult;
+use crate::api::ZoneVersion;
+use crate::api::ZoneVersionStatus;
 use crate::api::ZonesListResult;
 use crate::comms::{ApplicationCommand, Terminated};
+use crate::loader::Loader;
 use crate::manager::Component;
+use crate::zone::loader::DnsServerAddr;
+use crate::zone::loader::EnqueuedRefresh;
+use crate::zone::loader::OngoingRefresh;
+use crate::zone::loader::Source;
+use crate::zone::LoaderState;
 use crate::zone::Zones;
 
 const HTTP_UNIT_NAME: &str = "HS";
@@ -44,7 +63,9 @@ const HTTP_UNIT_NAME: &str = "HS";
 
 pub struct HttpServer {
     pub listen_addr: SocketAddr,
+    pub loader: Arc<Loader>,
     pub zones: Arc<Zones>,
+    pub unsigned_zones: Arc<ArcSwap<ZoneTree>>,
     pub cmd_rx: Option<mpsc::Receiver<ApplicationCommand>>,
 }
 
@@ -85,6 +106,7 @@ impl HttpServer {
             .route("/status", get(Self::status))
             .route("/zones/list", get(Self::zones_list))
             .route("/zone/register", post(Self::zone_register))
+            .route("/zone/{name}/source", post(Self::zone_change_source))
             .route("/zone/{name}/status", get(Self::zone_status))
             .route("/zone/{name}/reload", post(Self::zone_reload))
             .with_state(state);
@@ -95,12 +117,30 @@ impl HttpServer {
     }
 
     async fn zone_register(
+        State(state): State<Arc<HttpServer>>,
         Json(payload): Json<ZoneRegister>,
-    ) -> Json<ZoneRegisterResult> {
-        Json(ZoneRegisterResult {
-            name: payload.name.clone(),
-            status: "Maybe Success".into(),
-        })
+    ) -> Result<Json<ZoneRegisterResult>, String> {
+        // TODO: This conversion needs to be improved
+        let mut bytes = Vec::new();
+        payload.name.compose(&mut bytes).unwrap();
+        let name = RevNameBuf::parse_bytes(&bytes).unwrap();
+        let result = state.zones.add(name.unsized_copy_into());
+        match result {
+            Ok(new_zone) => {
+                state.unsigned_zones.rcu(|tree| {
+                    let mut tree = tree.clone();
+                    Arc::make_mut(&mut tree)
+                        .insert_zone(new_zone.loaded.clone())
+                        .unwrap();
+                    tree
+                });
+                Ok(Json(ZoneRegisterResult {
+                    name: payload.name.clone(),
+                    status: "Success".into(),
+                }))
+            }
+            Err(_old_zone) => Err("already exists".into()),
+        }
     }
 
     async fn zones_list(
@@ -112,22 +152,58 @@ impl HttpServer {
             .list()
             .iter()
             .map(|n| {
-                // TODO: find a way to get correct `Name`s back from `Zones`
-                let mut sv = Vec::new();
-                let mut buf = String::with_capacity(256);
-                let mut first = true;
-                for l in n.labels() {
-                    sv.push(l);
-                }
-                sv.reverse();
-                for l in sv {
-                    if !first {
-                        buf.push('.');
+                let mut bytes = vec![0u8; n.built_bytes_size()];
+                n.build_bytes(&mut bytes).unwrap();
+                let bytes = bytes::Bytes::from(bytes);
+                let mut parser = octseq::Parser::from_ref(&bytes);
+                let name = Name::parse(&mut parser).unwrap();
+
+                let mut versions = Vec::new();
+
+                let zone = state.zones.get(n).unwrap();
+                let state = zone.data.lock().unwrap();
+                if let Some(refreshes) = &state.loader.refreshes {
+                    if let Some(enqueued) = &refreshes.enqueued {
+                        let load_type = match enqueued {
+                            EnqueuedRefresh::Refresh => LoadType::Refresh,
+                            EnqueuedRefresh::Reload => LoadType::Reload,
+                        };
+                        versions.push(ZoneVersion {
+                            serial: None,
+                            status: ZoneVersionStatus::Enqueued(load_type),
+                        });
                     }
-                    buf.push_str(&l.to_string());
-                    first = false;
+                    let load_type = match refreshes.ongoing {
+                        OngoingRefresh::Refresh { .. } => LoadType::Refresh,
+                        OngoingRefresh::Reload { .. } => LoadType::Reload,
+                    };
+                    versions.push(ZoneVersion {
+                        serial: None,
+                        status: ZoneVersionStatus::Loading(load_type),
+                    });
                 }
-                Name::from_str(&buf).unwrap()
+
+                if let Some(contents) = &state.contents {
+                    let serial = contents.latest.soa.rdata.serial;
+                    versions.push(ZoneVersion {
+                        serial: Some(serial.into()),
+                        // TODO: Published is not (always) right.
+                        status: ZoneVersionStatus::Published,
+                    });
+
+                    // TODO: We should stop this loop once we found a zone that
+                    // is actually published. The rest doesn't matter.
+                    for zone in contents.previous.iter().rev() {
+                        let serial = zone.soa.rdata.serial;
+                        versions.push(ZoneVersion {
+                            serial: Some(serial.into()),
+                            // TODO: Published is not (always) right.
+                            status: ZoneVersionStatus::Published,
+                        });
+                    }
+                }
+
+                ZoneListEntry { name, versions }
             })
             .collect();
         Json(ZonesListResult { zones })
@@ -139,10 +215,60 @@ impl HttpServer {
         Json(ZoneStatusResult { name })
     }
 
+    async fn zone_change_source(
+        State(state): State<Arc<HttpServer>>,
+        Path(payload): Path<Name<Bytes>>,
+        Json(zone_source): Json<ZoneSource>,
+    ) -> Result<Json<ZoneReloadResult>, String> {
+        // TODO: This conversion needs to be improved
+        let mut bytes = Vec::new();
+        payload.compose(&mut bytes).unwrap();
+        let name = RevNameBuf::parse_bytes(&bytes).unwrap();
+
+        let Some(zone) = state.zones.get(&name) else {
+            return Err("zone does not exist".into());
+        };
+
+        let mut zone_state = zone.data.lock().unwrap();
+
+        let source = match zone_source {
+            ZoneSource::Zonefile { path } => Source::Zonefile { path },
+            ZoneSource::Server { addr } => Source::Server {
+                addr: DnsServerAddr {
+                    ip: addr.ip(),
+                    tcp_port: addr.port(),
+                    udp_port: Some(addr.port()),
+                },
+            },
+        };
+
+        LoaderState::set_source(&mut zone_state, &zone, source, &state.loader);
+
+        Ok(Json(ZoneReloadResult { name: payload }))
+    }
+
     async fn zone_reload(
-        Path(name): Path<Name<Bytes>>,
-    ) -> Json<ZoneReloadResult> {
-        Json(ZoneReloadResult { name })
+        State(state): State<Arc<HttpServer>>,
+        Path(payload): Path<Name<Bytes>>,
+    ) -> Result<Json<ZoneReloadResult>, String> {
+        // TODO: This conversion needs to be improved
+        let mut bytes = Vec::new();
+        payload.compose(&mut bytes).unwrap();
+        let name = RevNameBuf::parse_bytes(&bytes).unwrap();
+
+        let Some(zone) = state.zones.get(&name) else {
+            return Err("zone does not exist".into());
+        };
+
+        let mut zone_state = zone.data.lock().unwrap();
+        LoaderState::enqueue_refresh(
+            &mut zone_state,
+            &zone,
+            true,
+            &state.loader,
+        );
+
+        Ok(Json(ZoneReloadResult { name: payload }))
     }
 
     async fn status() -> Json<ServerStatusResult> {

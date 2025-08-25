@@ -1,4 +1,5 @@
 use bytes::Bytes;
+use camino::Utf8PathBuf;
 use domain::base::Name;
 use futures::TryFutureExt;
 use log::error;
@@ -39,6 +40,21 @@ pub enum ZoneCommand {
     /// Get the status of a single zone
     #[command(name = "status")]
     Status { zone: Name<Bytes> },
+
+    #[command(name = "change")]
+    Change {
+        #[command(subcommand)]
+        thing: ZoneChangeCommand,
+    },
+}
+
+#[derive(Clone, Debug, clap::Subcommand)]
+pub enum ZoneChangeCommand {
+    #[command(name = "source")]
+    Source {
+        zone: Name<Bytes>,
+        path: Utf8PathBuf,
+    },
 }
 
 // From brainstorm in beginning of April 2025
@@ -61,10 +77,10 @@ impl Zone {
         client: NameshedApiClient,
     ) -> Result<(), ExitError> {
         match self.command {
-            ZoneCommand::Register { name, source } => {
+            ZoneCommand::Register { name, .. } => {
                 let res: ZoneRegisterResult = client
                     .post("/zone/register")
-                    .json(&ZoneRegister { name, source })
+                    .json(&ZoneRegister { name })
                     .send()
                     .and_then(|r| r.json())
                     .await
@@ -116,10 +132,26 @@ impl Zone {
                         ExitError
                     })?;
 
-                println!(
-                    "Success: Sent zone reload command for {}",
-                    response.name
-                );
+                println!("Server status: {:?}", response);
+            }
+            ZoneCommand::Change {
+                thing: ZoneChangeCommand::Source { zone, path },
+            } => {
+                let url = format!("/zone/{}/source", zone);
+                let response: ZoneStatusResult = client
+                    .post(&url)
+                    .json(&ZoneSource::Zonefile {
+                        path: path.into_boxed_path(),
+                    })
+                    .send()
+                    .and_then(|r| r.json())
+                    .await
+                    .map_err(|e| {
+                        error!("HTTP request failed: {e}");
+                        ExitError
+                    })?;
+
+                println!("Server status: {:?}", response);
             }
         }
         Ok(())

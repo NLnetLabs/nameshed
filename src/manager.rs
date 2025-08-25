@@ -647,6 +647,8 @@ impl Manager {
                     // TODO: config/argument option
                     listen_addr: "127.0.0.1:8950".parse().unwrap(),
                     zones: self.zones.clone(),
+                    loader: self.loader.clone().unwrap(),
+                    unsigned_zones: self.unsigned_zones.clone(),
                     cmd_rx: Some(http_rx),
                 }),
             ),

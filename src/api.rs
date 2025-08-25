@@ -11,7 +11,7 @@ const DEFAULT_AXFR_PORT: u16 = 53;
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct ZoneRegister {
     pub name: Name<Bytes>,
-    pub source: ZoneSource,
+    // pub source: ZoneSource,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -50,7 +50,39 @@ impl From<&str> for ZoneSource {
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct ZonesListResult {
-    pub zones: Vec<Name<Bytes>>,
+    pub zones: Vec<ZoneListEntry>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct ZoneListEntry {
+    pub name: Name<Bytes>,
+    pub versions: Vec<ZoneVersion>,
+}
+
+// nlnetlabs.nl:
+//   v0: published
+//   v1: signing
+//   next: refreshing at 00:00
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct ZoneVersion {
+    pub serial: Option<u32>,
+    pub status: ZoneVersionStatus,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub enum ZoneVersionStatus {
+    Enqueued(LoadType),
+    Loading(LoadType),
+    Signing,
+    Review,
+    Published,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub enum LoadType {
+    Refresh,
+    Reload,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
