@@ -1,7 +1,7 @@
 //! The commands of _nameshedc_.
 
-pub mod zone;
 pub mod status;
+pub mod zone;
 
 use crate::log::ExitError;
 
@@ -37,7 +37,10 @@ pub enum Command {
 }
 
 impl Command {
-    pub async fn execute(self, client: NameshedApiClient) -> Result<(), ExitError> {
+    pub async fn execute(
+        self,
+        client: NameshedApiClient,
+    ) -> Result<(), ExitError> {
         match self {
             Self::Zone(zone) => zone.execute(client).await,
             Self::Status(status) => status.execute(client).await,
