@@ -1,10 +1,10 @@
 use bytes::Bytes;
 use domain::base::Name;
+use futures::TryFutureExt;
 use log::error;
 
 use crate::api::{ServerStatusResult, ZoneStatusResult};
 use crate::cli::client::NameshedApiClient;
-use crate::http;
 use crate::log::ExitError;
 
 #[derive(Clone, Debug, clap::Args)]
@@ -38,27 +38,32 @@ impl Status {
             Some(StatusCommand::Zone { name }) => {
                 // TODO: move to function that can be called by the general
                 // status command with a zone arg?
-                let res: ZoneStatusResult = http::get_json(&format!(
-                    "{}/zone/{}/status",
-                    client.base_uri(),
-                    name
-                ))
-                .await
-                .map_err(|e| {
-                    error!("HTTP request failed: {e}");
-                    ExitError
-                })?;
+                let url = format!("/zone/{name}/status");
+                let response: ZoneStatusResult = client
+                    .get(&url)
+                    .send()
+                    .and_then(|r| r.json())
+                    .await
+                    .map_err(|e| {
+                        error!("HTTP request failed: {e}");
+                        ExitError
+                    })?;
+
                 println!("Success: Sent zone reload command for {}", name)
             }
             Some(_) => todo!(),
             None => {
-                let res: ServerStatusResult = http::get_json(&client.uri_with("/status"))
-                .await
-                .map_err(|e| {
-                    error!("HTTP request failed: {e}");
-                    ExitError
-                })?;
-                println!("Server status: {:?}", res)
+                let response: ServerStatusResult = client
+                    .get("/status")
+                    .send()
+                    .and_then(|r| r.json())
+                    .await
+                    .map_err(|e| {
+                        error!("HTTP request failed: {e}");
+                        ExitError
+                    })?;
+
+                println!("Server status: {:?}", response)
             }
         }
         Ok(())

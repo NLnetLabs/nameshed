@@ -1,5 +1,6 @@
 use bytes::Bytes;
 use domain::base::Name;
+use futures::TryFutureExt;
 use log::error;
 
 use crate::api::{
@@ -7,7 +8,6 @@ use crate::api::{
     ZonesListResult,
 };
 use crate::cli::client::NameshedApiClient;
-use crate::http;
 use crate::log::ExitError;
 
 #[derive(Clone, Debug, clap::Args)]
@@ -62,56 +62,64 @@ impl Zone {
     ) -> Result<(), ExitError> {
         match self.command {
             ZoneCommand::Register { name, source } => {
-                let res: ZoneRegisterResult =
-                    http::post_json_with_response(
-                        &client.uri_with("/zone/register"),
-                        ZoneRegister { name, source },
-                    )
+                let res: ZoneRegisterResult = client
+                    .post("/zone/register")
+                    .json(&ZoneRegister { name, source })
+                    .send()
+                    .and_then(|r| r.json())
                     .await
                     .map_err(|e| {
                         error!("HTTP request failed: {e}");
                         ExitError
                     })?;
-                println!("Registered zone {}", res.name)
+
+                println!("Registered zone {}", res.name);
             }
             ZoneCommand::List => {
-                let res: ZonesListResult =
-                    http::get_json(&client.uri_with("/zones/list"))
-                        .await
-                        .map_err(|e| {
-                            error!("HTTP request failed: {e}");
-                            ExitError
-                        })?;
-                println!("Response: {:?}", res)
+                let response: ZonesListResult = client
+                    .get("/zones/list")
+                    .send()
+                    .and_then(|r| r.json())
+                    .await
+                    .map_err(|e| {
+                        error!("HTTP request failed: {e}");
+                        ExitError
+                    })?;
+
+                println!("Response: {:?}", response.zones);
             }
             ZoneCommand::Reload { zone } => {
-                http::post_empty(&format!(
-                    // TODO: maybe add a client.format_uri method?
-                    "{}/zone/{}/reload",
-                    client.base_uri(),
-                    zone
-                ))
-                .await
-                .map_err(|e| {
-                    error!("HTTP request failed: {e}");
-                    ExitError
-                })?;
-                println!("Success: Sent zone reload command for {}", zone)
+                let url = format!("/zone/{zone}/reload");
+                client
+                    .post(&url)
+                    .send()
+                    .and_then(|r| async { r.error_for_status() })
+                    .await
+                    .map_err(|e| {
+                        error!("HTTP request failed: {e}");
+                        ExitError
+                    })?;
+
+                println!("Success: Sent zone reload command for {}", zone);
             }
             ZoneCommand::Status { zone } => {
                 // TODO: move to function that can be called by the general
                 // status command with a zone arg?
-                let res: ZoneStatusResult = http::get_json(&format!(
-                    "{}/zone/{}/status",
-                    client.base_uri(),
-                    zone
-                ))
-                .await
-                .map_err(|e| {
-                    error!("HTTP request failed: {e}");
-                    ExitError
-                })?;
-                println!("Success: Sent zone reload command for {}", zone)
+                let url = format!("/zone/{}/status", zone);
+                let response: ZoneStatusResult = client
+                    .get(&url)
+                    .send()
+                    .and_then(|r| r.json())
+                    .await
+                    .map_err(|e| {
+                        error!("HTTP request failed: {e}");
+                        ExitError
+                    })?;
+
+                println!(
+                    "Success: Sent zone reload command for {}",
+                    response.name
+                );
             }
         }
         Ok(())
