@@ -113,13 +113,19 @@ impl HttpServer {
             .iter()
             .map(|n| {
                 // TODO: find a way to get correct `Name`s back from `Zones`
+                let mut sv = Vec::new();
                 let mut buf = String::with_capacity(256);
-                let first = true;
+                let mut first = true;
                 for l in n.labels() {
+                    sv.push(l);
+                }
+                sv.reverse();
+                for l in sv {
                     if !first {
-                        buf.push('.')
+                        buf.push('.');
                     }
-                    buf.push_str(&l.to_string())
+                    buf.push_str(&l.to_string());
+                    first = false;
                 }
                 Name::from_str(&buf).unwrap()
             })
