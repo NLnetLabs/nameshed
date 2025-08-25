@@ -19,6 +19,7 @@
 
 //------------ Sub-modules ---------------------------------------------------
 
+pub mod http_server;
 pub mod key_manager;
 pub mod zone_loader;
 pub mod zone_server;
@@ -31,7 +32,6 @@ use serde::Deserialize;
 
 /// The fundamental entity for data processing.
 #[allow(clippy::enum_variant_names)]
-#[derive(Debug)]
 pub enum Unit {
     ZoneLoader(zone_loader::ZoneLoader),
 
@@ -40,6 +40,8 @@ pub enum Unit {
     ZoneServer(zone_server::ZoneServerUnit),
 
     ZoneSigner(zone_signer::ZoneSignerUnit),
+
+    HttpServer(http_server::HttpServer),
 }
 
 impl Unit {
@@ -49,6 +51,7 @@ impl Unit {
             Unit::KeyManager(unit) => unit.run(component).await,
             Unit::ZoneServer(unit) => unit.run(component).await,
             Unit::ZoneSigner(unit) => unit.run(component).await,
+            Unit::HttpServer(unit) => unit.run(component).await,
         };
     }
 
@@ -58,6 +61,7 @@ impl Unit {
             Unit::KeyManager(_) => "key-manager",
             Unit::ZoneServer(_) => "zone-server",
             Unit::ZoneSigner(_) => "zone-signer",
+            Unit::HttpServer(_) => "http-server",
         }
     }
 }

@@ -5,7 +5,6 @@ use camino::Utf8PathBuf;
 use domain::new::base::name::RevNameBuf;
 use domain::utils::dst::UnsizedCopy;
 use log::{debug, info};
-use reqwest::Client as HttpClient;
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -17,8 +16,10 @@ use crate::common::file_io::TheFileIo;
 use crate::common::tsig::TsigKeyStore;
 use crate::comms::ApplicationCommand;
 use crate::loader::Loader;
+use crate::metrics;
 use crate::targets::central_command::{self, CentralCommandTarget};
 use crate::targets::Target;
+use crate::units::http_server::HttpServer;
 use crate::units::key_manager::KeyManagerUnit;
 use crate::units::zone_server::{self, ZoneServerUnit};
 use crate::units::zone_signer::{
@@ -27,7 +28,6 @@ use crate::units::zone_signer::{
 use crate::units::Unit;
 use crate::zone::loader::{DnsServerAddr, Source};
 use crate::zone::{LoaderState, Zones};
-use crate::{http, metrics};
 use domain::zonetree::ZoneTree;
 
 //------------ Component -----------------------------------------------------
@@ -37,14 +37,8 @@ use domain::zonetree::ZoneTree;
 /// Upon being started, every component receives one of these. It provides
 /// access to information and services available to all components.
 pub struct Component {
-    /// An HTTP client.
-    http_client: Option<HttpClient>,
-
     /// A reference to the metrics collection.
     metrics: Option<metrics::Collection>,
-
-    /// A reference to the HTTP resources collection.
-    http_resources: http::Resources,
 
     /// A reference to the unsigned zones.
     unsigned_zones: Arc<ArcSwap<ZoneTree>>,
@@ -67,9 +61,7 @@ pub struct Component {
 impl Default for Component {
     fn default() -> Self {
         Self {
-            http_client: Default::default(),
             metrics: Default::default(),
-            http_resources: Default::default(),
             unsigned_zones: Default::default(),
             signed_zones: Default::default(),
             published_zones: Default::default(),
@@ -83,9 +75,7 @@ impl Component {
     /// Creates a new component from its, well, components.
     #[allow(clippy::too_many_arguments)]
     fn new(
-        http_client: HttpClient,
         metrics: metrics::Collection,
-        http_resources: http::Resources,
         unsigned_zones: Arc<ArcSwap<ZoneTree>>,
         signed_zones: Arc<ArcSwap<ZoneTree>>,
         published_zones: Arc<ArcSwap<ZoneTree>>,
@@ -93,24 +83,13 @@ impl Component {
         app_cmd_tx: Sender<(String, ApplicationCommand)>,
     ) -> Self {
         Component {
-            http_client: Some(http_client),
             metrics: Some(metrics),
-            http_resources,
             unsigned_zones,
             signed_zones,
             published_zones,
             tsig_key_store,
             app_cmd_tx,
         }
-    }
-
-    /// Returns a reference to an HTTP Client.
-    pub fn http_client(&self) -> &HttpClient {
-        self.http_client.as_ref().unwrap()
-    }
-
-    pub fn http_resources(&self) -> &http::Resources {
-        &self.http_resources
     }
 
     pub fn unsigned_zones(&self) -> &Arc<ArcSwap<ZoneTree>> {
@@ -127,34 +106,6 @@ impl Component {
 
     pub fn tsig_key_store(&self) -> &TsigKeyStore {
         &self.tsig_key_store
-    }
-
-    /// Register an HTTP resource.
-    pub fn register_http_resource(
-        &mut self,
-        process: Arc<dyn http::ProcessRequest>,
-        rel_base_url: &str,
-    ) {
-        debug!("registering resource {:?}", &rel_base_url);
-        self.http_resources.register(
-            Arc::downgrade(&process),
-            rel_base_url,
-            false,
-        )
-    }
-
-    /// Register a sub HTTP resource.
-    pub fn register_sub_http_resource(
-        &mut self,
-        process: Arc<dyn http::ProcessRequest>,
-        rel_base_url: &str,
-    ) {
-        debug!("registering resource {:?}", &rel_base_url);
-        self.http_resources.register(
-            Arc::downgrade(&process),
-            rel_base_url,
-            true,
-        )
     }
 
     pub async fn send_command(
@@ -196,7 +147,7 @@ pub struct Manager {
     loader_runner: Option<tokio::task::AbortHandle>,
 
     /// Zones known to Nameshed.
-    zones: Zones,
+    zones: Arc<Zones>,
 
     /// Commands for the review server.
     review_tx: Option<mpsc::Sender<ApplicationCommand>>,
@@ -216,14 +167,11 @@ pub struct Manager {
     /// Commands for the central command.
     center_tx: Option<mpsc::Sender<TargetCommand>>,
 
-    /// An HTTP client.
-    http_client: HttpClient,
+    /// Commands for the http server.
+    http_tx: Option<mpsc::Sender<ApplicationCommand>>,
 
     /// The metrics collection maintained by this manager.
     metrics: metrics::Collection,
-
-    /// The HTTP resources collection maintained by this manager.
-    http_resources: http::Resources,
 
     #[allow(dead_code)]
     file_io: TheFileIo,
@@ -260,16 +208,15 @@ impl Manager {
         Self {
             loader: None,
             loader_runner: None,
-            zones: Zones::default(),
+            zones: Arc::new(Zones::default()),
             review_tx: None,
             key_manager_tx: None,
             signer_tx: None,
             review2_tx: None,
             publish_tx: None,
             center_tx: None,
-            http_client: Default::default(),
+            http_tx: None,
             metrics: Default::default(),
-            http_resources: Default::default(),
             #[allow(clippy::default_constructed_unit_structs)]
             file_io: TheFileIo::default(),
             unsigned_zones,
@@ -297,6 +244,7 @@ impl Manager {
                 "ZS" => self.signer_tx.as_ref(),
                 "RS2" => self.review2_tx.as_ref(),
                 "PS" => self.publish_tx.as_ref(),
+                "HS" => self.http_tx.as_ref(),
                 _ => None,
             }) else {
                 continue;
@@ -463,6 +411,7 @@ impl Manager {
         let (zs_tx, zs_rx) = mpsc::channel(10);
         let (rs2_tx, rs2_rx) = mpsc::channel(10);
         let (ps_tx, ps_rx) = mpsc::channel(10);
+        let (http_tx, http_rx) = mpsc::channel(10);
 
         self.loader = Some(Arc::new(Loader::new(update_tx.clone())));
         self.review_tx = Some(rs_tx);
@@ -470,6 +419,7 @@ impl Manager {
         self.signer_tx = Some(zs_tx);
         self.review2_tx = Some(rs2_tx);
         self.publish_tx = Some(ps_tx);
+        self.http_tx = Some(http_tx);
 
         {
             let name = String::from("CC");
@@ -480,9 +430,7 @@ impl Manager {
 
             // Spawn the new target
             let component = Component::new(
-                self.http_client.clone(),
                 self.metrics.clone(),
-                self.http_resources.clone(),
                 self.unsigned_zones.clone(),
                 self.signed_zones.clone(),
                 self.published_zones.clone(),
@@ -617,7 +565,6 @@ impl Manager {
             (
                 String::from("RS"),
                 Unit::ZoneServer(ZoneServerUnit {
-                    http_api_path: Arc::new(String::from("/rs/")),
                     listen: vec![
                         "tcp:127.0.0.1:8056".parse().unwrap(),
                         "udp:127.0.0.1:8056".parse().unwrap(),
@@ -645,7 +592,6 @@ impl Manager {
             (
                 String::from("ZS"),
                 Unit::ZoneSigner(ZoneSignerUnit {
-                    http_api_path: Arc::new(String::from("/zs/")),
                     keys_path: "/tmp/keys".into(),
                     treat_single_keys_as_csks: true,
                     max_concurrent_operations: 1,
@@ -662,7 +608,6 @@ impl Manager {
             (
                 String::from("RS2"),
                 Unit::ZoneServer(ZoneServerUnit {
-                    http_api_path: Arc::new(String::from("/rs2/")),
                     listen: vec![
                         "tcp:127.0.0.1:8057".parse().unwrap(),
                         "udp:127.0.0.1:8057".parse().unwrap(),
@@ -681,7 +626,6 @@ impl Manager {
             (
                 String::from("PS"),
                 Unit::ZoneServer(ZoneServerUnit {
-                    http_api_path: Arc::new(String::from("/ps/")),
                     listen: vec![
                         "tcp:127.0.0.1:8058".parse().unwrap(),
                         "udp:127.0.0.1:8058".parse().unwrap(),
@@ -697,6 +641,15 @@ impl Manager {
                     cmd_rx: ps_rx,
                 }),
             ),
+            (
+                String::from("HS"),
+                Unit::HttpServer(HttpServer {
+                    // TODO: config/argument option
+                    listen_addr: "127.0.0.1:8950".parse().unwrap(),
+                    zones: self.zones.clone(),
+                    cmd_rx: Some(http_rx),
+                }),
+            ),
         ];
 
         info!("Starting the zone loader");
@@ -710,9 +663,7 @@ impl Manager {
         for (name, new_unit) in units {
             // Spawn the new unit
             let component = Component::new(
-                self.http_client.clone(),
                 self.metrics.clone(),
-                self.http_resources.clone(),
                 self.unsigned_zones.clone(),
                 self.signed_zones.clone(),
                 self.published_zones.clone(),
@@ -735,6 +686,7 @@ impl Manager {
             ("ZS", self.signer_tx.take().unwrap()),
             ("RS2", self.review2_tx.take().unwrap()),
             ("PS", self.publish_tx.take().unwrap()),
+            ("HS", self.http_tx.take().unwrap()),
         ];
         for (name, tx) in units {
             info!("Stopping unit '{}'", name);
@@ -775,11 +727,6 @@ impl Manager {
     /// Returns a new reference to the manager’s metrics collection.
     pub fn metrics(&self) -> metrics::Collection {
         self.metrics.clone()
-    }
-
-    /// Returns a new reference the the HTTP resources collection.
-    pub fn http_resources(&self) -> http::Resources {
-        self.http_resources.clone()
     }
 }
 

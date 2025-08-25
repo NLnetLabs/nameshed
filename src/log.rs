@@ -391,7 +391,6 @@ impl LogConfig {
             // log level is set to debug or trace.
             res = res
                 .level_for("tokio_reactor", LevelFilter::Info)
-                .level_for("hyper", LevelFilter::Info)
                 .level_for("reqwest", LevelFilter::Info)
                 .level_for("h2", LevelFilter::Info)
                 .level_for("mio", LevelFilter::Info);
@@ -475,7 +474,7 @@ impl FromStr for LogFacility {
 
 //------------ LogFilter -----------------------------------------------------
 
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(try_from = "String")]
 pub struct LogFilter(log::LevelFilter);
 
@@ -518,6 +517,13 @@ impl TryFrom<String> for LogFilter {
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
         log::LevelFilter::from_str(&value).map(LogFilter)
+    }
+}
+
+impl FromStr for LogFilter {
+    type Err = log::ParseLevelError;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        log::LevelFilter::from_str(value).map(LogFilter)
     }
 }
 
