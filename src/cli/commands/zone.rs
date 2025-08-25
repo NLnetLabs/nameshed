@@ -1,9 +1,12 @@
 use bytes::Bytes;
+use camino::Utf8PathBuf;
 use domain::base::Name;
 use futures::TryFutureExt;
 use log::error;
 
-use crate::api::{ZoneRegister, ZoneRegisterResult, ZoneSource, ZoneStatusResult, ZonesListResult};
+use crate::api::{
+    ZoneRegister, ZoneRegisterResult, ZoneSource, ZoneStage, ZoneStatusResult, ZonesListResult,
+};
 use crate::cli::client::NameshedApiClient;
 use crate::log::ExitError;
 
@@ -80,7 +83,15 @@ impl Zone {
                         ExitError
                     })?;
 
-                println!("Response: {:?}", response.zones);
+                for zone in response.zones {
+                    let name = zone.name;
+                    let stage = match zone.stage {
+                        ZoneStage::Unsigned => "unsigned",
+                        ZoneStage::Signed => "signed",
+                        ZoneStage::Published => "published",
+                    };
+                    println!("{name}\t{stage}");
+                }
             }
             ZoneCommand::Reload { zone } => {
                 let url = format!("zone/{zone}/reload");
@@ -110,7 +121,7 @@ impl Zone {
                         ExitError
                     })?;
 
-                println!("Success: Sent zone reload command for {}", response.name);
+                println!("Server status: {:?}", response);
             }
         }
         Ok(())

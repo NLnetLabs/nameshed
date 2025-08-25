@@ -50,7 +50,20 @@ impl From<&str> for ZoneSource {
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct ZonesListResult {
-    pub zones: Vec<Name<Bytes>>,
+    pub zones: Vec<ZonesListEntry>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct ZonesListEntry {
+    pub name: Name<Bytes>,
+    pub stage: ZoneStage,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub enum ZoneStage {
+    Unsigned,
+    Signed,
+    Published,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
