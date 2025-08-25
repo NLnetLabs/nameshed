@@ -5,7 +5,6 @@ pub mod cli;
 mod common;
 mod comms;
 pub mod config;
-pub mod http;
 pub mod log;
 pub mod manager;
 pub mod metrics;

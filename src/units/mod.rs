@@ -19,14 +19,13 @@
 
 //------------ Sub-modules ---------------------------------------------------
 
+pub mod http_server;
 pub mod key_manager;
 pub mod zone_server;
 pub mod zone_signer;
-pub mod http_server;
 
 //------------ Unit ----------------------------------------------------------
 
-use crate::http;
 use crate::manager::Component;
 use serde::Deserialize;
 

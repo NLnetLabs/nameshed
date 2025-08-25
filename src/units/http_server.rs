@@ -27,14 +27,13 @@ use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio::sync::RwLock;
 
-use crate::api::ZonesListResult;
+use crate::api::ServerStatusResult;
 use crate::api::ZoneRegister;
 use crate::api::ZoneRegisterResult;
-use crate::api::ServerStatusResult;
 use crate::api::ZoneReloadResult;
 use crate::api::ZoneStatusResult;
+use crate::api::ZonesListResult;
 use crate::comms::{ApplicationCommand, Terminated};
-use crate::http::HttpError;
 use crate::manager::Component;
 use crate::zone::Zones;
 
