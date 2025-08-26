@@ -247,6 +247,7 @@ struct ZoneServer {
     listen: Vec<ListenAddr>,
     #[allow(clippy::type_complexity)]
     pending_approvals: Arc<RwLock<HashMap<(Name<Bytes>, Serial), Vec<Uuid>>>>,
+    #[allow(clippy::type_complexity)]
     last_approvals: Arc<RwLock<HashMap<(Name<Bytes>, Serial), Instant>>>,
     zones: XfrDataProvidingZonesWrapper,
 }
