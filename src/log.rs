@@ -374,8 +374,6 @@ impl LogConfig {
             // log level is set to debug or trace.
             res = res
                 .level_for("tokio_reactor", LevelFilter::Info)
-                .level_for("reqwest", LevelFilter::Info)
-                .level_for("h2", LevelFilter::Info)
                 .level_for("mio", LevelFilter::Info);
 
             // Conversely, when the main log level is at least debug, disable
