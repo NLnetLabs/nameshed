@@ -1,10 +1,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use domain::base::name::FromStrError;
 use domain::base::ToName;
-use domain::tsig::{Algorithm, AlgorithmError, Key, KeyName, KeyStore, NewKeyError};
-use domain::utils::base64::DecodeError;
+use domain::tsig::{Algorithm, Key, KeyName, KeyStore};
 
 #[allow(dead_code)]
 pub type KeyId = (KeyName, Algorithm);
@@ -81,52 +79,5 @@ impl KeyStore for Inner {
             }
         }
         None
-    }
-}
-
-pub enum KeyParseError {
-    InvalidAlgorithm,
-
-    InvalidName(FromStrError),
-
-    InvalidBase64(DecodeError),
-
-    KeyCreationError(NewKeyError),
-}
-
-impl std::fmt::Display for KeyParseError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            KeyParseError::InvalidAlgorithm => f.write_str("InvalidAlgorithm"),
-            KeyParseError::InvalidName(err) => f.write_fmt(format_args!("InvalidName: {err}")),
-            KeyParseError::InvalidBase64(err) => f.write_fmt(format_args!("InvalidBase64: {err}")),
-            KeyParseError::KeyCreationError(err) => {
-                f.write_fmt(format_args!("KeyCreationError: {err}"))
-            }
-        }
-    }
-}
-
-impl From<AlgorithmError> for KeyParseError {
-    fn from(_: AlgorithmError) -> Self {
-        Self::InvalidAlgorithm
-    }
-}
-
-impl From<FromStrError> for KeyParseError {
-    fn from(err: FromStrError) -> Self {
-        Self::InvalidName(err)
-    }
-}
-
-impl From<DecodeError> for KeyParseError {
-    fn from(err: DecodeError) -> Self {
-        Self::InvalidBase64(err)
-    }
-}
-
-impl From<NewKeyError> for KeyParseError {
-    fn from(err: NewKeyError) -> Self {
-        Self::KeyCreationError(err)
     }
 }
