@@ -589,7 +589,7 @@ impl Manager {
                 self.app_cmd_tx.clone(),
             );
 
-            let unit_type = std::mem::discriminant(&new_unit);
+            let _unit_type = std::mem::discriminant(&new_unit);
             info!("Starting unit '{name}'");
             spawn_unit(component, new_unit);
         }

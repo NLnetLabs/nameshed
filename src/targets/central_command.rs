@@ -50,7 +50,7 @@ impl CentralCommand {
         cmd_rx: mpsc::Receiver<TargetCommand>,
         update_rx: mpsc::Receiver<Update>,
     ) -> Result<(), Terminated> {
-        let component = &mut self.component;
+        let _component = &mut self.component;
 
         let arc_self = Arc::new(self);
 
@@ -83,7 +83,7 @@ impl CentralCommand {
                 // If nothing happened above, check for new internal Rotonda
                 // target commands to handle.
                 cmd = cmd_rx.recv() => {
-                    if let Some(cmd) = &cmd {
+                    if let Some(_cmd) = &cmd {
                         // self.status_reporter.command_received(cmd);
                     }
 

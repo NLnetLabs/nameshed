@@ -258,7 +258,7 @@ impl ZoneLoader {
         let zone_maintainer_clone = zone_maintainer.clone();
         tokio::spawn(async move { zone_maintainer_clone.run().await });
 
-        let component = Arc::new(RwLock::new(component));
+        let _component = Arc::new(RwLock::new(component));
 
         loop {
             tokio::select! {
@@ -432,7 +432,7 @@ impl WritableZone for NotifyOnCommitZone {
                 .await
             {
                 Ok(answer) if answer.rcode() == Rcode::NOERROR => {
-                    let soa_data = answer.content().first().map(|(ttl, data)| data);
+                    let soa_data = answer.content().first().map(|(_ttl, data)| data);
                     if let Some(ZoneRecordData::Soa(soa)) = soa_data {
                         let zone_serial = soa.serial();
                         debug!("Notifying that zone '{zone_name}' has been committed at serial {zone_serial}");
@@ -445,7 +445,7 @@ impl WritableZone for NotifyOnCommitZone {
                     "Failed to query SOA of zone {zone_name} after commit: rcode {}",
                     answer.rcode()
                 ),
-                Err(err) => {
+                Err(_) => {
                     error!("Failed to query SOA of zone {zone_name} after commit: out of zone.")
                 }
             }

@@ -1376,7 +1376,7 @@ where
             let zone_id = ZoneId::from(zone);
             {
                 let mut tt = time_tracking.write().await;
-                let Some(zone_refresh_info) = tt.get_mut(&zone_id) else {
+                let Some(_zone_refresh_info) = tt.get_mut(&zone_id) else {
                     return Err(ZoneMaintainerError::InternalError(
                         "Cannot find time tracking data for zone",
                     ));
