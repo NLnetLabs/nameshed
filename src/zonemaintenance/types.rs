@@ -17,7 +17,7 @@ use tokio::time::{Instant, Sleep};
 use core::time::Duration;
 use domain::base::iana::Class;
 use domain::base::{CanonicalOrd, Serial, Ttl};
-use domain::tsig::{self, Algorithm, Key, KeyName};
+use domain::tsig::{Algorithm, Key, KeyName};
 use domain::zonetree::{StoredName, Zone};
 
 //------------ Type Aliases --------------------------------------------------
@@ -111,10 +111,6 @@ pub enum CompatibilityMode {
     Default,
 }
 
-//------------ TsigKey -------------------------------------------------------
-
-pub type TsigKey = (tsig::KeyName, tsig::Algorithm);
-
 //------------ XfrConfig -----------------------------------------------------
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -122,17 +118,12 @@ pub struct XfrConfig {
     pub strategy: XfrStrategy,
     pub ixfr_transport: TransportStrategy,
     pub compatibility_mode: CompatibilityMode,
-    #[serde(skip)]
-    pub tsig_key: Option<TsigKey>,
 }
 
 //------------ NotifyConfig --------------------------------------------------
 
 #[derive(Clone, Debug, Default, Serialize)]
-pub struct NotifyConfig {
-    #[serde(skip)]
-    pub tsig_key: Option<TsigKey>,
-}
+pub struct NotifyConfig {}
 
 //------------ Type Aliases --------------------------------------------------
 

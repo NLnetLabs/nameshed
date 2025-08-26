@@ -1,14 +1,12 @@
-use core::str::FromStr;
-
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use domain::base::name::FromStrError;
 use domain::base::ToName;
 use domain::tsig::{Algorithm, AlgorithmError, Key, KeyName, KeyStore, NewKeyError};
-use domain::utils::base64::{self, DecodeError};
-use log::info;
+use domain::utils::base64::DecodeError;
 
+#[allow(dead_code)]
 pub type KeyId = (KeyName, Algorithm);
 
 #[derive(Clone, Debug, Default)]
@@ -89,9 +87,6 @@ impl KeyStore for Inner {
 pub enum KeyParseError {
     InvalidAlgorithm,
 
-    /// TSIG key string must have the form [<algorithm>]:<base64 bytes>
-    InvalidStructure,
-
     InvalidName(FromStrError),
 
     InvalidBase64(DecodeError),
@@ -103,7 +98,6 @@ impl std::fmt::Display for KeyParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             KeyParseError::InvalidAlgorithm => f.write_str("InvalidAlgorithm"),
-            KeyParseError::InvalidStructure => f.write_str("InvalidStructure"),
             KeyParseError::InvalidName(err) => f.write_fmt(format_args!("InvalidName: {err}")),
             KeyParseError::InvalidBase64(err) => f.write_fmt(format_args!("InvalidBase64: {err}")),
             KeyParseError::KeyCreationError(err) => {
@@ -135,32 +129,4 @@ impl From<NewKeyError> for KeyParseError {
     fn from(err: NewKeyError) -> Self {
         Self::KeyCreationError(err)
     }
-}
-
-pub fn parse_key_strings(name: &str, alg_and_hex_key_bytes: &str) -> Result<Key, KeyParseError> {
-    let key_parts: Vec<String> = alg_and_hex_key_bytes
-        .split(':')
-        .map(ToString::to_string)
-        .collect();
-
-    let (alg, base64) = match key_parts.len() {
-        1 => (Algorithm::Sha256, key_parts[0].clone()),
-        2 => {
-            let alg = Algorithm::from_str(&key_parts[0])?;
-            (alg, key_parts[1].clone())
-        }
-        _ => return Err(KeyParseError::InvalidStructure),
-    };
-
-    let encoded_key_name = KeyName::from_str(name)?;
-    let secret = base64::decode::<Vec<u8>>(&base64)?;
-    let key = Key::new(alg, &secret, encoded_key_name, None, None)?;
-
-    info!(
-        "Adding TSIG key '{}' ({}) to the key store",
-        key.name(),
-        key.algorithm()
-    );
-
-    Ok(key)
 }

@@ -145,7 +145,7 @@ impl ReadableZone for SimpleZoneInner {
 impl WritableZone for SimpleZoneInner {
     fn open(
         &self,
-        create_diff: bool,
+        _create_diff: bool,
     ) -> Pin<
         Box<dyn Future<Output = Result<Box<dyn WritableZoneNode>, std::io::Error>> + Send + Sync>,
     > {
@@ -161,7 +161,7 @@ impl WritableZone for SimpleZoneInner {
 
     fn commit(
         &mut self,
-        bump_soa_serial: bool,
+        _bump_soa_serial: bool,
     ) -> Pin<Box<dyn Future<Output = Result<Option<InMemoryZoneDiff>, std::io::Error>> + Send + Sync>>
     {
         trace!(
@@ -285,14 +285,14 @@ impl WritableZoneNode for SimpleZoneNode {
 
     fn make_zone_cut(
         &self,
-        cut: domain::zonetree::types::ZoneCut,
+        _cut: domain::zonetree::types::ZoneCut,
     ) -> Pin<Box<dyn Future<Output = Result<(), std::io::Error>> + Send + Sync>> {
         Box::pin(ready(Ok(())))
     }
 
     fn make_cname(
         &self,
-        cname: domain::zonetree::SharedRr,
+        _cname: domain::zonetree::SharedRr,
     ) -> Pin<Box<dyn Future<Output = Result<(), std::io::Error>> + Send + Sync>> {
         Box::pin(ready(Ok(())))
     }

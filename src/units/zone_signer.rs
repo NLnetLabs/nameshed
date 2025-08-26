@@ -30,7 +30,7 @@ use domain::base::wire::Composer;
 use domain::base::{
     CanonicalOrd, Name, ParsedName, ParsedRecord, Record, Rtype, Serial, ToName, Ttl,
 };
-use domain::crypto::kmip::sign::KeyUrl;
+use domain::crypto::kmip::KeyUrl;
 use domain::crypto::kmip::{self, ClientCertificate, ConnectionSettings};
 use domain::crypto::sign::{
     generate, FromBytesError, GenerateParams, KeyPair, SecretKeyBytes, SignError, SignRaw,
@@ -97,12 +97,9 @@ use crate::common::net::{
     ListenAddr, StandardTcpListenerFactory, StandardTcpStream, TcpListener, TcpListenerFactory,
     TcpStreamWrapper,
 };
-use crate::common::tsig::{parse_key_strings, TsigKeyStore};
-use crate::common::xfr::parse_xfr_acl;
+use crate::common::tsig::TsigKeyStore;
 use crate::comms::ApplicationCommand;
 use crate::comms::{GraphStatus, Terminated};
-use crate::http::PercentDecodedPath;
-use crate::http::ProcessRequest;
 use crate::log::ExitError;
 use crate::manager::Component;
 use crate::metrics::{self, util::append_per_router_metric, Metric, MetricType, MetricUnit};
@@ -115,9 +112,6 @@ use core::sync::atomic::AtomicBool;
 
 #[derive(Debug)]
 pub struct ZoneSignerUnit {
-    /// The relative path at which we should listen for HTTP query API requests
-    pub http_api_path: Arc<String>,
-
     pub keys_path: PathBuf,
 
     pub rrsig_inception_offset_secs: u32,
@@ -141,11 +135,8 @@ pub struct ZoneSignerUnit {
     pub cmd_rx: mpsc::Receiver<ApplicationCommand>,
 }
 
+#[allow(dead_code)]
 impl ZoneSignerUnit {
-    fn default_http_api_path() -> Arc<String> {
-        Arc::new("/zone-signer/".to_string())
-    }
-
     fn default_rrsig_inception_offset_secs() -> u32 {
         60 * 90 // 90 minutes ala Knot
     }
@@ -173,7 +164,7 @@ impl ZoneSignerUnit {
         let expected_kmip_server_conn_pools = self.kmip_server_conn_settings.len();
 
         let kmip_servers: HashMap<String, SyncConnPool> = self.kmip_server_conn_settings.drain().filter_map(|(server_id, conn_settings)| {
-            let host_and_port = (conn_settings.server_addr.clone(), conn_settings.server_port);
+            let _host_and_port = (conn_settings.server_addr.clone(), conn_settings.server_port);
 
             match ConnectionManager::create_connection_pool(
                 server_id.clone(),
@@ -221,7 +212,6 @@ impl ZoneSignerUnit {
 
         ZoneSigner::new(
             component,
-            self.http_api_path,
             self.rrsig_inception_offset_secs,
             self.rrsig_expiration_offset_secs,
             self.denial_config,
@@ -261,7 +251,7 @@ impl ZoneSignerUnit {
     }
 
     fn load_public_key(key_path: &Path) -> Result<Record<StoredName, Dnskey<Bytes>>, Terminated> {
-        let public_data = std::fs::read_to_string(key_path).map_err(|err| {
+        let public_data = std::fs::read_to_string(key_path).map_err(|_| {
             error!("loading public key from file '{}'", key_path.display(),);
             Terminated
         })?;
@@ -287,8 +277,6 @@ impl ZoneSignerUnit {
 
 struct ZoneSigner {
     component: Component,
-    #[allow(dead_code)]
-    http_api_path: Arc<String>,
     inception_offset_secs: u32,
     expiration_offset: u32,
     denial_config: TomlDenialConfig,
@@ -298,7 +286,7 @@ struct ZoneSigner {
     signer_status: Arc<RwLock<ZoneSignerStatus>>,
     treat_single_keys_as_csks: bool,
     update_tx: mpsc::Sender<Update>,
-    keys_path: PathBuf,
+    _keys_path: PathBuf,
     kmip_servers: HashMap<String, SyncConnPool>,
 }
 
@@ -306,7 +294,6 @@ impl ZoneSigner {
     #[allow(clippy::too_many_arguments)]
     fn new(
         component: Component,
-        http_api_path: Arc<String>,
         inception_offset_secs: u32,
         expiration_offset: u32,
         denial_config: TomlDenialConfig,
@@ -320,7 +307,6 @@ impl ZoneSigner {
     ) -> Self {
         Self {
             component,
-            http_api_path,
             inception_offset_secs,
             expiration_offset,
             denial_config,
@@ -330,23 +316,15 @@ impl ZoneSigner {
             signer_status: Default::default(),
             treat_single_keys_as_csks,
             update_tx,
-            keys_path,
+            _keys_path: keys_path,
             kmip_servers,
         }
     }
 
     async fn run(
-        mut self,
+        self,
         mut cmd_rx: mpsc::Receiver<ApplicationCommand>,
     ) -> Result<(), crate::comms::Terminated> {
-        // Setup REST API endpoint
-        let http_processor = Arc::new(SigningHistoryApi::new(
-            self.http_api_path.clone(),
-            self.signer_status.clone(),
-        ));
-        self.component
-            .register_http_resource(http_processor.clone(), &self.http_api_path);
-
         while let Some(cmd) = cmd_rx.recv().await {
             info!("[ZS]: Received command: {cmd:?}");
             match &cmd {
@@ -357,7 +335,7 @@ impl ZoneSigner {
 
                 ApplicationCommand::SignZone {
                     zone_name,
-                    zone_serial,
+                    zone_serial: _,
                 } => {
                     if let Err(err) = self.sign_zone(zone_name).await {
                         error!("[ZS]: Signing of zone '{zone_name}' failed: {err}");
@@ -377,7 +355,7 @@ impl ZoneSigner {
         info!("[ZS]: Waiting to start signing operation for zone '{zone_name}'.");
         self.signer_status.write().await.enqueue(zone_name.clone());
 
-        let permit = self.concurrent_operation_permits.acquire().await.unwrap();
+        let _permit = self.concurrent_operation_permits.acquire().await.unwrap();
         info!("[ZS]: Starting signing operation for zone '{zone_name}'");
 
         //
@@ -502,9 +480,9 @@ impl ZoneSigner {
                             .get(priv_key_url.server_id())
                             .ok_or(format!("No connection pool available for KMIP server '{}'", priv_key_url.server_id()))?;
 
-                        let flags = priv_key_url.flags();
+                        let _flags = priv_key_url.flags();
 
-                        let key_pair = KeyPair::Kmip(kmip::sign::KeyPair::new_from_urls(
+                        let key_pair = KeyPair::Kmip(kmip::sign::KeyPair::from_urls(
                             priv_key_url,
                             pub_key_url,
                             kmip_conn_pool.clone(),
@@ -792,16 +770,16 @@ impl ZoneSigner {
                 DenialConfig::Nsec3(first)
             }
             TomlDenialConfig::TransitioningToNsec3(
-                toml_nsec3_config,
-                toml_nsec_to_nsec3_transition_state,
+                _toml_nsec3_config,
+                _toml_nsec_to_nsec3_transition_state,
             ) => todo!(),
             TomlDenialConfig::TransitioningFromNsec3(
-                toml_nsec3_config,
-                toml_nsec3_to_nsec_transition_state,
+                _toml_nsec3_config,
+                _toml_nsec3_to_nsec_transition_state,
             ) => todo!(),
         };
 
-        let add_used_dnskeys = true;
+        let _add_used_dnskeys = true;
         let now = Timestamp::now().into_int();
         let inception = now.sub(self.inception_offset_secs).into();
         let expiration = now.add(self.expiration_offset).into();
@@ -931,7 +909,7 @@ fn get_zone_soa(
     let answer = zone
         .read()
         .query(zone_name.clone(), Rtype::SOA)
-        .map_err(|err| format!("SOA not found for zone '{zone_name}'"))?;
+        .map_err(|_| format!("SOA not found for zone '{zone_name}'"))?;
     let (soa_ttl, soa_data) = answer
         .content()
         .first()
@@ -1165,6 +1143,7 @@ struct ZoneSignerStatus {
 }
 
 impl ZoneSignerStatus {
+    #[allow(dead_code)]
     pub fn get(&self, wanted_zone_name: &StoredName) -> Option<&NamedZoneSigningStatus> {
         self.zones_being_signed
             .iter()
@@ -1233,79 +1212,6 @@ impl Default for ZoneSignerStatus {
         Self {
             zones_being_signed: VecDeque::with_capacity(MAX_SIGNING_HISTORY),
         }
-    }
-}
-
-//------------ ZoneListApi ---------------------------------------------------
-
-struct SigningHistoryApi {
-    http_api_path: Arc<String>,
-    signing_status: Arc<RwLock<ZoneSignerStatus>>,
-}
-
-impl SigningHistoryApi {
-    fn new(http_api_path: Arc<String>, signing_status: Arc<RwLock<ZoneSignerStatus>>) -> Self {
-        Self {
-            http_api_path,
-            signing_status,
-        }
-    }
-}
-
-#[async_trait]
-impl ProcessRequest for SigningHistoryApi {
-    async fn process_request(
-        &self,
-        request: &hyper::Request<hyper::Body>,
-    ) -> Option<hyper::Response<hyper::Body>> {
-        let req_path = request.uri().decoded_path();
-        #[allow(clippy::collapsible_if)]
-        if request.method() == hyper::Method::GET {
-            if req_path.starts_with(&*self.http_api_path) {
-                if req_path == format!("{}status.json", *self.http_api_path) {
-                    return Some(self.build_json_status_response().await);
-                } else if req_path.ends_with("/status.json") {
-                    let (_, parts) = req_path.split_at(self.http_api_path.len());
-                    if let Some((zone_name, status_rel_url)) = parts.split_once('/') {
-                        if status_rel_url == "status.json" {
-                            return self.build_json_zone_status_response(zone_name).await;
-                        }
-                    }
-                }
-            }
-        }
-        None
-    }
-}
-
-impl SigningHistoryApi {
-    pub async fn build_json_status_response(&self) -> hyper::Response<hyper::Body> {
-        let json = serde_json::to_string(&*self.signing_status.read().await).unwrap();
-
-        hyper::Response::builder()
-            .header("Content-Type", "application/json")
-            .header("Access-Control-Allow-Origin", "*")
-            .body(hyper::Body::from(json))
-            .unwrap()
-    }
-
-    pub async fn build_json_zone_status_response(
-        &self,
-        zone_name: &str,
-    ) -> Option<hyper::Response<hyper::Body>> {
-        if let Ok(zone_name) = StoredName::from_str(zone_name) {
-            if let Some(status) = self.signing_status.read().await.get(&zone_name) {
-                let json = serde_json::to_string(status).unwrap();
-                return Some(
-                    hyper::Response::builder()
-                        .header("Content-Type", "application/json")
-                        .header("Access-Control-Allow-Origin", "*")
-                        .body(hyper::Body::from(json))
-                        .unwrap(),
-                );
-            }
-        }
-        None
     }
 }
 
@@ -1446,8 +1352,8 @@ impl Default for KmipServerConnectionSettings {
 impl From<KmipServerConnectionSettings> for ConnectionSettings {
     fn from(cfg: KmipServerConnectionSettings) -> Self {
         let client_cert = load_client_cert(&cfg);
-        let server_cert = cfg.server_cert_path.map(|p| load_binary_file(&p));
-        let ca_cert = cfg.ca_cert_path.map(|p| load_binary_file(&p));
+        let _server_cert = cfg.server_cert_path.map(|p| load_binary_file(&p));
+        let _ca_cert = cfg.ca_cert_path.map(|p| load_binary_file(&p));
         ConnectionSettings {
             host: cfg.server_addr,
             port: cfg.server_port,
@@ -1475,19 +1381,15 @@ fn load_client_cert(opt: &KmipServerConnectionSettings) -> Option<ClientCertific
         (None, None, Some(path)) => Some(ClientCertificate::CombinedPkcs12 {
             cert_bytes: load_binary_file(path),
         }),
-        (Some(path), None, None) => Some(ClientCertificate::SeparatePem {
-            cert_bytes: load_binary_file(path),
-            key_bytes: None,
-        }),
-        (None, Some(_), None) => {
-            panic!("Client certificate key path requires a client certificate path");
+        (Some(_), None, None) | (None, Some(_), None) => {
+            panic!("Client certificate authentication requires both a certificate and a key");
         }
         (_, Some(_), Some(_)) | (Some(_), _, Some(_)) => {
             panic!("Use either but not both of: client certificate and key PEM file paths, or a PCKS#12 certficate file path");
         }
         (Some(cert_path), Some(key_path), None) => Some(ClientCertificate::SeparatePem {
             cert_bytes: load_binary_file(cert_path),
-            key_bytes: Some(load_binary_file(key_path)),
+            key_bytes: load_binary_file(key_path),
         }),
     }
 }
