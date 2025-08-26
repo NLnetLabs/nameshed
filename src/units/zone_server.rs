@@ -324,6 +324,19 @@ impl ZoneServer {
                                 continue;
                             }
 
+                            if arc_self.hooks.is_empty() {
+                                // Approve immediately.
+                                match arc_self.source {
+                                    Source::UnsignedZones => {
+                                        update_tx.send(Update::UnsignedZoneApprovedEvent { zone_name: zone_name.clone(), zone_serial: *zone_serial }).await.unwrap();
+                                    }
+                                    Source::SignedZones => {
+                                        update_tx.send(Update::SignedZoneApprovedEvent { zone_name: zone_name.clone(), zone_serial: *zone_serial }).await.unwrap();
+                                    }
+                                    Source::PublishedZones => unreachable!(),
+                                }
+                            }
+
                             info!("[{unit_name}]: Seeking approval for {zone_type} zone '{zone_name}' at serial {zone_serial}.");
                             for hook in &arc_self.hooks {
                                 let approval_token = Uuid::new_v4();
