@@ -70,8 +70,6 @@ use crate::common::net::{
 use crate::common::tsig::{parse_key_strings, TsigKeyStore};
 use crate::common::xfr::parse_xfr_acl;
 use crate::comms::{ApplicationCommand, GraphStatus, Terminated};
-use crate::http::PercentDecodedPath;
-use crate::http::ProcessRequest;
 use crate::log::ExitError;
 use crate::manager::Component;
 use crate::metrics::{self, util::append_per_router_metric, Metric, MetricType, MetricUnit};
@@ -87,9 +85,6 @@ use crate::zonemaintenance::types::{
 
 #[derive(Debug)]
 pub struct ZoneLoader {
-    /// The relative path at which we should listen for HTTP query API requests
-    pub http_api_path: Arc<String>,
-
     /// Addresses and protocols to listen on.
     pub listen: Vec<ListenAddr>,
 
@@ -109,7 +104,7 @@ pub struct ZoneLoader {
 }
 
 impl ZoneLoader {
-    pub async fn run(mut self, mut component: Component) -> Result<(), Terminated> {
+    pub async fn run(mut self, component: Component) -> Result<(), Terminated> {
         // TODO: metrics and status reporting
 
         let (zone_updated_tx, mut zone_updated_rx) = tokio::sync::mpsc::channel(10);
@@ -137,15 +132,6 @@ impl ZoneLoader {
             ZoneMaintainer::new_with_config(maintainer_config)
                 .with_zone_tree(component.unsigned_zones().clone()),
         );
-
-        // Setup REST API endpoint
-        let http_processor = Arc::new(ZoneListApi::new(
-            self.http_api_path.clone(),
-            self.zones.clone(),
-            self.xfr_in.clone(),
-            zone_maintainer.clone(),
-        ));
-        component.register_http_resource(http_processor.clone(), &self.http_api_path);
 
         // Load primary zones.
         // Create secondary zones.
@@ -318,10 +304,6 @@ impl ZoneLoader {
         }
     }
 
-    fn default_http_api_path() -> Arc<String> {
-        Arc::new("/zone-loader/".to_string())
-    }
-
     async fn server<Svc>(addr: ListenAddr, svc: Svc) -> Result<(), std::io::Error>
     where
         Svc: Service<Vec<u8>, ()> + Clone,
@@ -469,213 +451,5 @@ impl WritableZone for NotifyOnCommitZone {
             }
             res
         })
-    }
-}
-
-//------------ ZoneListApi ---------------------------------------------------
-
-struct ZoneListApi {
-    http_api_path: Arc<String>,
-    zones: Arc<HashMap<String, String>>,
-    xfr_in: Arc<HashMap<String, String>>,
-    zone_maintainer: Arc<ZoneMaintainer<TsigKeyStore, DefaultConnFactory>>,
-}
-
-impl ZoneListApi {
-    fn new(
-        http_api_path: Arc<String>,
-        zones: Arc<HashMap<String, String>>,
-        xfr_in: Arc<HashMap<String, String>>,
-        zone_maintainer: Arc<ZoneMaintainer<TsigKeyStore, DefaultConnFactory>>,
-    ) -> Self {
-        Self {
-            http_api_path,
-            zones,
-            xfr_in,
-            zone_maintainer,
-        }
-    }
-}
-
-#[async_trait]
-impl ProcessRequest for ZoneListApi {
-    async fn process_request(
-        &self,
-        request: &hyper::Request<hyper::Body>,
-    ) -> Option<hyper::Response<hyper::Body>> {
-        let req_path = request.uri().decoded_path();
-        if request.method() == hyper::Method::GET {
-            if req_path == *self.http_api_path {
-                Some(self.build_response().await)
-            } else if req_path == format!("{}status.json", *self.http_api_path) {
-                Some(self.build_json_response().await)
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    }
-}
-
-#[derive(Default, Serialize)]
-struct ZoneSecondaryStatus {
-    status: ZoneRefreshStatus,
-    last_refresh_checked_secs_ago: Option<u64>,
-    last_refresh_checked_serial: Option<Serial>,
-    last_refresh_succeeded_secs_ago: Option<u64>,
-    last_refresh_succeeded_serial: Option<Serial>,
-    next_refresh_secs_from_now: Option<u64>,
-    next_refresh_cause: Option<ZoneRefreshCause>,
-}
-
-#[derive(Serialize)]
-enum ZoneRole {
-    Primary,
-    Secondary(ZoneSecondaryStatus),
-}
-
-#[derive(Serialize)]
-struct ZoneReport {
-    role: ZoneRole,
-}
-
-impl ZoneListApi {
-    pub async fn build_response(&self) -> hyper::Response<hyper::Body> {
-        let mut response_body = self.build_response_header();
-
-        self.build_response_body(&mut response_body).await;
-
-        self.build_response_footer(&mut response_body);
-
-        hyper::Response::builder()
-            .header("Content-Type", "text/html")
-            .body(hyper::Body::from(response_body))
-            .unwrap()
-    }
-
-    fn build_response_header(&self) -> String {
-        formatdoc! {
-            r#"
-            <!DOCTYPE html>
-            <html lang="en">
-              <head>
-                  <meta charset="UTF-8">
-              </head>
-              <body>
-                <pre>Showing {num_zones} monitored zones:
-            "#,            
-            num_zones = self.zones.len()
-        }
-    }
-
-    async fn build_response_body(&self, response_body: &mut String) {
-        let num_zones = self.zones.len();
-        response_body.push_str(&format!("<pre>Showing {num_zones} monitored zones:"));
-        for zone_name in self.zones.keys() {
-            if let Ok(zone_name) = Name::from_str(zone_name) {
-                if let Ok(report) = self
-                    .zone_maintainer
-                    .zone_status(&zone_name, Class::IN)
-                    .await
-                {
-                    response_body.push_str(&format!("\n{report}"));
-                }
-            }
-            if let Some(xfr_in) = self.xfr_in.get(zone_name) {
-                response_body.push_str(&format!("        source: {xfr_in}"));
-            }
-        }
-        response_body.push_str("</pre>");
-    }
-
-    fn build_response_footer(&self, response_body: &mut String) {
-        response_body.push_str("  </body>\n");
-        response_body.push_str("</html>\n");
-    }
-
-    pub async fn build_json_response(&self) -> hyper::Response<hyper::Body> {
-        let mut status = HashMap::new();
-        let now = Instant::now();
-
-        // for zone in zones.iter_zones() {
-        for zone_name in self.zones.keys() {
-            if let Ok(zone_name) = Name::from_str(zone_name) {
-                if let Ok(report) = self
-                    .zone_maintainer
-                    // .zone_status(zone.apex_name(), Class::IN)
-                    .zone_status(&zone_name, Class::IN)
-                    .await
-                {
-                    let role = match report.details() {
-                        ZoneReportDetails::Primary => ZoneRole::Primary,
-                        ZoneReportDetails::PendingSecondary(zone_refresh_state)
-                        | ZoneReportDetails::Secondary(zone_refresh_state) => {
-                            let status = zone_refresh_state.status();
-
-                            let last_refresh_succeeded_secs_ago = zone_refresh_state
-                                .metrics()
-                                .last_refreshed_at
-                                .and_then(|earlier| {
-                                    now.checked_duration_since(earlier).map(|d| d.as_secs())
-                                });
-                            let last_refresh_succeeded_serial =
-                                zone_refresh_state.metrics().last_refresh_succeeded_serial;
-
-                            let last_refresh_checked_serial =
-                                zone_refresh_state.metrics().last_soa_serial_check_serial;
-                            let last_refresh_checked_secs_ago = zone_refresh_state
-                                .metrics()
-                                .last_soa_serial_check_succeeded_at
-                                .and_then(|earlier| {
-                                    now.checked_duration_since(earlier).map(|d| d.as_secs())
-                                });
-
-                            if let Some((next_refresh_secs_from_now, next_refresh_cause)) = report
-                                .timers()
-                                .iter()
-                                .find(|zri| &zri.zone_id == report.zone_id())
-                                .map(|zri| {
-                                    let secs_from_now = zri
-                                        .end_instant
-                                        .checked_duration_since(now)
-                                        .map(|d| d.as_secs());
-                                    (secs_from_now, Some(zri.cause))
-                                })
-                            {
-                                ZoneRole::Secondary(ZoneSecondaryStatus {
-                                    status,
-                                    next_refresh_secs_from_now,
-                                    next_refresh_cause,
-                                    last_refresh_checked_secs_ago,
-                                    last_refresh_checked_serial,
-                                    last_refresh_succeeded_secs_ago,
-                                    last_refresh_succeeded_serial,
-                                })
-                            } else {
-                                ZoneRole::Secondary(ZoneSecondaryStatus {
-                                    status,
-                                    next_refresh_secs_from_now: None,
-                                    next_refresh_cause: None,
-                                    last_refresh_checked_secs_ago,
-                                    last_refresh_checked_serial,
-                                    last_refresh_succeeded_secs_ago,
-                                    last_refresh_succeeded_serial,
-                                })
-                            }
-                        }
-                    };
-                    status.insert(zone_name, ZoneReport { role });
-                }
-            }
-        }
-
-        let json = serde_json::to_string(&status).unwrap();
-
-        hyper::Response::builder()
-            .header("Content-Type", "application/json")
-            .header("Access-Control-Allow-Origin", "*")
-            .body(hyper::Body::from(json))
-            .unwrap()
     }
 }

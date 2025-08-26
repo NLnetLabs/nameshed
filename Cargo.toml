@@ -45,12 +45,12 @@ crossbeam-utils    = "0.8"
 env_logger         = "0.10"
 flate2             = "*"
 hashbrown          = "0.14"
-hyper              = { version = "0.14", features = ["server", "stream"] }
+# hyper              = { version = "0.14", features = ["server", "stream"] }
 layout-rs          = { version = "0.1" }
 non-empty-vec      = { version = "0.2", features = ["serde"]}
 percent-encoding   = "2.3"
 prometheus-parse   = "0.2"
-reqwest            = { version = "0.11", default-features = false }
+# reqwest            = { version = "0.11", default-features = false }
 serde_json         = "1.0"
 serde_with         = "3"
 smallvec           = { version = "1.11", features = ["const_generics", "const_new", "union"] }
