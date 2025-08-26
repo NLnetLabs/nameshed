@@ -1,6 +1,4 @@
-//! Rotonda
-#![allow(renamed_and_removed_lints)]
-#![allow(clippy::unknown_clippy_lints)]
+//! Nameshed
 #![allow(dead_code)]
 #![allow(unused_variables)]
 
