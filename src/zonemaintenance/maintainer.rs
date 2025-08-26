@@ -2747,6 +2747,7 @@ impl ConnectionFactory for DefaultConnFactory {
 pub trait ZoneLookup {
     fn zones(&self) -> Arc<ZoneTree>;
 
+    #[allow(dead_code)]
     fn get_zone(&self, apex_name: &impl ToName, class: Class) -> Result<Option<Zone>, ZoneError>;
 
     fn find_zone(&self, qname: &impl ToName, class: Class) -> Result<Option<Zone>, ZoneError>;

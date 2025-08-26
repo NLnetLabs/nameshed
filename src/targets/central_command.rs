@@ -33,6 +33,7 @@ impl CentralCommandTarget {
 
 pub(super) struct CentralCommand {
     component: Component,
+    #[allow(dead_code)]
     config: Arc<ArcSwap<Config>>,
 }
 

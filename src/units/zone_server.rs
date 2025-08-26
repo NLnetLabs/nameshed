@@ -240,16 +240,15 @@ impl ZoneServerUnit {
 
 struct ZoneServer {
     component: Arc<RwLock<Component>>,
-    #[allow(dead_code)]
-    mode: Mode,
-    source: Source,
+    _mode: Mode,
+    _source: Source,
     hooks: Vec<String>,
-    listen: Vec<ListenAddr>,
+    _listen: Vec<ListenAddr>,
     #[allow(clippy::type_complexity)]
     pending_approvals: Arc<RwLock<HashMap<(Name<Bytes>, Serial), Vec<Uuid>>>>,
     #[allow(clippy::type_complexity)]
     last_approvals: Arc<RwLock<HashMap<(Name<Bytes>, Serial), Instant>>>,
-    zones: XfrDataProvidingZonesWrapper,
+    _zones: XfrDataProvidingZonesWrapper,
 }
 
 impl ZoneServer {
@@ -264,20 +263,20 @@ impl ZoneServer {
     ) -> Self {
         Self {
             component,
-            mode,
-            source,
+            _mode: mode,
+            _source: source,
             hooks,
             pending_approvals: Default::default(),
             last_approvals: Default::default(),
-            listen,
-            zones,
+            _listen: listen,
+            _zones: zones,
         }
     }
 
     async fn run(
         self,
         unit_name: &str,
-        update_tx: mpsc::Sender<Update>,
+        _update_tx: mpsc::Sender<Update>,
         mut cmd_rx: mpsc::Receiver<ApplicationCommand>,
     ) -> Result<(), crate::comms::Terminated> {
         // let status_reporter = self.status_reporter.clone();

@@ -29,6 +29,7 @@ use domain::zonetree::ZoneTree;
 /// access to information and services available to all components.
 pub struct Component {
     /// A reference to the metrics collection.
+    #[allow(dead_code)]
     metrics: Option<metrics::Collection>,
 
     /// A reference to the unsigned zones.

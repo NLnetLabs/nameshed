@@ -1,5 +1,7 @@
 //! Support for dumping of BMP messages to files for diagnostic purposes.
 #![allow(clippy::items_after_test_module)]
+#![allow(dead_code)]
+
 use std::path::Path;
 
 use async_trait::async_trait;

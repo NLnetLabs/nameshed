@@ -140,6 +140,7 @@ pub struct ZoneSignerUnit {
     pub cmd_rx: mpsc::Receiver<ApplicationCommand>,
 }
 
+#[allow(dead_code)]
 impl ZoneSignerUnit {
     fn default_rrsig_inception_offset_secs() -> u32 {
         60 * 90 // 90 minutes ala Knot
@@ -290,7 +291,7 @@ struct ZoneSigner {
     signer_status: Arc<RwLock<ZoneSignerStatus>>,
     treat_single_keys_as_csks: bool,
     update_tx: mpsc::Sender<Update>,
-    keys_path: PathBuf,
+    _keys_path: PathBuf,
     kmip_servers: HashMap<String, SyncConnPool>,
 }
 
@@ -320,7 +321,7 @@ impl ZoneSigner {
             signer_status: Default::default(),
             treat_single_keys_as_csks,
             update_tx,
-            keys_path,
+            _keys_path: keys_path,
             kmip_servers,
         }
     }
@@ -1147,6 +1148,7 @@ struct ZoneSignerStatus {
 }
 
 impl ZoneSignerStatus {
+    #[allow(dead_code)]
     pub fn get(&self, wanted_zone_name: &StoredName) -> Option<&NamedZoneSigningStatus> {
         self.zones_being_signed
             .iter()

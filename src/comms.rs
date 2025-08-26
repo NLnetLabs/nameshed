@@ -63,6 +63,7 @@
 //! or calculation and pass the result back down through the Gate as a
 //! QueryResult update. Additional commands are used internally to keep Gate
 //! clones configuration in sync with that of the original Gate.
+#![allow(dead_code)]
 
 use domain::base::Serial;
 use domain::zonetree::StoredName;

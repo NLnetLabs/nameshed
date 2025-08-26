@@ -1,5 +1,4 @@
 //! Nameshed
-#![allow(dead_code)]
 
 mod common;
 mod comms;
