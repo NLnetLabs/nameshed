@@ -30,7 +30,7 @@ use domain::base::wire::Composer;
 use domain::base::{
     CanonicalOrd, Name, ParsedName, ParsedRecord, Record, Rtype, Serial, ToName, Ttl,
 };
-use domain::crypto::kmip::sign::KeyUrl;
+use domain::crypto::kmip::KeyUrl;
 use domain::crypto::kmip::{self, ClientCertificate, ConnectionSettings};
 use domain::crypto::sign::{
     generate, FromBytesError, GenerateParams, KeyPair, SecretKeyBytes, SignError, SignRaw,
@@ -486,7 +486,7 @@ impl ZoneSigner {
 
                         let flags = priv_key_url.flags();
 
-                        let key_pair = KeyPair::Kmip(kmip::sign::KeyPair::new_from_urls(
+                        let key_pair = KeyPair::Kmip(kmip::sign::KeyPair::from_urls(
                             priv_key_url,
                             pub_key_url,
                             kmip_conn_pool.clone(),
@@ -1384,19 +1384,15 @@ fn load_client_cert(opt: &KmipServerConnectionSettings) -> Option<ClientCertific
         (None, None, Some(path)) => Some(ClientCertificate::CombinedPkcs12 {
             cert_bytes: load_binary_file(path),
         }),
-        (Some(path), None, None) => Some(ClientCertificate::SeparatePem {
-            cert_bytes: load_binary_file(path),
-            key_bytes: None,
-        }),
-        (None, Some(_), None) => {
-            panic!("Client certificate key path requires a client certificate path");
+        (Some(_), None, None) | (None, Some(_), None) => {
+            panic!("Client certificate authentication requires both a certificate and a key");
         }
         (_, Some(_), Some(_)) | (Some(_), _, Some(_)) => {
             panic!("Use either but not both of: client certificate and key PEM file paths, or a PCKS#12 certficate file path");
         }
         (Some(cert_path), Some(key_path), None) => Some(ClientCertificate::SeparatePem {
             cert_bytes: load_binary_file(cert_path),
-            key_bytes: Some(load_binary_file(key_path)),
+            key_bytes: load_binary_file(key_path),
         }),
     }
 }
