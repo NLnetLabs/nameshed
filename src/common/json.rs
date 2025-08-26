@@ -2,6 +2,7 @@
 
 use serde_json::Value;
 
+#[allow(dead_code)]
 pub trait EasilyExtendedJSONObject {
     fn insert(&mut self, key: &str, value: Value) -> Option<Value>;
 

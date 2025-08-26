@@ -237,6 +237,7 @@ fn get_keyset_info(state_path: impl AsRef<Path>) -> KeySetInfo {
 
     /// Persistent state for the keyset command.
     /// Copied frmo the keyset branch of dnst.
+    #[allow(dead_code)]
     #[derive(Deserialize)]
     struct KeySetState {
         /// Domain KeySet state.

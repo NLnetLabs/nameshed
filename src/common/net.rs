@@ -2,6 +2,7 @@
 //
 // These traits enable us to swap out the real TCP listener for a mock when
 // testing.
+#![allow(dead_code)]
 
 use core::fmt;
 use std::{net::SocketAddr, str::FromStr};

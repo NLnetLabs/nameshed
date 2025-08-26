@@ -1376,7 +1376,7 @@ where
             let zone_id = ZoneId::from(zone);
             {
                 let mut tt = time_tracking.write().await;
-                let Some(zone_refresh_info) = tt.get_mut(&zone_id) else {
+                let Some(_zone_refresh_info) = tt.get_mut(&zone_id) else {
                     return Err(ZoneMaintainerError::InternalError(
                         "Cannot find time tracking data for zone",
                     ));
@@ -2747,6 +2747,7 @@ impl ConnectionFactory for DefaultConnFactory {
 pub trait ZoneLookup {
     fn zones(&self) -> Arc<ZoneTree>;
 
+    #[allow(dead_code)]
     fn get_zone(&self, apex_name: &impl ToName, class: Class) -> Result<Option<Zone>, ZoneError>;
 
     fn find_zone(&self, qname: &impl ToName, class: Class) -> Result<Option<Zone>, ZoneError>;

@@ -872,14 +872,17 @@ impl ZoneReport {
         }
     }
 
+    #[allow(dead_code)]
     pub fn details(&self) -> &ZoneReportDetails {
         &self.details
     }
 
+    #[allow(dead_code)]
     pub fn timers(&self) -> &[ZoneRefreshInstant] {
         &self.timers
     }
 
+    #[allow(dead_code)]
     pub fn zone_id(&self) -> &ZoneId {
         &self.zone_id
     }

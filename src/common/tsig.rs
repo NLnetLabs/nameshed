@@ -9,6 +9,7 @@ use domain::tsig::{Algorithm, AlgorithmError, Key, KeyName, KeyStore, NewKeyErro
 use domain::utils::base64::{self, DecodeError};
 use log::info;
 
+#[allow(dead_code)]
 pub type KeyId = (KeyName, Algorithm);
 
 #[derive(Clone, Debug, Default)]

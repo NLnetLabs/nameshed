@@ -140,6 +140,7 @@ pub struct ZoneSignerUnit {
     pub cmd_rx: mpsc::Receiver<ApplicationCommand>,
 }
 
+#[allow(dead_code)]
 impl ZoneSignerUnit {
     fn default_rrsig_inception_offset_secs() -> u32 {
         60 * 90 // 90 minutes ala Knot
@@ -168,7 +169,7 @@ impl ZoneSignerUnit {
         let expected_kmip_server_conn_pools = self.kmip_server_conn_settings.len();
 
         let kmip_servers: HashMap<String, SyncConnPool> = self.kmip_server_conn_settings.drain().filter_map(|(server_id, conn_settings)| {
-            let host_and_port = (conn_settings.server_addr.clone(), conn_settings.server_port);
+            let _host_and_port = (conn_settings.server_addr.clone(), conn_settings.server_port);
 
             match ConnectionManager::create_connection_pool(
                 server_id.clone(),
@@ -255,7 +256,7 @@ impl ZoneSignerUnit {
     }
 
     fn load_public_key(key_path: &Path) -> Result<Record<StoredName, Dnskey<Bytes>>, Terminated> {
-        let public_data = std::fs::read_to_string(key_path).map_err(|err| {
+        let public_data = std::fs::read_to_string(key_path).map_err(|_| {
             error!("loading public key from file '{}'", key_path.display(),);
             Terminated
         })?;
@@ -290,7 +291,7 @@ struct ZoneSigner {
     signer_status: Arc<RwLock<ZoneSignerStatus>>,
     treat_single_keys_as_csks: bool,
     update_tx: mpsc::Sender<Update>,
-    keys_path: PathBuf,
+    _keys_path: PathBuf,
     kmip_servers: HashMap<String, SyncConnPool>,
 }
 
@@ -320,7 +321,7 @@ impl ZoneSigner {
             signer_status: Default::default(),
             treat_single_keys_as_csks,
             update_tx,
-            keys_path,
+            _keys_path: keys_path,
             kmip_servers,
         }
     }
@@ -339,7 +340,7 @@ impl ZoneSigner {
 
                 ApplicationCommand::SignZone {
                     zone_name,
-                    zone_serial,
+                    zone_serial: _,
                 } => {
                     if let Err(err) = self.sign_zone(zone_name).await {
                         error!("[ZS]: Signing of zone '{zone_name}' failed: {err}");
@@ -359,7 +360,7 @@ impl ZoneSigner {
         info!("[ZS]: Waiting to start signing operation for zone '{zone_name}'.");
         self.signer_status.write().await.enqueue(zone_name.clone());
 
-        let permit = self.concurrent_operation_permits.acquire().await.unwrap();
+        let _permit = self.concurrent_operation_permits.acquire().await.unwrap();
         info!("[ZS]: Starting signing operation for zone '{zone_name}'");
 
         //
@@ -484,7 +485,7 @@ impl ZoneSigner {
                             .get(priv_key_url.server_id())
                             .ok_or(format!("No connection pool available for KMIP server '{}'", priv_key_url.server_id()))?;
 
-                        let flags = priv_key_url.flags();
+                        let _flags = priv_key_url.flags();
 
                         let key_pair = KeyPair::Kmip(kmip::sign::KeyPair::from_urls(
                             priv_key_url,
@@ -774,16 +775,16 @@ impl ZoneSigner {
                 DenialConfig::Nsec3(first)
             }
             TomlDenialConfig::TransitioningToNsec3(
-                toml_nsec3_config,
-                toml_nsec_to_nsec3_transition_state,
+                _toml_nsec3_config,
+                _toml_nsec_to_nsec3_transition_state,
             ) => todo!(),
             TomlDenialConfig::TransitioningFromNsec3(
-                toml_nsec3_config,
-                toml_nsec3_to_nsec_transition_state,
+                _toml_nsec3_config,
+                _toml_nsec3_to_nsec_transition_state,
             ) => todo!(),
         };
 
-        let add_used_dnskeys = true;
+        let _add_used_dnskeys = true;
         let now = Timestamp::now().into_int();
         let inception = now.sub(self.inception_offset_secs).into();
         let expiration = now.add(self.expiration_offset).into();
@@ -913,7 +914,7 @@ fn get_zone_soa(
     let answer = zone
         .read()
         .query(zone_name.clone(), Rtype::SOA)
-        .map_err(|err| format!("SOA not found for zone '{zone_name}'"))?;
+        .map_err(|_| format!("SOA not found for zone '{zone_name}'"))?;
     let (soa_ttl, soa_data) = answer
         .content()
         .first()
@@ -1147,6 +1148,7 @@ struct ZoneSignerStatus {
 }
 
 impl ZoneSignerStatus {
+    #[allow(dead_code)]
     pub fn get(&self, wanted_zone_name: &StoredName) -> Option<&NamedZoneSigningStatus> {
         self.zones_being_signed
             .iter()
@@ -1355,8 +1357,8 @@ impl Default for KmipServerConnectionSettings {
 impl From<KmipServerConnectionSettings> for ConnectionSettings {
     fn from(cfg: KmipServerConnectionSettings) -> Self {
         let client_cert = load_client_cert(&cfg);
-        let server_cert = cfg.server_cert_path.map(|p| load_binary_file(&p));
-        let ca_cert = cfg.ca_cert_path.map(|p| load_binary_file(&p));
+        let _server_cert = cfg.server_cert_path.map(|p| load_binary_file(&p));
+        let _ca_cert = cfg.ca_cert_path.map(|p| load_binary_file(&p));
         ConnectionSettings {
             host: cfg.server_addr,
             port: cfg.server_port,
