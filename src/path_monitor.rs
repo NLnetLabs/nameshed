@@ -105,7 +105,7 @@ impl<CH: PathChangeHandler> PathMonitor<CH> {
         let mut lock = self.inner.lock().unwrap();
         let inner = &mut *lock;
 
-        let handlers = inner.handlers.entry(path.into()).or_insert(Vec::new());
+        let handlers = inner.handlers.entry(path.into()).or_default();
         if handlers.is_empty() {
             inner
                 .watcher
@@ -133,7 +133,7 @@ impl<CH: PathChangeHandler> PathMonitor<CH> {
 
         if handlers.get_mut().is_empty() {
             handlers.remove();
-            lock.watcher.unwatch(path);
+            let _ = lock.watcher.unwatch(path);
         }
     }
 }
