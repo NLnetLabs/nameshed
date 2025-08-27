@@ -3,11 +3,16 @@ use std::net::IpAddr;
 use domain::base::Serial;
 use domain::zonetree::StoredName;
 
+use crate::center::Change;
+
 //------------ Update --------------------------------------------------------
 
 #[allow(clippy::enum_variant_names)]
 #[derive(Clone, Debug)]
 pub enum Update {
+    /// A change has occurred.
+    Changed(Change),
+
     /// A request to refresh a zone.
     ///
     /// This is sent by the publication server when it receives an appropriate

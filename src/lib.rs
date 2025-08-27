@@ -11,6 +11,7 @@ pub mod manager;
 pub mod metrics;
 pub mod payload;
 pub mod policy;
+pub mod state;
 pub mod targets;
 pub mod tsig;
 pub mod units;

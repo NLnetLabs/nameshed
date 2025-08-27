@@ -12,6 +12,11 @@ use std::{
 
 use camino::Utf8Path;
 
+use crate::{
+    center::{Center, Change},
+    payload::Update,
+};
+
 pub mod args;
 pub mod env;
 pub mod file;
@@ -89,11 +94,11 @@ impl Config {
         Ok(this)
     }
 
-    /// Fill Cascade's configuration.
+    /// Initialize this with the configuration file.
     ///
     /// This should be called if a global state file is not available.  It will
     /// load the configuration file and integrate it into `self`.
-    pub fn fill(&mut self) -> Result<(), ConfigError> {
+    pub fn init_from_file(&mut self) -> Result<(), ConfigError> {
         let path = self.daemon.config_file.value();
         let spec = match file::Spec::load(path) {
             Ok(spec) => spec,
@@ -109,11 +114,44 @@ impl Config {
     }
 }
 
+//----------- Actions ----------------------------------------------------------
+
+/// Reload the configuration file.
+pub fn reload(center: &Center) -> Result<(), file::FileError> {
+    // Determine the path to the configuration file.
+    let path = {
+        let state = center.state.lock().unwrap();
+        state.config.daemon.config_file.value().clone()
+    };
+
+    log::info!("Reloading the configuration file (from {path:?})");
+
+    // Load and parse the configuration file.
+    let spec = file::Spec::load(&path)?;
+
+    // Lock the global state.
+    let mut state = center.state.lock().unwrap();
+
+    // Merge the parsed configuration file.
+    spec.parse_into(&mut state.config);
+
+    // Inform everybody the state has changed.
+    center
+        .update_tx
+        .send(Update::Changed(Change::ConfigChanged))
+        .unwrap();
+
+    Ok(())
+}
+
 //----------- DaemonConfig -----------------------------------------------------
 
 /// Daemon-related configuration for Cascade.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DaemonConfig {
+    /// The location of the state file.
+    pub state_file: Setting<Box<Utf8Path>>,
+
     /// Logging configuration.
     pub logging: LoggingConfig,
 
@@ -136,6 +174,7 @@ pub struct DaemonConfig {
 impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
+            state_file: Setting::new("/var/db/cascade/state.db".into()),
             logging: LoggingConfig::default(),
             config_file: Setting::new("/etc/cascade/config.toml".into()),
             daemonize: Setting::new(false),

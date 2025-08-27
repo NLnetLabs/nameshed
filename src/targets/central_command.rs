@@ -72,6 +72,17 @@ impl CentralCommand {
     async fn direct_update(&self, event: Update) {
         info!("[CC]: Event received: {event:?}");
         let (msg, target, cmd) = match event {
+            Update::Changed(change) => {
+                // Inform all units about the change.
+                for name in ["ZL", "RS", "KM", "ZS", "RS2", "PS"] {
+                    self.center
+                        .app_cmd_tx
+                        .send((name.into(), ApplicationCommand::Changed(change.clone())))
+                        .unwrap();
+                }
+                return;
+            }
+
             Update::RefreshZone {
                 zone_name,
                 source,

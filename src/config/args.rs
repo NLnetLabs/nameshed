@@ -13,6 +13,9 @@ use super::{Config, LogLevel, LogTarget};
 /// Configuration-related command-line arguments.
 #[derive(Clone, Debug)]
 pub struct ArgsSpec {
+    /// The global state file to use.
+    pub state: Option<Box<Utf8Path>>,
+
     /// The configuration file to load.
     pub config: Option<Box<Utf8Path>>,
 
@@ -30,6 +33,14 @@ impl ArgsSpec {
     /// Set up a [`clap::Command`] with config-related arguments.
     pub fn setup(cmd: Command) -> Command {
         cmd.args([
+            Arg::new("state")
+                .long("state")
+                .value_name("PATH")
+                .value_parser(ValueParser::new(
+                    PathBufValueParser::new().try_map(Utf8PathBuf::try_from),
+                ))
+                .value_hint(ValueHint::FilePath)
+                .help("The global state file to use"),
             Arg::new("config")
                 .short('c')
                 .long("config")
@@ -61,6 +72,9 @@ impl ArgsSpec {
     /// Process parsed command-line arguments.
     pub fn process(matches: &ArgMatches) -> Self {
         Self {
+            state: matches
+                .get_one::<Utf8PathBuf>("state")
+                .map(|p| p.as_path().into()),
             config: matches
                 .get_one::<Utf8PathBuf>("config")
                 .map(|p| p.as_path().into()),
@@ -73,6 +87,7 @@ impl ArgsSpec {
     /// Merge this into a [`Config`].
     pub fn merge(self, config: &mut Config) {
         let daemon = &mut config.daemon;
+        daemon.state_file.args = self.state;
         daemon.logging.level.args = self.log_level;
         daemon.logging.target.args = self.log_target.map(|t| t.build());
         daemon.config_file.args = self.config;

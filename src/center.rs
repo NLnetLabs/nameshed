@@ -3,12 +3,18 @@
 use std::sync::{Arc, Mutex};
 
 use arc_swap::ArcSwap;
-use domain::zonetree::ZoneTree;
+use bytes::Bytes;
+use domain::{base::Name, zonetree::ZoneTree};
 use tokio::sync::mpsc;
 
 use crate::{
-    comms::ApplicationCommand, config::Config, log::Logger, payload::Update, policy::Policy,
-    tsig::TsigStore, zone::ZoneByName,
+    comms::ApplicationCommand,
+    config::Config,
+    log::Logger,
+    payload::Update,
+    policy::{Policy, PolicyVersion},
+    tsig::TsigStore,
+    zone::ZoneByName,
 };
 
 //----------- Center -----------------------------------------------------------
@@ -92,4 +98,22 @@ impl State {
             tsig_store: Default::default(),
         }
     }
+}
+
+//----------- Change -----------------------------------------------------------
+
+/// A change to global state.
+#[derive(Clone, Debug)]
+pub enum Change {
+    /// The configuration has been changed.
+    ConfigChanged,
+
+    /// A zone has been added.
+    ZoneAdded(Name<Bytes>),
+
+    /// The policy of a zone has changed.
+    ZonePolicyChanged(Name<Bytes>, Arc<PolicyVersion>),
+
+    /// A zone has been removed.
+    ZoneRemoved(Name<Bytes>),
 }
