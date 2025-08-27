@@ -1,6 +1,3 @@
-#![warn(dead_code)]
-#![warn(unused_variables)]
-
 use std::convert::Infallible;
 use std::future::Future;
 use std::io;
