@@ -524,6 +524,7 @@ impl Manager {
                     source: zone_server::Source::UnsignedZones,
                     update_tx: update_tx.clone(),
                     cmd_rx: rs_rx,
+                    http_api_path: Arc::new(String::from("/_unit/rs/")),
                 }),
             ),
             (
@@ -554,6 +555,7 @@ impl Manager {
             (
                 String::from("RS2"),
                 Unit::ZoneServer(ZoneServerUnit {
+                    http_api_path: Arc::new(String::from("/_unit/rs2/")),
                     listen: vec![
                         "tcp:127.0.0.1:8057".parse().unwrap(),
                         "udp:127.0.0.1:8057".parse().unwrap(),
@@ -572,6 +574,7 @@ impl Manager {
             (
                 String::from("PS"),
                 Unit::ZoneServer(ZoneServerUnit {
+                    http_api_path: Arc::new(String::from("/_unit/ps/")),
                     listen: vec![
                         "tcp:127.0.0.1:8058".parse().unwrap(),
                         "udp:127.0.0.1:8058".parse().unwrap(),
