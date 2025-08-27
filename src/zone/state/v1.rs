@@ -22,7 +22,7 @@ pub struct Spec {
     ///
     /// The full details of the policy are stored here, as there may be a newer
     /// version of the policy that is not yet in use.
-    pub policy: PolicySpec,
+    pub policy: Option<PolicySpec>,
 }
 
 //--- Conversion
@@ -31,7 +31,7 @@ impl Spec {
     /// Build into this specification.
     pub fn build(zone: &ZoneState) -> Self {
         Self {
-            policy: PolicySpec::build(&zone.policy),
+            policy: zone.policy.as_ref().map(|p| PolicySpec::build(p)),
         }
     }
 }

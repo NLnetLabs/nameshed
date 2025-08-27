@@ -48,10 +48,10 @@ pub struct Zone {
 }
 
 /// The state of a zone.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct ZoneState {
     /// The policy (version) used by the zone.
-    pub policy: Arc<PolicyVersion>,
+    pub policy: Option<Arc<PolicyVersion>>,
     //
     // TODO:
     // - A log?
@@ -68,10 +68,10 @@ impl Zone {
     ///
     /// The zone is initialized to an empty state, where nothing is known about
     /// it and Cascade won't act on it.
-    pub fn new(name: Name<Bytes>, policy: Arc<PolicyVersion>) -> Self {
+    pub fn new(name: Name<Bytes>) -> Self {
         Self {
             name: name.clone(),
-            state: Mutex::new(ZoneState { policy }),
+            state: Default::default(),
             loaded: ZoneBuilder::new(name.clone(), Class::IN).build(),
             signed: ZoneBuilder::new(name.clone(), Class::IN).build(),
             published: ZoneBuilder::new(name.clone(), Class::IN).build(),
