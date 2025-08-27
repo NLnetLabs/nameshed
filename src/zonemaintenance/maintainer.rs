@@ -592,19 +592,10 @@ where
 {
     /// Wrap a [`Zone`] so that we get notified when it is modified.
     fn wrap_zone(zone: TypedZone, notify_tx: Sender<Event>) -> Zone {
-        let diffs = Arc::new(Mutex::new(ZoneDiffs::new()));
-        let nameservers = Arc::new(Mutex::new(None));
-        let expired = Arc::new(AtomicBool::new(false));
-
         let (zone_store, zone_type) = zone.into_inner();
 
-        let zone_info = ZoneInfo {
-            _catalog_member_id: None, // TODO
-            config: zone_type,
-            diffs,
-            nameservers,
-            expired,
-        };
+        let mut zone_info = ZoneInfo::default();
+        zone_info.config = zone_type;
 
         let new_store = MaintainedZone::new(notify_tx, zone_store, zone_info);
         Zone::new(new_store)
@@ -650,7 +641,7 @@ where
         }
     }
 
-    async fn send_notify_to_addrs(
+    pub async fn send_notify_to_addrs(
         apex_name: StoredName,
         notify_set: impl Iterator<Item = &SocketAddr>,
         config: Arc<ArcSwap<Config<KS, CF>>>,
