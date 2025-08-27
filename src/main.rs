@@ -1,6 +1,15 @@
-use cascade::{config::Config, manager::Manager};
+use cascade::{
+    center::{self, Center},
+    comms::ApplicationCommand,
+    config::Config,
+    manager::{self, TargetCommand},
+};
 use clap::{crate_authors, crate_version};
-use std::process::ExitCode;
+use std::{
+    process::ExitCode,
+    sync::{Arc, Mutex},
+};
+use tokio::sync::mpsc;
 
 fn main() -> ExitCode {
     // Initialize the logger in fallback mode.
@@ -22,10 +31,6 @@ fn main() -> ExitCode {
     // Process command-line arguments.
     let matches = cmd.get_matches();
 
-    // TODO: Load the state instead of the config file, and merge the args and
-    // env with whatever's in there.  Only load the config file when the user
-    // explicitly requests it.
-
     // Construct the configuration.
     let config = match Config::init(&matches) {
         Ok(config) => config,
@@ -42,6 +47,20 @@ fn main() -> ExitCode {
     // TODO: daemonbase
     logger.apply(logger.prepare(&config.daemon.logging).unwrap().unwrap());
 
+    // Prepare Cascade.
+    let (app_cmd_tx, mut app_cmd_rx) = mpsc::unbounded_channel();
+    let (update_tx, update_rx) = mpsc::unbounded_channel();
+    let center = Arc::new(Center {
+        state: Mutex::new(center::State::new(config)),
+        logger,
+        unsigned_zones: Default::default(),
+        signed_zones: Default::default(),
+        published_zones: Default::default(),
+        old_tsig_key_store: Default::default(),
+        app_cmd_tx,
+        update_tx,
+    });
+
     // Set up an async runtime.
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -56,10 +75,10 @@ fn main() -> ExitCode {
 
     // Enter the runtime.
     runtime.block_on(async {
-        // TODO: Clean up.
-
-        let mut manager = Manager::new(logger);
-        manager.spawn();
+        // Spawn Cascade's units.
+        let mut center_tx = None;
+        let mut unit_txs = Default::default();
+        manager::spawn(&center, update_rx, &mut center_tx, &mut unit_txs);
 
         // Let the manager run and handle external events.
         let result = loop {
@@ -75,13 +94,21 @@ fn main() -> ExitCode {
                     break ExitCode::SUCCESS;
                 }
 
-                // TODO: Clean up.
-                _ = manager.accept_application_commands() => {}
+                _ = manager::forward_app_cmds(&mut app_cmd_rx, &unit_txs) => {}
             }
         };
 
         // Shut down Cascade.
-        manager.terminate().await;
+        center_tx
+            .as_ref()
+            .unwrap()
+            .send(TargetCommand::Terminate)
+            .unwrap();
+        center_tx.as_ref().unwrap().closed().await;
+        for (_name, tx) in unit_txs {
+            tx.send(ApplicationCommand::Terminate).unwrap();
+            tx.closed().await;
+        }
         result
     })
 }

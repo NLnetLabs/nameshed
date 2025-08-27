@@ -1,18 +1,12 @@
-use super::Unit;
-use crate::comms::{ApplicationCommand, GraphStatus, Terminated};
-use crate::manager::Component;
-use crate::metrics;
+use crate::center::Center;
+use crate::comms::{ApplicationCommand, Terminated};
 use crate::payload::Update;
-use bytes::Bytes;
-use core::fmt::Display;
 use core::time::Duration;
-use domain::base::Name;
 use domain::dnssec::sign::keys::keyset::{KeySet, UnixTime};
-use domain::zonetree::Zone;
-use log::{error, info};
+use log::error;
 use serde::Deserialize;
-use serde_with::serde_as;
 use std::collections::HashMap;
+use std::fmt::Display;
 use std::fs::metadata;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -23,24 +17,22 @@ use tokio::time::MissedTickBehavior;
 
 #[derive(Debug)]
 pub struct KeyManagerUnit {
+    pub center: Arc<Center>,
     pub dnst_keyset_bin_path: PathBuf,
     pub dnst_keyset_data_dir: PathBuf,
-    pub update_tx: mpsc::UnboundedSender<Update>,
 }
 
 impl KeyManagerUnit {
     pub async fn run(
         self,
         cmd_rx: mpsc::UnboundedReceiver<ApplicationCommand>,
-        component: Component,
     ) -> Result<(), Terminated> {
         // TODO: metrics and status reporting
 
         KeyManager::new(
-            component,
+            self.center,
             self.dnst_keyset_bin_path,
             self.dnst_keyset_data_dir,
-            self.update_tx,
         )
         .run(cmd_rx)
         .await?;
@@ -52,25 +44,22 @@ impl KeyManagerUnit {
 //------------ KeyManager ----------------------------------------------------
 
 struct KeyManager {
-    component: Component,
+    center: Arc<Center>,
     dnst_keyset_bin_path: PathBuf,
     dnst_keyset_data_dir: PathBuf,
-    update_tx: mpsc::UnboundedSender<Update>,
     ks_info: Mutex<HashMap<String, KeySetInfo>>,
 }
 
 impl KeyManager {
     fn new(
-        component: Component,
+        center: Arc<Center>,
         dnst_keyset_bin_path: PathBuf,
         dnst_keyset_data_dir: PathBuf,
-        update_tx: mpsc::UnboundedSender<Update>,
     ) -> Self {
         Self {
-            component,
+            center,
             dnst_keyset_bin_path,
             dnst_keyset_data_dir,
-            update_tx,
             ks_info: Mutex::new(HashMap::new()),
         }
     }
@@ -142,7 +131,7 @@ impl KeyManager {
     }
 
     async fn tick(&self) {
-        let zone_tree = self.component.unsigned_zones();
+        let zone_tree = &self.center.unsigned_zones;
         let mut ks_info = self.ks_info.lock().await;
         for zone in zone_tree.load().iter_zones() {
             let apex_name = zone.apex_name().to_string();
@@ -164,7 +153,8 @@ impl KeyManager {
                 // signal the signer to re-sign the zone.
                 let new_info = get_keyset_info(&state_path);
                 let _ = ks_info.insert(apex_name, new_info);
-                self.update_tx
+                self.center
+                    .update_tx
                     .send(Update::ResignZoneEvent {
                         zone_name: zone.apex_name().clone(),
                     })
@@ -206,7 +196,8 @@ impl KeyManager {
                         // signer.
                         let new_info = get_keyset_info(&state_path);
                         let _ = ks_info.insert(apex_name, new_info);
-                        self.update_tx
+                        self.center
+                            .update_tx
                             .send(Update::ResignZoneEvent {
                                 zone_name: zone.apex_name().clone(),
                             })
