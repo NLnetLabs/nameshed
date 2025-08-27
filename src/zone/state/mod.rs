@@ -83,7 +83,7 @@ impl Spec {
 
         match self {
             Self::V1(v1::Spec { policy }) => {
-                state.policy = sync_policy(policy.parse(), zone, policies);
+                state.policy = policy.map(|policy| sync_policy(policy.parse(), zone, policies));
             }
         }
     }
