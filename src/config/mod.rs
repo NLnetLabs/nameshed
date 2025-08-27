@@ -37,7 +37,7 @@ pub struct Config {
     pub server: ServerConfig,
 }
 
-//--- Processing
+//--- Initialization
 
 impl Config {
     /// Set up a [`clap::Command`] with config-related arguments.
@@ -45,35 +45,17 @@ impl Config {
         args::ArgsSpec::setup(cmd)
     }
 
-    /// Process all configuration sources.
-    pub fn process(cli_matches: &clap::ArgMatches) -> Result<Self, ConfigError> {
+    /// Initialize Nameshed's configuration.
+    ///
+    /// The configuration file is not read here; it should only be read on
+    /// explicit user request or if a global state file is not available.
+    pub fn init(cli_matches: &clap::ArgMatches) -> Result<Self, ConfigError> {
         // Process environment variables and command-line arguments.
         let env = env::EnvSpec::process()?;
         let args = args::ArgsSpec::process(cli_matches);
 
-        // Determine the location of the configuration file.
-        let config_file = Setting {
-            default: "/etc/nameshed/config.toml".into(),
-            file: None,
-            env: env.config.clone(),
-            args: args.config.clone(),
-        };
-
-        // Load and parse the configuration file.
-        let file = match file::FileSpec::load(config_file.value()) {
-            Ok(file) => file,
-            Err(error) => {
-                return Err(ConfigError::File {
-                    path: config_file.value().clone(),
-                    error,
-                })
-            }
-        };
-
-        // Build the configuration.
-        let mut this = file.build(config_file);
-
-        // Include data from environment variables and command-line arguments.
+        // Combine their data with the default state.
+        let mut this = Self::default();
         args.merge(&mut this);
         env.merge(&mut this);
 
