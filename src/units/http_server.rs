@@ -111,8 +111,8 @@ impl HttpServer {
             .route("/rs/{action}/{token}", get(Self::handle_rs))
             .route("/rs2/", get(Self::handle_rs2_base))
             .route("/rs2/{action}/{token}", get(Self::handle_rs2));
-            // .route("/zl/", get(Self::handle_zl_base))
-            // .route("/zs/", get(Self::handle_zs_base));
+        // .route("/zl/", get(Self::handle_zl_base))
+        // .route("/zs/", get(Self::handle_zs_base));
 
         let app = Router::new()
             .route("/", get(|| async { "Hello, World!" }))
@@ -266,7 +266,6 @@ impl HttpServer {
     ) -> Result<(), StatusCode> {
         Self::zone_server_unit_api_common("RS", uri, state, action, token, params).await
     }
-
 
     //--- common api implementations
     async fn zone_server_unit_api_base_common(

@@ -30,10 +30,7 @@ pub enum StatusCommand {
 //   - maybe have it both on server level status command (so here) and in the zone command?
 
 impl Status {
-    pub async fn execute(
-        self,
-        client: NameshedApiClient,
-    ) -> Result<(), ExitError> {
+    pub async fn execute(self, client: NameshedApiClient) -> Result<(), ExitError> {
         match self.command {
             Some(StatusCommand::Zone { name }) => {
                 // TODO: move to function that can be called by the general

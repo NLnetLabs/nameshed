@@ -3,10 +3,7 @@ use domain::base::Name;
 use futures::TryFutureExt;
 use log::error;
 
-use crate::api::{
-    ZoneRegister, ZoneRegisterResult, ZoneSource, ZoneStatusResult,
-    ZonesListResult,
-};
+use crate::api::{ZoneRegister, ZoneRegisterResult, ZoneSource, ZoneStatusResult, ZonesListResult};
 use crate::cli::client::NameshedApiClient;
 use crate::log::ExitError;
 
@@ -56,10 +53,7 @@ pub enum ZoneCommand {
 // - reload zone (i.e. from file)
 
 impl Zone {
-    pub async fn execute(
-        self,
-        client: NameshedApiClient,
-    ) -> Result<(), ExitError> {
+    pub async fn execute(self, client: NameshedApiClient) -> Result<(), ExitError> {
         match self.command {
             ZoneCommand::Register { name, source } => {
                 let res: ZoneRegisterResult = client
@@ -116,10 +110,7 @@ impl Zone {
                         ExitError
                     })?;
 
-                println!(
-                    "Success: Sent zone reload command for {}",
-                    response.name
-                );
+                println!("Success: Sent zone reload command for {}", response.name);
             }
         }
         Ok(())
