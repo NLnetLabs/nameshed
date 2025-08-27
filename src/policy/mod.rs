@@ -1,6 +1,6 @@
 //! Zone policy.
 
-use std::{fs, io, sync::Arc};
+use std::{fs, io, sync::Arc, time::Duration};
 
 use bytes::Bytes;
 use camino::Utf8PathBuf;
@@ -161,8 +161,56 @@ pub struct KeyManagerPolicy {}
 /// Policy for signing zones.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SignerPolicy {
+    /// The offset for record signature inceptions.
+    ///
+    /// When DNS records are signed, the `RRSIG` signature records will record
+    /// that the signature was made this far in the past.  This can help DNSSEC
+    /// validation pass in case the signer and validator disagree on the current
+    /// time (by a small amount).
+    pub sig_inception_offset: Duration,
+
+    /// How long record signatures will be valid for.
+    pub sig_validity_time: Duration,
+
+    /// How denial-of-existence records are generated.
+    pub denial: SignerDenialPolicy,
+
     /// Reviewing signed zones.
     pub review: ReviewPolicy,
+    //
+    // TODO:
+    // - Signing policy (disabled, pass-through?, enabled)
+    // - Serial number policy
+}
+
+//----------- SignerDenialPolicy -----------------------------------------------
+
+/// Policy for generating denial-of-existence records.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SignerDenialPolicy {
+    /// Generate NSEC records.
+    NSec,
+
+    /// Generate NSEC3 records.
+    NSec3 {
+        /// Whether and how to enable NSEC3 Opt-Out.
+        opt_out: Nsec3OptOutPolicy,
+    },
+}
+
+//----------- Nsec3OptOutPolicy ------------------------------------------------
+
+/// Policy for the NSEC3 Opt-Out mechanism.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Nsec3OptOutPolicy {
+    /// Do not enable Opt-Out.
+    Disabled,
+
+    /// Only set the Opt-Out flag.
+    FlagOnly,
+
+    /// Enable Opt-Out and omit the corresponding NSEC3 records.
+    Enabled,
 }
 
 //----------- ReviewPolicy -----------------------------------------------------
