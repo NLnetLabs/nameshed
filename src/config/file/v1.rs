@@ -20,6 +20,10 @@ pub struct Spec {
     #[serde(default = "Spec::policy_dir_default")]
     pub policy_dir: Box<Utf8Path>,
 
+    /// The directory storing per-zone state files.
+    #[serde(default = "Spec::zone_state_dir_default")]
+    pub zone_state_dir: Box<Utf8Path>,
+
     /// Configuring the Nameshed daemon.
     pub daemon: DaemonSpec,
 
@@ -43,6 +47,7 @@ impl Spec {
     pub fn build(self, config_file: Setting<Box<Utf8Path>>) -> Config {
         Config {
             policy_dir: self.policy_dir,
+            zone_state_dir: self.zone_state_dir,
             daemon: self.daemon.build(config_file),
             loader: self.loader.build(),
             signer: self.signer.build(),
@@ -58,6 +63,7 @@ impl Default for Spec {
     fn default() -> Self {
         Self {
             policy_dir: Self::policy_dir_default(),
+            zone_state_dir: Self::zone_state_dir_default(),
             daemon: Default::default(),
             loader: Default::default(),
             signer: Default::default(),
@@ -71,6 +77,11 @@ impl Spec {
     /// The default value for `policy_dir`.
     fn policy_dir_default() -> Box<Utf8Path> {
         "/etc/nameshed/policies".into()
+    }
+
+    /// The default value for `zone_state_dir`.
+    fn zone_state_dir_default() -> Box<Utf8Path> {
+        "/var/db/nameshed/zone-state".into()
     }
 }
 

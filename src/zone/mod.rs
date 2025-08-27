@@ -5,6 +5,7 @@ use std::{
     cmp::Ordering,
     fmt,
     hash::{Hash, Hasher},
+    io,
     sync::{Arc, Mutex},
 };
 
@@ -14,7 +15,12 @@ use domain::{
     zonetree::{self, ZoneBuilder},
 };
 
-use crate::policy::PolicyVersion;
+use crate::{
+    config::Config,
+    policy::{Policy, PolicyVersion},
+};
+
+pub mod state;
 
 //----------- Zone -------------------------------------------------------------
 
@@ -70,6 +76,40 @@ impl Zone {
             signed: ZoneBuilder::new(name.clone(), Class::IN).build(),
             published: ZoneBuilder::new(name.clone(), Class::IN).build(),
         }
+    }
+}
+
+//--- Loading / Saving
+
+impl Zone {
+    /// Reload this zone.
+    pub fn reload(
+        self: &Arc<Self>,
+        policies: &mut foldhash::HashMap<Box<str>, Policy>,
+        config: &Config,
+    ) -> io::Result<()> {
+        // Load and parse the state file.
+        let path = config.zone_state_dir.join(format!("{}.state", self.name));
+        let spec = state::Spec::load(&path)?;
+
+        // Merge the parsed data.
+        let mut state = self.state.lock().unwrap();
+        spec.parse_into(self, &mut state, policies);
+
+        Ok(())
+    }
+
+    /// Save this zone.
+    pub fn save(self: &Arc<Self>, config: &Config) -> io::Result<()> {
+        // Read the state out.
+        let spec = {
+            let state = self.state.lock().unwrap();
+            state::Spec::build(&state)
+        };
+
+        // Build and write the state file.
+        let path = config.zone_state_dir.join(format!("{}.state", self.name));
+        spec.save(&path)
     }
 }
 

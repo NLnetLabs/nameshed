@@ -24,6 +24,9 @@ pub struct Config {
     /// The directory storing policy files.
     pub policy_dir: Box<Utf8Path>,
 
+    /// The directory storing zone state files.
+    pub zone_state_dir: Box<Utf8Path>,
+
     /// Daemon-related configuration.
     pub daemon: DaemonConfig,
 
@@ -46,6 +49,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             policy_dir: "/etc/nameshed/policies".into(),
+            zone_state_dir: "/var/db/nameshed/zone-state".into(),
             daemon: Default::default(),
             loader: Default::default(),
             signer: Default::default(),
