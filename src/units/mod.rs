@@ -20,7 +20,6 @@
 //------------ Sub-modules ---------------------------------------------------
 
 pub mod key_manager;
-pub mod zone_loader;
 pub mod zone_server;
 pub mod zone_signer;
 
@@ -33,8 +32,6 @@ use serde::Deserialize;
 #[allow(clippy::enum_variant_names)]
 #[derive(Debug)]
 pub enum Unit {
-    ZoneLoader(zone_loader::ZoneLoader),
-
     KeyManager(key_manager::KeyManagerUnit),
 
     ZoneServer(zone_server::ZoneServerUnit),
@@ -45,7 +42,6 @@ pub enum Unit {
 impl Unit {
     pub async fn run(self, component: Component) {
         let _ = match self {
-            Unit::ZoneLoader(unit) => unit.run(component).await,
             Unit::KeyManager(unit) => unit.run(component).await,
             Unit::ZoneServer(unit) => unit.run(component).await,
             Unit::ZoneSigner(unit) => unit.run(component).await,
@@ -54,7 +50,6 @@ impl Unit {
 
     pub fn type_name(&self) -> &'static str {
         match self {
-            Unit::ZoneLoader(_) => "zone-loader",
             Unit::KeyManager(_) => "key-manager",
             Unit::ZoneServer(_) => "zone-server",
             Unit::ZoneSigner(_) => "zone-signer",

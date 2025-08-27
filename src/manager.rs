@@ -1,9 +1,13 @@
 //! Controlling the entire operation.
 
 use arc_swap::ArcSwap;
+use camino::Utf8PathBuf;
+use domain::new::base::name::RevNameBuf;
+use domain::utils::dst::UnsizedCopy;
 use log::{debug, info};
 use std::collections::HashMap;
 use std::fmt::Display;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::{self, Receiver, Sender};
@@ -11,14 +15,16 @@ use tokio::sync::mpsc::{self, Receiver, Sender};
 use crate::common::file_io::TheFileIo;
 use crate::common::tsig::TsigKeyStore;
 use crate::comms::ApplicationCommand;
+use crate::loader::Loader;
 use crate::metrics;
 use crate::targets::central_command::{self, CentralCommandTarget};
 use crate::targets::Target;
 use crate::units::key_manager::KeyManagerUnit;
-use crate::units::zone_loader::ZoneLoader;
 use crate::units::zone_server::{self, ZoneServerUnit};
 use crate::units::zone_signer::{KmipServerConnectionSettings, TomlDenialConfig, ZoneSignerUnit};
 use crate::units::Unit;
+use crate::zone::loader::{DnsServerAddr, Source};
+use crate::zone::{LoaderState, Zones};
 use domain::zonetree::ZoneTree;
 
 //------------ Component -----------------------------------------------------
@@ -128,8 +134,14 @@ impl Display for TargetCommand {
 /// Requires a running Tokio reactor that has been "entered" (see Tokio
 /// `Handle::enter()`).
 pub struct Manager {
-    /// Commands for the zone loader.
-    loader_tx: Option<mpsc::Sender<ApplicationCommand>>,
+    /// The zone loader.
+    loader: Option<Arc<Loader>>,
+
+    /// A handle to the loader runner.
+    loader_runner: Option<tokio::task::AbortHandle>,
+
+    /// Zones known to Nameshed.
+    zones: Zones,
 
     /// Commands for the review server.
     review_tx: Option<mpsc::Sender<ApplicationCommand>>,
@@ -184,9 +196,10 @@ impl Manager {
         let signed_zones = Default::default();
         let published_zones = Default::default();
 
-        #[allow(clippy::let_and_return, clippy::default_constructed_unit_structs)]
-        let manager = Manager {
-            loader_tx: None,
+        Self {
+            loader: None,
+            loader_runner: None,
+            zones: Zones::default(),
             review_tx: None,
             key_manager_tx: None,
             signer_tx: None,
@@ -194,6 +207,7 @@ impl Manager {
             publish_tx: None,
             center_tx: None,
             metrics: Default::default(),
+            #[allow(clippy::default_constructed_unit_structs)]
             file_io: TheFileIo::default(),
             unsigned_zones,
             signed_zones,
@@ -201,9 +215,7 @@ impl Manager {
             tsig_key_store,
             app_cmd_tx,
             app_cmd_rx: Arc::new(tokio::sync::Mutex::new(app_cmd_rx)),
-        };
-
-        manager
+        }
     }
 
     #[cfg(test)]
@@ -213,8 +225,8 @@ impl Manager {
 
     pub async fn accept_application_commands(&self) {
         while let Some((unit_name, data)) = self.app_cmd_rx.lock().await.recv().await {
+            // TODO: Check for the zone loader manually.
             let Some(tx) = (match &*unit_name {
-                "ZL" => self.loader_tx.as_ref(),
                 "RS" => self.review_tx.as_ref(),
                 "KM" => self.key_manager_tx.as_ref(),
                 "ZS" => self.signer_tx.as_ref(),
@@ -380,21 +392,19 @@ impl Manager {
         SpawnUnit: Fn(Component, Unit),
         SpawnTarget: Fn(Component, Target, Receiver<TargetCommand>),
     {
-        let (zl_tx, zl_rx) = mpsc::channel(10);
+        let (update_tx, update_rx) = mpsc::channel(10);
         let (rs_tx, rs_rx) = mpsc::channel(10);
         let (km_tx, km_rx) = mpsc::channel(10);
         let (zs_tx, zs_rx) = mpsc::channel(10);
         let (rs2_tx, rs2_rx) = mpsc::channel(10);
         let (ps_tx, ps_rx) = mpsc::channel(10);
 
-        self.loader_tx = Some(zl_tx);
+        self.loader = Some(Arc::new(Loader::new(update_tx.clone())));
         self.review_tx = Some(rs_tx);
         self.key_manager_tx = Some(km_tx);
         self.signer_tx = Some(zs_tx);
         self.review2_tx = Some(rs2_tx);
         self.publish_tx = Some(ps_tx);
-
-        let (update_tx, update_rx) = mpsc::channel(10);
 
         {
             let name = String::from("CC");
@@ -478,28 +488,61 @@ impl Manager {
             );
         }
 
-        let zone_name = std::env::var("ZL_IN_ZONE").unwrap_or("example.com.".into());
-        let zone_file = std::env::var("ZL_IN_ZONE_FILE").unwrap_or("".into());
-        let xfr_in = std::env::var("ZL_XFR_IN").unwrap_or("127.0.0.1:8055 KEY sec1-key".into());
-        let tsig_key_name = std::env::var("ZL_TSIG_KEY_NAME").unwrap_or("sec1-key".into());
-        let tsig_key = std::env::var("ZL_TSIG_KEY")
-            .unwrap_or("hmac-sha256:zlCZbVJPIhobIs1gJNQfrsS3xCxxsR9pMUrGwG8OgG8=".into());
+        let zone_name = std::env::var("ZL_IN_ZONE").unwrap_or("example.com".into());
+        let zone_file = std::env::var("ZL_IN_ZONE_FILE")
+            .ok()
+            .map(|p| Utf8PathBuf::from(p).into_boxed_path());
+        let xfr_in = std::env::var("ZL_XFR_IN")
+            .map(|addr| {
+                let addr = addr.parse::<SocketAddr>().unwrap();
+                DnsServerAddr {
+                    ip: addr.ip(),
+                    tcp_port: addr.port(),
+                    udp_port: Some(addr.port()),
+                }
+            })
+            .unwrap_or(DnsServerAddr {
+                ip: Ipv4Addr::LOCALHOST.into(),
+                tcp_port: 8055,
+                udp_port: Some(8055),
+            });
+        // TODO: TSIG support in the new zone loader
+        // let tsig_key_name =
+        //     std::env::var("ZL_TSIG_KEY_NAME").unwrap_or("sec1-key".into());
+        // let tsig_key = std::env::var("ZL_TSIG_KEY").unwrap_or(
+        //     "hmac-sha256:zlCZbVJPIhobIs1gJNQfrsS3xCxxsR9pMUrGwG8OgG8=".into(),
+        // );
+
+        // Manually insert the declared zone in the new 'Zones' data.
+        let zone = self
+            .zones
+            .add(zone_name.parse::<RevNameBuf>().unwrap().unsized_copy_into())
+            .unwrap();
+        {
+            let mut state = zone.data.lock().unwrap();
+            LoaderState::set_source(
+                &mut state,
+                &zone,
+                zone_file
+                    .map(|path| Source::Zonefile { path })
+                    .unwrap_or_else(|| Source::Server {
+                        addr: xfr_in,
+                        tsig_key: None,
+                    }),
+                self.loader.as_ref().unwrap(),
+            );
+        }
+
+        // Manually insert the new zone in the zonetree.
+        self.unsigned_zones.rcu(|tree| {
+            let mut tree = tree.clone();
+            Arc::make_mut(&mut tree)
+                .insert_zone(zone.loaded.clone())
+                .unwrap();
+            tree
+        });
 
         let units = [
-            (
-                String::from("ZL"),
-                Unit::ZoneLoader(ZoneLoader {
-                    listen: vec![
-                        "tcp:127.0.0.1:8054".parse().unwrap(),
-                        "udp:127.0.0.1:8054".parse().unwrap(),
-                    ],
-                    zones: Arc::new(HashMap::from([(zone_name.clone(), zone_file)])),
-                    xfr_in: Arc::new(HashMap::from([(zone_name, xfr_in)])),
-                    tsig_keys: HashMap::from([(tsig_key_name, tsig_key)]),
-                    update_tx: update_tx.clone(),
-                    cmd_rx: zl_rx,
-                }),
-            ),
             (
                 String::from("RS"),
                 Unit::ZoneServer(ZoneServerUnit {
@@ -580,6 +623,11 @@ impl Manager {
             ),
         ];
 
+        info!("Starting the zone loader");
+        let loader_copy = self.loader.as_ref().unwrap().clone();
+        self.loader_runner =
+            Some(tokio::task::spawn(async move { loader_copy.run().await }).abort_handle());
+
         // Spawn and terminate units
         for (name, new_unit) in units {
             // Spawn the new unit
@@ -599,8 +647,10 @@ impl Manager {
     }
 
     pub fn terminate(&mut self) {
+        info!("Stopping the zone loader");
+        self.loader_runner.take().unwrap().abort();
+
         let units = [
-            ("ZL", self.loader_tx.take().unwrap()),
             ("RS", self.review_tx.take().unwrap()),
             ("ZS", self.signer_tx.take().unwrap()),
             ("RS2", self.review2_tx.take().unwrap()),
