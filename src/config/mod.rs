@@ -21,6 +21,9 @@ pub mod file;
 /// Configuration for Nameshed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {
+    /// The directory storing policy files.
+    pub policy_dir: Box<Utf8Path>,
+
     /// Daemon-related configuration.
     pub daemon: DaemonConfig,
 
@@ -42,6 +45,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            policy_dir: "/etc/nameshed/policies".into(),
             daemon: Default::default(),
             loader: Default::default(),
             signer: Default::default(),

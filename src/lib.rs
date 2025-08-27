@@ -9,6 +9,7 @@ pub mod log;
 pub mod manager;
 pub mod metrics;
 mod payload;
+pub mod policy;
 mod targets;
 mod units;
 mod zonemaintenance;
