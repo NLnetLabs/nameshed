@@ -7,7 +7,7 @@ use std::{
 };
 
 use camino::Utf8Path;
-use domain::new::base::wire::BuildBytes;
+use domain::{new::base::wire::BuildBytes, tsig};
 
 use crate::{
     loader::{self, Loader, RefreshMonitor},
@@ -348,6 +348,9 @@ pub enum Source {
     Server {
         /// The address of the server.
         addr: DnsServerAddr,
+
+        /// The TSIG key for communicating with the server, if any.
+        tsig_key: Option<tsig::Key>,
     },
 }
 

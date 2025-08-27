@@ -525,7 +525,10 @@ impl Manager {
                 &zone,
                 zone_file
                     .map(|path| Source::Zonefile { path })
-                    .unwrap_or_else(|| Source::Server { addr: xfr_in }),
+                    .unwrap_or_else(|| Source::Server {
+                        addr: xfr_in,
+                        tsig_key: None,
+                    }),
                 self.loader.as_ref().unwrap(),
             );
         }

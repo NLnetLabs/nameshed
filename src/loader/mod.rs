@@ -89,10 +89,10 @@ pub async fn refresh<'z>(
                 .unwrap()
         }
 
-        zone::loader::Source::Server { addr } => {
+        zone::loader::Source::Server { addr, tsig_key } => {
             log::trace!("Refreshing {:?} from server {addr:?}", zone.name);
 
-            server::refresh(zone, addr, latest).await
+            server::refresh(zone, addr, tsig_key.clone(), latest).await
         }
     };
 
@@ -248,10 +248,12 @@ pub async fn reload<'z>(
                 .map_err(ReloadError::Zonefile)
         }
 
-        zone::loader::Source::Server { addr } => {
+        zone::loader::Source::Server { addr, tsig_key } => {
             log::trace!("Reloading {:?} from server {addr:?}", zone.name);
 
-            server::axfr(zone, addr).await.map_err(ReloadError::Axfr)
+            server::axfr(zone, addr, tsig_key.clone())
+                .await
+                .map_err(ReloadError::Axfr)
         }
     };
 

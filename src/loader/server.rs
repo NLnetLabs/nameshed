@@ -26,6 +26,7 @@ use domain::{
         rdata::RecordData,
     },
     rdata::ZoneRecordData,
+    tsig,
     utils::dst::UnsizedCopy,
     zonetree::types::ZoneUpdate,
 };
@@ -47,13 +48,14 @@ use super::RefreshError;
 pub async fn refresh(
     zone: &Arc<Zone>,
     addr: &DnsServerAddr,
+    tsig_key: Option<tsig::Key>,
     latest: Option<Arc<contents::Uncompressed>>,
 ) -> Result<Option<super::Refresh>, RefreshError> {
     let Some(latest) = latest else {
         log::trace!("Attempting an AXFR against {addr:?} for {:?}", zone.name);
 
         // Fetch the whole zone.
-        let remote = axfr(zone, addr).await?;
+        let remote = axfr(zone, addr, tsig_key).await?;
 
         return Ok(Some(super::Refresh {
             uncompressed: Arc::new(remote),
@@ -64,7 +66,7 @@ pub async fn refresh(
     log::trace!("Attempting an IXFR against {addr:?} for {:?}", zone.name);
 
     // Fetch the zone relative to the latest local copy.
-    match ixfr(zone, addr, &latest.soa).await? {
+    match ixfr(zone, addr, tsig_key, &latest.soa).await? {
         Ixfr::UpToDate => {
             // The local copy is up-to-date.
             Ok(None)
@@ -119,6 +121,7 @@ pub async fn refresh(
 pub async fn ixfr(
     zone: &Arc<Zone>,
     addr: &DnsServerAddr,
+    tsig_key: Option<tsig::Key>,
     local_soa: &SoaRecord,
 ) -> Result<Ixfr, IxfrError> {
     // Prepare the IXFR query message.
@@ -150,19 +153,25 @@ pub async fn ixfr(
         let udp_conn = client::protocol::UdpConnect::new(udp_addr);
         let client = client::dgram::Connection::new(udp_conn);
 
-        // Attempt the IXFR.
-        let request = RequestMessage::new(message.clone()).unwrap();
-        let response = client.send_request(request).get_response().await?;
+        // Attempt the IXFR, possibly with TSIG.
+        let response = if let Some(tsig_key) = &tsig_key {
+            let client = client::tsig::Connection::new(tsig_key.clone(), client);
+            let request = RequestMessage::new(message.clone()).unwrap();
+            client.send_request(request).get_response().await?
+        } else {
+            let request = RequestMessage::new(message.clone()).unwrap();
+            client.send_request(request).get_response().await?
+        };
 
         // If the server does not support IXFR, fall back to an AXFR.
         if response.header().rcode() == Rcode::NOTIMP {
             // Query the server for its SOA record only.
-            let remote_soa = query_soa(zone, addr).await?;
+            let remote_soa = query_soa(zone, addr, tsig_key.clone()).await?;
 
             match local_soa.rdata.serial.partial_cmp(&remote_soa.rdata.serial) {
                 Some(Ordering::Less) => {
                     // Perform a full AXFR.
-                    return Ok(Ixfr::Uncompressed(axfr(zone, addr).await?));
+                    return Ok(Ixfr::Uncompressed(axfr(zone, addr, tsig_key).await?));
                 }
 
                 // The local copy is up-to-date.
@@ -259,15 +268,27 @@ pub async fn ixfr(
     let tcp_conn = TcpStream::connect(tcp_addr)
         .await
         .map_err(IxfrError::Connection)?;
-    let (client, transport) = client::stream::Connection::<
-        RequestMessage<Bytes>,
-        RequestMessageMulti<Bytes>,
-    >::new(tcp_conn);
-    tokio::task::spawn(transport.run());
+    // TODO: Avoid the unnecessary heap allocation + trait object.
+    let client: Box<dyn SendRequestMulti<RequestMessageMulti<Bytes>> + Send + Sync> =
+        if let Some(tsig_key) = tsig_key.clone() {
+            let (client, transport) = client::stream::Connection::<
+                RequestMessage<Bytes>,
+                client::tsig::RequestMessage<RequestMessageMulti<Bytes>, tsig::Key>,
+            >::new(tcp_conn);
+            tokio::task::spawn(transport.run());
+            Box::new(client::tsig::Connection::new(tsig_key, client)) as _
+        } else {
+            let (client, transport) = client::stream::Connection::<
+                RequestMessage<Bytes>,
+                RequestMessageMulti<Bytes>,
+            >::new(tcp_conn);
+            tokio::task::spawn(transport.run());
+            Box::new(client) as _
+        };
 
-    // Attempt the IXFR.
+    // Attempt the IXFR, possibly with TSIG.
     let request = RequestMessageMulti::new(message).unwrap();
-    let mut response = SendRequestMulti::send_request(&client, request);
+    let mut response = SendRequestMulti::send_request(&*client, request);
     let mut interpreter = XfrResponseInterpreter::new();
 
     // Process the first message.
@@ -279,12 +300,12 @@ pub async fn ixfr(
     // If the server does not support IXFR, fall back to an AXFR.
     if initial.header().rcode() == Rcode::NOTIMP {
         // Query the server for its SOA record only.
-        let remote_soa = query_soa(zone, addr).await?;
+        let remote_soa = query_soa(zone, addr, tsig_key.clone()).await?;
 
         match local_soa.rdata.serial.partial_cmp(&remote_soa.rdata.serial) {
             Some(Ordering::Less) => {
                 // Perform a full AXFR.
-                return Ok(Ixfr::Uncompressed(axfr(zone, addr).await?));
+                return Ok(Ixfr::Uncompressed(axfr(zone, addr, tsig_key).await?));
             }
 
             // The local copy is up-to-date.
@@ -508,8 +529,9 @@ fn process_ixfr(
 pub async fn axfr(
     zone: &Arc<Zone>,
     addr: &DnsServerAddr,
+    tsig_key: Option<tsig::Key>,
 ) -> Result<contents::Uncompressed, AxfrError> {
-    // Prepare the IXFR query message.
+    // Prepare the AXFR query message.
     let mut buffer = [0u8; 512];
     let mut compressor = NameCompressor::default();
     let mut builder = MessageBuilder::new(
@@ -535,15 +557,27 @@ pub async fn axfr(
     let tcp_conn = TcpStream::connect(tcp_addr)
         .await
         .map_err(AxfrError::Connection)?;
-    let (client, transport) = client::stream::Connection::<
-        RequestMessage<Bytes>,
-        RequestMessageMulti<Bytes>,
-    >::new(tcp_conn);
-    tokio::task::spawn(transport.run());
+    // TODO: Avoid the unnecessary heap allocation + trait object.
+    let client: Box<dyn SendRequestMulti<RequestMessageMulti<Bytes>> + Send + Sync> =
+        if let Some(tsig_key) = tsig_key {
+            let (client, transport) = client::stream::Connection::<
+                RequestMessage<Bytes>,
+                client::tsig::RequestMessage<RequestMessageMulti<Bytes>, tsig::Key>,
+            >::new(tcp_conn);
+            tokio::task::spawn(transport.run());
+            Box::new(client::tsig::Connection::new(tsig_key, client)) as _
+        } else {
+            let (client, transport) = client::stream::Connection::<
+                RequestMessage<Bytes>,
+                RequestMessageMulti<Bytes>,
+            >::new(tcp_conn);
+            tokio::task::spawn(transport.run());
+            Box::new(client) as _
+        };
 
     // Attempt the AXFR.
     let request = RequestMessageMulti::new(message).unwrap();
-    let mut response = SendRequestMulti::send_request(&client, request);
+    let mut response = SendRequestMulti::send_request(&*client, request);
     let mut interpreter = XfrResponseInterpreter::new();
 
     // Process the first message.
@@ -608,7 +642,11 @@ fn process_axfr(
 //----------- query_soa() ------------------------------------------------------
 
 /// Query a DNS server for the SOA record of a zone.
-pub async fn query_soa(zone: &Arc<Zone>, addr: &DnsServerAddr) -> Result<SoaRecord, QuerySoaError> {
+pub async fn query_soa(
+    zone: &Arc<Zone>,
+    addr: &DnsServerAddr,
+    tsig_key: Option<tsig::Key>,
+) -> Result<SoaRecord, QuerySoaError> {
     // Prepare the SOA query message.
     let mut buffer = [0u8; 512];
     let mut compressor = NameCompressor::default();
@@ -633,32 +671,57 @@ pub async fn query_soa(zone: &Arc<Zone>, addr: &DnsServerAddr) -> Result<SoaReco
 
     // Send the query.
     let response = if let Some(udp_port) = addr.udp_port {
-        // Prepare a UDP+TCP client.
+        // Prepare a UDP client.
+        // TODO: Try preparing a UDP+TCP client instead?
         let udp_addr: SocketAddr = (addr.ip, udp_port).into();
         let udp_conn = client::protocol::UdpConnect::new(udp_addr);
-        let tcp_conn = client::protocol::TcpConnect::new(tcp_addr);
-        let (client, transport) = client::dgram_stream::Connection::new(udp_conn, tcp_conn);
-        tokio::task::spawn(transport.run());
+        let client = client::dgram::Connection::new(udp_conn);
 
-        // Send the query.
-        let request = RequestMessage::new(message.clone()).unwrap();
-        client.send_request(request).get_response().await?
+        if let Some(tsig_key) = tsig_key {
+            let client = client::tsig::Connection::new(tsig_key, client);
+
+            // Send the query.
+            let request = RequestMessage::new(message.clone()).unwrap();
+            SendRequest::send_request(&client, request)
+                .get_response()
+                .await?
+        } else {
+            // Send the query.
+            let request = RequestMessage::new(message.clone()).unwrap();
+            client.send_request(request).get_response().await?
+        }
     } else {
         // Prepare a TCP client.
         let tcp_conn = TcpStream::connect(tcp_addr)
             .await
             .map_err(QuerySoaError::Connection)?;
-        let (client, transport) = client::stream::Connection::<
-            RequestMessage<Bytes>,
-            RequestMessageMulti<Bytes>,
-        >::new(tcp_conn);
-        tokio::task::spawn(transport.run());
 
-        // Send the query.
-        let request = RequestMessage::new(message.clone()).unwrap();
-        SendRequest::send_request(&client, request)
-            .get_response()
-            .await?
+        if let Some(tsig_key) = tsig_key {
+            let (client, transport) = client::stream::Connection::<
+                client::tsig::RequestMessage<RequestMessage<Bytes>, tsig::Key>,
+                RequestMessageMulti<Bytes>,
+            >::new(tcp_conn);
+            tokio::task::spawn(transport.run());
+            let client = client::tsig::Connection::new(tsig_key, client);
+
+            // Send the query.
+            let request = RequestMessage::new(message.clone()).unwrap();
+            SendRequest::send_request(&client, request)
+                .get_response()
+                .await?
+        } else {
+            let (client, transport) = client::stream::Connection::<
+                RequestMessage<Bytes>,
+                RequestMessageMulti<Bytes>,
+            >::new(tcp_conn);
+            tokio::task::spawn(transport.run());
+
+            // Send the query.
+            let request = RequestMessage::new(message.clone()).unwrap();
+            SendRequest::send_request(&client, request)
+                .get_response()
+                .await?
+        }
     };
 
     // Parse the response message.
