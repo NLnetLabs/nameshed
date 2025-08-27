@@ -16,6 +16,10 @@ use crate::config::{
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields, default)]
 pub struct Spec {
+    /// The file storing TSIG keys.
+    #[serde(default = "Spec::tsig_store_path_default")]
+    pub tsig_store_path: Box<Utf8Path>,
+
     /// Configuring the Nameshed daemon.
     pub daemon: DaemonSpec,
 
@@ -38,6 +42,7 @@ impl Spec {
     /// Build the internal configuration.
     pub fn build(self, config_file: Setting<Box<Utf8Path>>) -> Config {
         Config {
+            tsig_store_path: self.tsig_store_path,
             daemon: self.daemon.build(config_file),
             loader: self.loader.build(),
             signer: self.signer.build(),
@@ -52,12 +57,20 @@ impl Spec {
 impl Default for Spec {
     fn default() -> Self {
         Self {
+            tsig_store_path: Self::tsig_store_path_default(),
             daemon: Default::default(),
             loader: Default::default(),
             signer: Default::default(),
             key_manager: Default::default(),
             server: Default::default(),
         }
+    }
+}
+
+impl Spec {
+    /// The default value for `tsig_store_path`.
+    fn tsig_store_path_default() -> Box<Utf8Path> {
+        "/var/db/nameshed/tsig-keys".into()
     }
 }
 

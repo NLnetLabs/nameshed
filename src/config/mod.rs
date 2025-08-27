@@ -21,6 +21,9 @@ pub mod file;
 /// Configuration for Nameshed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {
+    /// The file storing TSIG keys.
+    pub tsig_store_path: Box<Utf8Path>,
+
     /// Daemon-related configuration.
     pub daemon: DaemonConfig,
 
@@ -42,6 +45,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            tsig_store_path: "/var/db/nameshed/tsig-keys".into(),
             daemon: Default::default(),
             loader: Default::default(),
             signer: Default::default(),
