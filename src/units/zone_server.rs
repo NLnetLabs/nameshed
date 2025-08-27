@@ -241,7 +241,7 @@ impl ZoneServerUnit {
 struct ZoneServer {
     component: Arc<RwLock<Component>>,
     _mode: Mode,
-    _source: Source,
+    source: Source,
     hooks: Vec<String>,
     _listen: Vec<ListenAddr>,
     #[allow(clippy::type_complexity)]
@@ -264,7 +264,7 @@ impl ZoneServer {
         Self {
             component,
             _mode: mode,
-            _source: source,
+            source,
             hooks,
             pending_approvals: Default::default(),
             last_approvals: Default::default(),
@@ -276,7 +276,7 @@ impl ZoneServer {
     async fn run(
         self,
         unit_name: &str,
-        _update_tx: mpsc::Sender<Update>,
+        update_tx: mpsc::Sender<Update>,
         mut cmd_rx: mpsc::Receiver<ApplicationCommand>,
     ) -> Result<(), crate::comms::Terminated> {
         // let status_reporter = self.status_reporter.clone();
