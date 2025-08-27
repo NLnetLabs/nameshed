@@ -30,3 +30,12 @@ pub fn write_file(path: &Utf8Path, contents: &[u8]) -> io::Result<()> {
 
     Ok(())
 }
+
+/// Update a value.
+#[inline]
+pub fn update_value<T: Eq>(dst: &mut T, value: T, changed: &mut bool) {
+    if *dst != value {
+        *changed = true;
+        *dst = value;
+    }
+}

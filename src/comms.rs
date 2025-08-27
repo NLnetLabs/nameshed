@@ -72,6 +72,7 @@ use std::net::IpAddr;
 use tokio::sync::mpsc;
 
 use crate::api::ZoneAdd;
+use crate::center::Change;
 
 //------------ GraphMetrics --------------------------------------------------
 pub trait GraphStatus: Send + Sync {
@@ -131,6 +132,9 @@ pub struct Terminated;
 #[allow(clippy::enum_variant_names)]
 #[derive(Clone, Debug)]
 pub enum ApplicationCommand {
+    /// A change has occurred.
+    Changed(Change),
+
     Terminate,
     HandleZoneReviewApi {
         zone_name: StoredName,
