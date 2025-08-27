@@ -13,7 +13,7 @@ use crate::config::{
 //----------- Spec -------------------------------------------------------------
 
 /// A configuration file.
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields, default)]
 pub struct Spec {
     /// Configuring the Nameshed daemon.
@@ -43,6 +43,20 @@ impl Spec {
             signer: self.signer.build(),
             key_manager: self.key_manager.build(),
             server: self.server.build(),
+        }
+    }
+}
+
+//--- Defaults
+
+impl Default for Spec {
+    fn default() -> Self {
+        Self {
+            daemon: Default::default(),
+            loader: Default::default(),
+            signer: Default::default(),
+            key_manager: Default::default(),
+            server: Default::default(),
         }
     }
 }

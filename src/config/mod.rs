@@ -19,7 +19,7 @@ pub mod file;
 //----------- Config -----------------------------------------------------------
 
 /// Configuration for Nameshed.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {
     /// Daemon-related configuration.
     pub daemon: DaemonConfig,
@@ -35,6 +35,20 @@ pub struct Config {
 
     /// The configuration of the zone server.
     pub server: ServerConfig,
+}
+
+//--- Defaults
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            daemon: Default::default(),
+            loader: Default::default(),
+            signer: Default::default(),
+            key_manager: Default::default(),
+            server: Default::default(),
+        }
+    }
 }
 
 //--- Processing
