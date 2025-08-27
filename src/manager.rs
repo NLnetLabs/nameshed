@@ -481,6 +481,7 @@ impl Manager {
         let zone_name = std::env::var("ZL_IN_ZONE").unwrap_or("example.com.".into());
         let zone_file = std::env::var("ZL_IN_ZONE_FILE").unwrap_or("".into());
         let xfr_in = std::env::var("ZL_XFR_IN").unwrap_or("127.0.0.1:8055 KEY sec1-key".into());
+        let xfr_out = std::env::var("PS_XFR_OUT").unwrap_or("127.0.0.1:8055 KEY sec1-key".into());
         let tsig_key_name = std::env::var("ZL_TSIG_KEY_NAME").unwrap_or("sec1-key".into());
         let tsig_key = std::env::var("ZL_TSIG_KEY")
             .unwrap_or("hmac-sha256:zlCZbVJPIhobIs1gJNQfrsS3xCxxsR9pMUrGwG8OgG8=".into());
@@ -494,7 +495,7 @@ impl Manager {
                         "udp:127.0.0.1:8054".parse().unwrap(),
                     ],
                     zones: Arc::new(HashMap::from([(zone_name.clone(), zone_file)])),
-                    xfr_in: Arc::new(HashMap::from([(zone_name, xfr_in)])),
+                    xfr_in: Arc::new(HashMap::from([(zone_name.clone(), xfr_in)])),
                     tsig_keys: HashMap::from([(tsig_key_name, tsig_key)]),
                     update_tx: update_tx.clone(),
                     cmd_rx: zl_rx,
@@ -507,10 +508,7 @@ impl Manager {
                         "tcp:127.0.0.1:8056".parse().unwrap(),
                         "udp:127.0.0.1:8056".parse().unwrap(),
                     ],
-                    xfr_out: HashMap::from([(
-                        "example.com".into(),
-                        "127.0.0.1:8055 KEY sec1-key".into(),
-                    )]),
+                    xfr_out: HashMap::from([(zone_name.clone(), xfr_out.clone())]),
                     // Temporarily disable hooks as the required HTTP functionality has been removed pending replacement.
                     hooks: vec![], // vec![String::from("/tmp/approve_or_deny.sh")],
                     mode: zone_server::Mode::Prepublish,
@@ -535,7 +533,7 @@ impl Manager {
                     treat_single_keys_as_csks: true,
                     max_concurrent_operations: 1,
                     max_concurrent_rrsig_generation_tasks: 32,
-                    use_lightweight_zone_tree: false,
+                    use_lightweight_zone_tree: true,
                     denial_config: TomlDenialConfig::default(), //Nsec3(NonEmpty::new(TomlNsec3Config::default())),
                     rrsig_inception_offset_secs: 60 * 90,
                     rrsig_expiration_offset_secs: 60 * 60 * 24 * 14,
@@ -567,10 +565,10 @@ impl Manager {
                 String::from("PS"),
                 Unit::ZoneServer(ZoneServerUnit {
                     listen: vec![
-                        "tcp:127.0.0.1:8058".parse().unwrap(),
-                        "udp:127.0.0.1:8058".parse().unwrap(),
+                        "tcp:0.0.0.0:53".parse().unwrap(),
+                        "udp:0.0.0.0:53".parse().unwrap(),
                     ],
-                    xfr_out: HashMap::from([("example.com".into(), "127.0.0.1:8055".into())]),
+                    xfr_out: HashMap::from([(zone_name.clone(), xfr_out)]),
                     hooks: vec![],
                     mode: zone_server::Mode::Publish,
                     source: zone_server::Source::PublishedZones,

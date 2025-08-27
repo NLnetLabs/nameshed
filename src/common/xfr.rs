@@ -8,13 +8,21 @@ use crate::common::tsig::TsigKeyStore;
 use crate::log::ExitError;
 use crate::zonemaintenance::types::{NotifyConfig, XfrConfig};
 
+/// Parse a given ACL string of the form "<addr>[:<port>][ KEY <TSIG key name>]"
+/// filling in the given [`XfrConfig`] and [`NotifyConfig`] objects with TSIG
+/// details and returning the determined SocketAddr (which will have port 0 if
+/// no port was specified).
+///
+/// A returned SocketAddr without port permits XFR only, while with a port
+/// it also permits NOTIFY. The direction (XFR in/out, NOTIFY in/out) is
+/// dependent on where the ACL is used.
 pub fn parse_xfr_acl(
-    xfr_in: &str,
+    acl: &str,
     xfr_cfg: &mut XfrConfig,
     notify_cfg: &mut NotifyConfig,
     key_store: &TsigKeyStore,
 ) -> Result<SocketAddr, ExitError> {
-    let parts: Vec<String> = xfr_in.split(" KEY ").map(ToString::to_string).collect();
+    let parts: Vec<String> = acl.split(" KEY ").map(ToString::to_string).collect();
     let (addr, key_name) = match parts.len() {
         1 => (&parts[0], None),
         2 => (&parts[0], Some(&parts[1])),
