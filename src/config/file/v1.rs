@@ -7,8 +7,7 @@ use serde::Deserialize;
 
 use crate::config::{
     Config, DaemonConfig, GroupId, KeyManagerConfig, LoaderConfig, LogLevel, LogTarget,
-    LoggingConfig, ReviewConfig, ServerConfig, Setting, SettingSource, SignerConfig, SocketConfig,
-    UserId,
+    LoggingConfig, ReviewConfig, ServerConfig, Setting, SignerConfig, SocketConfig, UserId,
 };
 
 //----------- Spec -------------------------------------------------------------
@@ -79,42 +78,30 @@ impl DaemonSpec {
     /// Build the internal configuration.
     pub fn build(self, config_file: Setting<Box<Utf8Path>>) -> DaemonConfig {
         let logging = LoggingConfig {
-            level: self
-                .log_level
-                .map(|log_level| Setting {
-                    source: SettingSource::File,
-                    value: log_level.build(),
-                })
-                .unwrap_or(Setting {
-                    source: SettingSource::Default,
-                    value: LogLevel::Info,
-                }),
-            target: self
-                .log_target
-                .map(|log_target| Setting {
-                    source: SettingSource::File,
-                    value: log_target.build(),
-                })
-                .unwrap_or(Setting {
-                    source: SettingSource::Default,
-                    value: LogTarget::File("/var/log/nameshed.log".into()),
-                }),
+            level: Setting {
+                default: LogLevel::Info,
+                file: self.log_level.map(|v| v.build()),
+                env: None,
+                args: None,
+            },
+            target: Setting {
+                default: LogTarget::File("/var/log/nameshed.log".into()),
+                file: self.log_target.map(|v| v.build()),
+                env: None,
+                args: None,
+            },
             trace_targets: Default::default(),
         };
 
         DaemonConfig {
             logging,
             config_file,
-            daemonize: self
-                .daemonize
-                .map(|daemonize| Setting {
-                    source: SettingSource::File,
-                    value: daemonize,
-                })
-                .unwrap_or(Setting {
-                    source: SettingSource::Default,
-                    value: false,
-                }),
+            daemonize: Setting {
+                default: false,
+                file: self.daemonize,
+                env: None,
+                args: None,
+            },
             pid_file: self.pid_file,
             chroot: self.chroot,
             identity: self.identity.map(|i| i.build()),
@@ -246,7 +233,7 @@ impl IdentitySpec {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum UserIdSpec {
     /// A numeric ID.
-    Numeric(nix::unistd::Uid),
+    Numeric(u32),
 
     /// A user name.
     Named(Box<str>),
@@ -258,8 +245,8 @@ impl FromStr for UserIdSpec {
     type Err = ParseIdentityError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.parse::<nix::libc::uid_t>() {
-            Ok(id) => Ok(Self::Numeric(nix::unistd::Uid::from_raw(id))),
+        match s.parse::<u32>() {
+            Ok(id) => Ok(Self::Numeric(id)),
 
             Err(error) if *error.kind() == IntErrorKind::PosOverflow => {
                 Err(ParseIdentityError::NumericOverflow { value: s.into() })
@@ -288,7 +275,7 @@ impl UserIdSpec {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GroupIdSpec {
     /// A numeric ID.
-    Numeric(nix::unistd::Gid),
+    Numeric(u32),
 
     /// A group name.
     Named(Box<str>),
@@ -300,8 +287,8 @@ impl FromStr for GroupIdSpec {
     type Err = ParseIdentityError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.parse::<nix::libc::gid_t>() {
-            Ok(id) => Ok(Self::Numeric(nix::unistd::Gid::from_raw(id))),
+        match s.parse::<u32>() {
+            Ok(id) => Ok(Self::Numeric(id)),
 
             Err(error) if *error.kind() == IntErrorKind::PosOverflow => {
                 Err(ParseIdentityError::NumericOverflow { value: s.into() })
