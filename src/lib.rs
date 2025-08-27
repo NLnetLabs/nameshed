@@ -1,6 +1,7 @@
 //! Cascade
 
 pub mod api;
+pub mod center;
 pub mod cli;
 mod common;
 mod comms;
