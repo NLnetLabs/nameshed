@@ -519,8 +519,7 @@ impl Manager {
                         "example.com".into(),
                         "127.0.0.1:8055 KEY sec1-key".into(),
                     )]),
-                    // Temporarily disable hooks as the required HTTP functionality has been removed pending replacement.
-                    hooks: vec![], // vec![String::from("/tmp/approve_or_deny.sh")],
+                    hooks: vec![String::from("/tmp/approve_or_deny.sh")],
                     mode: zone_server::Mode::Prepublish,
                     source: zone_server::Source::UnsignedZones,
                     update_tx: update_tx.clone(),
@@ -563,8 +562,7 @@ impl Manager {
                         "example.com".into(),
                         "127.0.0.1:8055 KEY sec1-key".into(),
                     )]),
-                    // Temporarily disable hooks as the required HTTP functionality has been removed pending replacement.
-                    hooks: vec![], // vec![String::from("/tmp/approve_or_deny_signed.sh")],
+                    hooks: vec![String::from("/tmp/approve_or_deny_signed.sh")],
                     mode: zone_server::Mode::Prepublish,
                     source: zone_server::Source::SignedZones,
                     update_tx: update_tx.clone(),
