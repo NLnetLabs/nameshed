@@ -88,13 +88,6 @@ version = "0.1.5"
 version = "1.1.0"
 features = ["serde1"]
 
-# Nameshed needs to monitor the filesystem for changes to configuration and
-# state, as well as for zones loaded from zonefiles.
-#
-# TODO
-[dependencies.notify]
-version = "8.1.0"
-
 [target.'cfg(unix)'.dependencies]
 nix         = "0.22.0"
 syslog      = "6.1"

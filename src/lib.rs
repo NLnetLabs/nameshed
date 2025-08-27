@@ -14,7 +14,5 @@ mod zonemaintenance;
 pub mod loader;
 pub mod zone;
 
-pub mod path_monitor;
-
 #[cfg(test)]
 pub mod tests;
