@@ -1,121 +1,63 @@
-use core::fmt;
-use core::future::pending;
-use core::ops::{Add, ControlFlow};
+use core::ops::Add;
 
-use std::any::Any;
 use std::cmp::Ordering;
-use std::collections::hash_map::Entry::{Occupied, Vacant};
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::ffi::OsString;
-use std::fmt::Display;
-use std::fs::File;
-use std::io::Read;
-use std::net::{IpAddr, SocketAddr};
+use std::collections::{HashMap, VecDeque};
 use std::ops::Sub;
 use std::path::{Path, PathBuf};
-use std::pin::Pin;
-use std::str::FromStr;
-use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 use std::time::Duration;
 
-use arc_swap::ArcSwap;
-use async_trait::async_trait;
-use bytes::{Bytes, BytesMut};
-use chrono::{DateTime, Utc};
-use domain::base::iana::{Class, SecurityAlgorithm};
+use bytes::Bytes;
+use domain::base::iana::Class;
 use domain::base::name::FlattenInto;
-use domain::base::record::ComposeRecord;
-use domain::base::wire::Composer;
-use domain::base::{
-    CanonicalOrd, Name, ParsedName, ParsedRecord, Record, Rtype, Serial, ToName, Ttl,
-};
+use domain::base::{CanonicalOrd, Record, Rtype, Serial, Ttl};
 use domain::crypto::kmip::KeyUrl;
 use domain::crypto::kmip::{self, ClientCertificate, ConnectionSettings};
-use domain::crypto::sign::{
-    generate, FromBytesError, GenerateParams, KeyPair, SecretKeyBytes, SignError, SignRaw,
-};
+use domain::crypto::sign::{KeyPair, SecretKeyBytes, SignRaw};
 use domain::dep::kmip::client::pool::{ConnectionManager, SyncConnPool};
 use domain::dnssec::common::parse_from_bind;
 use domain::dnssec::sign::denial::config::DenialConfig;
-use domain::dnssec::sign::denial::nsec::GenerateNsecConfig;
 use domain::dnssec::sign::denial::nsec3::{GenerateNsec3Config, Nsec3ParamTtlMode};
 use domain::dnssec::sign::error::SigningError;
 use domain::dnssec::sign::keys::keyset::{KeySet, KeyType};
 use domain::dnssec::sign::keys::SigningKey;
-use domain::dnssec::sign::records::{DefaultSorter, RecordsIter, Rrset, Sorter};
-use domain::dnssec::sign::signatures::rrsigs::{
-    sign_rrset, sign_sorted_zone_records, GenerateRrsigConfig,
-};
+use domain::dnssec::sign::records::{DefaultSorter, RecordsIter, Sorter};
+use domain::dnssec::sign::signatures::rrsigs::{sign_sorted_zone_records, GenerateRrsigConfig};
 use domain::dnssec::sign::traits::SignableZoneInPlace;
 use domain::dnssec::sign::SigningConfig;
-use domain::net::server::buf::VecBufSource;
-use domain::net::server::dgram::{self, DgramServer};
-use domain::net::server::message::Request;
-use domain::net::server::middleware::cookies::CookiesMiddlewareSvc;
-use domain::net::server::middleware::edns::EdnsMiddlewareSvc;
-use domain::net::server::middleware::mandatory::MandatoryMiddlewareSvc;
-use domain::net::server::middleware::notify::NotifyMiddlewareSvc;
-use domain::net::server::middleware::tsig::TsigMiddlewareSvc;
-use domain::net::server::middleware::xfr::XfrMiddlewareSvc;
-use domain::net::server::service::{CallResult, Service, ServiceError, ServiceResult};
-use domain::net::server::stream::{self, StreamServer};
-use domain::net::server::util::{mk_error_response, service_fn};
-use domain::net::server::ConnectionConfig;
 use domain::rdata::dnssec::Timestamp;
-use domain::rdata::nsec3::Nsec3Salt;
-use domain::rdata::{Dnskey, Nsec3param, Rrsig, Soa, ZoneRecordData};
-use domain::tsig::KeyStore;
-use domain::tsig::{Algorithm, Key, KeyName};
-use domain::utils::base64;
-use domain::zonefile::inplace::{self, Entry, Zonefile};
+use domain::rdata::{Dnskey, Nsec3param, Rrsig, ZoneRecordData};
+use domain::zonefile::inplace::{Entry, Zonefile};
 use domain::zonetree::types::{StoredRecordData, ZoneUpdate};
 use domain::zonetree::update::ZoneUpdater;
-use domain::zonetree::{ReadableZone, StoredName, StoredRecord, Zone, ZoneBuilder};
-use futures::future::{select, Either};
-use futures::{pin_mut, Future, SinkExt};
-use indoc::formatdoc;
+use domain::zonetree::{StoredName, StoredRecord, Zone, ZoneBuilder};
 use log::warn;
 use log::{debug, error, info, trace};
 use non_empty_vec::NonEmpty;
-use octseq::{EmptyBuilder, OctetsInto, Parser};
-use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelExtend};
 use rayon::slice::ParallelSliceMut;
-use serde::{Deserialize, Deserializer, Serialize};
-use serde_with::{serde_as, DeserializeFromStr, DisplayFromStr};
-use tokio::net::UdpSocket;
+use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::{self, Receiver, Sender};
-use tokio::sync::{Mutex, RwLock, Semaphore};
+use tokio::sync::{RwLock, Semaphore};
 use tokio::task::spawn_blocking;
-use tokio::time::{sleep, Instant};
+use tokio::time::Instant;
 #[cfg(feature = "tls")]
 use tokio_rustls::rustls::ServerConfig;
 use url::Url;
 
+use crate::center::Center;
 use crate::common::light_weight_zone::LightWeightZone;
-use crate::common::net::{
-    ListenAddr, StandardTcpListenerFactory, StandardTcpStream, TcpListener, TcpListenerFactory,
-    TcpStreamWrapper,
-};
-use crate::common::tsig::{parse_key_strings, TsigKeyStore};
-use crate::common::xfr::parse_xfr_acl;
 use crate::comms::ApplicationCommand;
-use crate::comms::{GraphStatus, Terminated};
-use crate::manager::Component;
-use crate::metrics::{self, util::append_per_router_metric, Metric, MetricType, MetricUnit};
+use crate::comms::Terminated;
 use crate::payload::Update;
-use crate::units::Unit;
-use crate::zonemaintenance::maintainer::{Config, ZoneLookup};
-use crate::zonemaintenance::maintainer::{DefaultConnFactory, TypedZone, ZoneMaintainer};
 use crate::zonemaintenance::types::{
     serialize_duration_as_secs, serialize_instant_as_duration_secs, serialize_opt_duration_as_secs,
-    CompatibilityMode, NotifyConfig, TransportStrategy, XfrConfig, XfrStrategy, ZoneConfig,
-    ZoneMaintainerKeyStore,
 };
 use core::sync::atomic::AtomicBool;
 
 #[derive(Debug)]
 pub struct ZoneSignerUnit {
+    pub center: Arc<Center>,
+
     pub rrsig_inception_offset_secs: u32,
 
     pub rrsig_expiration_offset_secs: u32,
@@ -131,8 +73,6 @@ pub struct ZoneSignerUnit {
     pub max_concurrent_rrsig_generation_tasks: usize,
 
     pub kmip_server_conn_settings: HashMap<String, KmipServerConnectionSettings>,
-
-    pub update_tx: mpsc::UnboundedSender<Update>,
 
     pub dnst_keyset_data_dir: PathBuf,
 }
@@ -160,7 +100,6 @@ impl ZoneSignerUnit {
     pub async fn run(
         mut self,
         cmd_rx: mpsc::UnboundedReceiver<ApplicationCommand>,
-        component: Component,
     ) -> Result<(), Terminated> {
         // TODO: metrics and status reporting
 
@@ -217,7 +156,7 @@ impl ZoneSignerUnit {
         }
 
         ZoneSigner::new(
-            component,
+            self.center,
             self.rrsig_inception_offset_secs,
             self.rrsig_expiration_offset_secs,
             self.denial_config,
@@ -225,7 +164,6 @@ impl ZoneSignerUnit {
             self.max_concurrent_operations,
             self.max_concurrent_rrsig_generation_tasks,
             self.treat_single_keys_as_csks,
-            self.update_tx,
             kmip_servers,
             self.dnst_keyset_data_dir,
         )
@@ -282,7 +220,7 @@ impl ZoneSignerUnit {
 //------------ ZoneSigner ----------------------------------------------------
 
 struct ZoneSigner {
-    component: Component,
+    center: Arc<Center>,
     inception_offset_secs: u32,
     expiration_offset: u32,
     denial_config: TomlDenialConfig,
@@ -291,7 +229,6 @@ struct ZoneSigner {
     max_concurrent_rrsig_generation_tasks: usize,
     signer_status: Arc<RwLock<ZoneSignerStatus>>,
     treat_single_keys_as_csks: bool,
-    update_tx: mpsc::UnboundedSender<Update>,
     kmip_servers: HashMap<String, SyncConnPool>,
     dnst_keyset_data_dir: PathBuf,
 }
@@ -299,7 +236,7 @@ struct ZoneSigner {
 impl ZoneSigner {
     #[allow(clippy::too_many_arguments)]
     fn new(
-        component: Component,
+        center: Arc<Center>,
         inception_offset_secs: u32,
         expiration_offset: u32,
         denial_config: TomlDenialConfig,
@@ -307,12 +244,11 @@ impl ZoneSigner {
         max_concurrent_operations: usize,
         max_concurrent_rrsig_generation_tasks: usize,
         treat_single_keys_as_csks: bool,
-        update_tx: mpsc::UnboundedSender<Update>,
         kmip_servers: HashMap<String, SyncConnPool>,
         dnst_keyset_data_dir: PathBuf,
     ) -> Self {
         Self {
-            component,
+            center,
             inception_offset_secs,
             expiration_offset,
             denial_config,
@@ -321,7 +257,6 @@ impl ZoneSigner {
             max_concurrent_rrsig_generation_tasks,
             signer_status: Default::default(),
             treat_single_keys_as_csks,
-            update_tx,
             kmip_servers,
             dnst_keyset_data_dir,
         }
@@ -381,11 +316,11 @@ impl ZoneSigner {
         //
         let zone_to_sign = match resign_last_signed_zone_content {
             false => {
-                let unsigned_zones = self.component.unsigned_zones().load();
+                let unsigned_zones = self.center.unsigned_zones.load();
                 unsigned_zones.get_zone(&zone_name, Class::IN).cloned()
             }
             true => {
-                let published_zones = self.component.published_zones().load();
+                let published_zones = self.center.published_zones.load();
                 published_zones.get_zone(&zone_name, Class::IN).cloned()
             }
         };
@@ -728,7 +663,8 @@ impl ZoneSigner {
         info!("[STATS] {zone_name} {zone_serial} RR[count={unsigned_rr_count} walk_time={walk_time}(sec) sort_time={sort_time}(sec)] DENIAL[count={denial_rr_count} time={denial_time}(sec)] RRSIG[new={rrsig_count} reused=0 time={rrsig_time}(sec) avg={rrsig_avg}(sig/sec)] INSERTION[time={insertion_time}(sec)] TOTAL[time={total_time}(sec)] with {parallelism} threads");
 
         // Notify Central Command that we have finished.
-        self.update_tx
+        self.center
+            .update_tx
             .send(Update::ZoneSignedEvent {
                 zone_name: zone_name.clone(),
                 zone_serial,
@@ -759,7 +695,7 @@ impl ZoneSigner {
 
     fn get_or_insert_signed_zone(&self, zone_name: &StoredName) -> Zone {
         // Create an empty zone to sign into if no existing signed zone exists.
-        let signed_zones = self.component.signed_zones().load();
+        let signed_zones = self.center.signed_zones.load();
 
         signed_zones
             .get_zone(zone_name, Class::IN)
@@ -774,7 +710,7 @@ impl ZoneSigner {
                 };
 
                 new_zones.insert_zone(new_zone.clone()).unwrap();
-                self.component.signed_zones().store(Arc::new(new_zones));
+                self.center.signed_zones.store(Arc::new(new_zones));
 
                 new_zone
             })

@@ -1,27 +1,17 @@
-use core::fmt;
-use core::future::{ready, Ready};
+use core::future::ready;
 
-use std::any::Any;
 use std::collections::HashMap;
-use std::convert::Infallible;
-use std::fmt::Display;
-use std::fs::File;
 use std::marker::Sync;
-use std::net::{IpAddr, SocketAddr};
-use std::ops::{ControlFlow, Deref};
+use std::net::IpAddr;
 use std::pin::Pin;
 use std::process::Command;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
-use std::sync::{Arc, Weak};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use std::time::Instant;
 
 use arc_swap::ArcSwap;
-use async_trait::async_trait;
 use bytes::Bytes;
-use chrono::{DateTime, Utc};
 use domain::base::iana::{Class, Rcode};
-use domain::base::wire::Composer;
 use domain::base::Name;
 use domain::base::{Serial, ToName};
 use domain::net::server::buf::VecBufSource;
@@ -34,57 +24,34 @@ use domain::net::server::middleware::notify::{Notifiable, NotifyError, NotifyMid
 use domain::net::server::middleware::tsig::TsigMiddlewareSvc;
 use domain::net::server::middleware::xfr::XfrMiddlewareSvc;
 use domain::net::server::middleware::xfr::{XfrData, XfrDataProvider, XfrDataProviderError};
-use domain::net::server::service::{CallResult, Service, ServiceError, ServiceResult};
+use domain::net::server::service::{CallResult, Service, ServiceResult};
 use domain::net::server::stream::{self, StreamServer};
 use domain::net::server::util::mk_builder_for_target;
-use domain::net::server::util::{mk_error_response, service_fn};
+use domain::net::server::util::service_fn;
 use domain::net::server::ConnectionConfig;
 use domain::tsig::KeyStore;
-use domain::tsig::{Algorithm, Key, KeyName};
-use domain::utils::base64;
-use domain::zonefile::inplace;
+use domain::tsig::{Algorithm, Key};
 use domain::zonetree::types::EmptyZoneDiff;
 use domain::zonetree::Answer;
-use domain::zonetree::{
-    InMemoryZoneDiff, ReadableZone, StoredName, WritableZone, WritableZoneNode, Zone, ZoneBuilder,
-    ZoneStore, ZoneTree,
-};
-use futures::future::{select, Either};
-use futures::stream::{once, Once};
-use futures::{pin_mut, Future};
+use domain::zonetree::{StoredName, ZoneTree};
+use futures::Future;
 use indoc::formatdoc;
 use log::warn;
 use log::{debug, error, info, trace};
-use non_empty_vec::NonEmpty;
-use octseq::Octets;
 use serde::Deserialize;
-use serde_with::{serde_as, DeserializeFromStr, DisplayFromStr};
 use tokio::net::UdpSocket;
-use tokio::sync::mpsc::{self, Receiver, Sender};
-use tokio::sync::{Mutex, RwLock};
-use tokio::time::sleep;
+use tokio::sync::mpsc::{self, Sender};
+use tokio::sync::RwLock;
 #[cfg(feature = "tls")]
 use tokio_rustls::rustls::ServerConfig;
 use uuid::Uuid;
 
-use crate::common::net::{
-    ListenAddr, StandardTcpListenerFactory, StandardTcpStream, TcpListener, TcpListenerFactory,
-    TcpStreamWrapper,
-};
-use crate::common::tsig::{parse_key_strings, TsigKeyStore};
-use crate::common::xfr::parse_xfr_acl;
+use crate::center::Center;
+use crate::common::net::ListenAddr;
+use crate::common::tsig::TsigKeyStore;
 use crate::comms::ApplicationCommand;
-use crate::comms::{GraphStatus, Terminated};
-use crate::manager::Component;
-use crate::metrics::{self, util::append_per_router_metric, Metric, MetricType, MetricUnit};
+use crate::comms::Terminated;
 use crate::payload::Update;
-use crate::units::Unit;
-use crate::zonemaintenance::maintainer::{DefaultConnFactory, TypedZone, ZoneMaintainer};
-use crate::zonemaintenance::types::TsigKey;
-use crate::zonemaintenance::types::{
-    CompatibilityMode, NotifyConfig, TransportStrategy, XfrConfig, XfrStrategy, ZoneConfig,
-    ZoneMaintainerKeyStore,
-};
 
 #[derive(Copy, Clone, Debug, Deserialize, PartialEq, Eq)]
 pub enum Mode {
@@ -112,6 +79,8 @@ pub enum Source {
 
 #[derive(Debug)]
 pub struct ZoneServerUnit {
+    pub center: Arc<Center>,
+
     /// The relative path at which we should listen for HTTP query API requests
     pub http_api_path: Arc<String>,
 
@@ -126,15 +95,12 @@ pub struct ZoneServerUnit {
     pub mode: Mode,
 
     pub source: Source,
-
-    pub update_tx: mpsc::UnboundedSender<Update>,
 }
 
 impl ZoneServerUnit {
     pub async fn run(
         self,
         cmd_rx: mpsc::UnboundedReceiver<ApplicationCommand>,
-        component: Component,
     ) -> Result<(), Terminated> {
         let unit_name = match (self.mode, self.source) {
             (Mode::Prepublish, Source::UnsignedZones) => "RS",
@@ -150,9 +116,9 @@ impl ZoneServerUnit {
         // But for unsigned zones the zone could be updated whilst being reviewed and we only
         // serve the latest version of the zone, not the specific serial being reviewed!
         let zones = match self.source {
-            Source::UnsignedZones => component.unsigned_zones().clone(),
-            Source::SignedZones => component.signed_zones().clone(),
-            Source::PublishedZones => component.published_zones().clone(),
+            Source::UnsignedZones => self.center.unsigned_zones.clone(),
+            Source::SignedZones => self.center.signed_zones.clone(),
+            Source::PublishedZones => self.center.published_zones.clone(),
         };
 
         let max_concurrency = std::thread::available_parallelism().unwrap().get() / 2;
@@ -160,20 +126,20 @@ impl ZoneServerUnit {
         // TODO: Pass xfr_out to XfrDataProvidingZonesWrapper for enforcement.
         let zones = XfrDataProvidingZonesWrapper {
             zones,
-            key_store: component.tsig_key_store().clone(),
+            key_store: self.center.old_tsig_key_store.clone(),
         };
 
         // Propagate NOTIFY messages if this is the publication server.
         let notifier = LoaderNotifier {
             enabled: self.source == Source::PublishedZones,
-            update_tx: self.update_tx.clone(),
+            update_tx: self.center.update_tx.clone(),
         };
 
         // let svc = ZoneServerService::new(zones.clone());
         let svc = service_fn(zone_server_service, zones.clone());
         let svc = XfrMiddlewareSvc::new(svc, zones.clone(), max_concurrency);
         let svc = NotifyMiddlewareSvc::new(svc, notifier);
-        let svc = TsigMiddlewareSvc::new(svc, component.tsig_key_store().clone());
+        let svc = TsigMiddlewareSvc::new(svc, self.center.old_tsig_key_store.clone());
         let svc = CookiesMiddlewareSvc::with_random_secret(svc);
         let svc = EdnsMiddlewareSvc::new(svc);
         let svc = MandatoryMiddlewareSvc::<_, _, ()>::new(svc);
@@ -190,10 +156,9 @@ impl ZoneServerUnit {
             });
         }
 
-        let component = Arc::new(RwLock::new(component));
-
+        let update_tx = self.center.update_tx.clone();
         ZoneServer::new(
-            component,
+            self.center,
             self.http_api_path,
             self.mode,
             self.source,
@@ -201,7 +166,7 @@ impl ZoneServerUnit {
             self.listen,
             zones,
         )
-        .run(unit_name, self.update_tx, cmd_rx)
+        .run(unit_name, update_tx, cmd_rx)
         .await?;
 
         Ok(())
@@ -252,7 +217,7 @@ impl ZoneServerUnit {
 struct ZoneServer {
     http_api_path: Arc<String>,
     zone_review_api: Option<ZoneReviewApi>,
-    component: Arc<RwLock<Component>>,
+    center: Arc<Center>,
     mode: Mode,
     source: Source,
     hooks: Vec<String>,
@@ -267,7 +232,7 @@ struct ZoneServer {
 impl ZoneServer {
     #[allow(clippy::too_many_arguments)]
     fn new(
-        component: Arc<RwLock<Component>>,
+        center: Arc<Center>,
         http_api_path: Arc<String>,
         mode: Mode,
         source: Source,
@@ -278,7 +243,7 @@ impl ZoneServer {
         Self {
             zone_review_api: Default::default(),
             http_api_path,
-            component,
+            center,
             mode,
             source,
             hooks,
@@ -387,10 +352,9 @@ impl ZoneServer {
         info!("[{unit_name}]: Publishing signed zone '{zone_name}' at serial {zone_serial}.");
         // Move the zone from the signed collection to the published collection.
         // TODO: Bump the zone serial?
-        let component = self.component.write().await;
-        let signed_zones = component.signed_zones().load();
+        let signed_zones = self.center.signed_zones.load();
         if let Some(zone) = signed_zones.get_zone(&zone_name, Class::IN) {
-            let published_zones = component.published_zones().load();
+            let published_zones = self.center.published_zones.load();
 
             // Create a deep copy of the set of
             // published zones. We will add the
@@ -401,8 +365,8 @@ impl ZoneServer {
             let mut new_published_zones = Arc::unwrap_or_clone(published_zones.clone());
             let _ = new_published_zones.remove_zone(zone.apex_name(), zone.class());
             new_published_zones.insert_zone(zone.clone()).unwrap();
-            component
-                .published_zones()
+            self.center
+                .published_zones
                 .store(Arc::new(new_published_zones));
 
             // Create a deep copy of the set of
@@ -413,7 +377,7 @@ impl ZoneServer {
             info!("[{unit_name}]: Removing '{zone_name}' from the set of signed zones.");
             let mut new_signed_zones = Arc::unwrap_or_clone(signed_zones.clone());
             new_signed_zones.remove_zone(&zone_name, Class::IN).unwrap();
-            component.signed_zones().store(Arc::new(new_signed_zones));
+            self.center.signed_zones.store(Arc::new(new_signed_zones));
         }
     }
 

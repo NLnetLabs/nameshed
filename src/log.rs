@@ -1,8 +1,8 @@
 //! Logging from Cascade.
 
-use std::io::Write;
 use std::net::Ipv4Addr;
 use std::sync::RwLock;
+use std::{fmt, io::Write};
 
 use camino::Utf8Path;
 
@@ -149,6 +149,13 @@ impl log::Log for Logger {
 
         let mut logger = &self.fallback;
         let _ = logger.flush();
+    }
+}
+
+impl fmt::Debug for Logger {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // TODO: Flesh out?
+        f.debug_struct("Logger").finish_non_exhaustive()
     }
 }
 

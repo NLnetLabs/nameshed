@@ -1,42 +1,26 @@
 use std::collections::BTreeMap;
 use std::collections::HashMap;
-use std::convert::Infallible;
-use std::future::Future;
-use std::io;
-use std::marker::PhantomData;
 use std::net::SocketAddr;
-use std::path::PathBuf;
-use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use arc_swap::ArcSwap;
-use axum::extract;
 use axum::extract::OriginalUri;
 use axum::extract::Path;
 use axum::extract::Query;
 use axum::extract::State;
 use axum::http::StatusCode;
-use axum::http::Uri;
 use axum::response::Html;
 use axum::routing::get;
 use axum::routing::post;
 use axum::Json;
 use axum::Router;
 use bytes::Bytes;
-use chrono::DateTime;
 use domain::base::Name;
 use domain::base::Serial;
-use domain::base::ToName;
-use domain::utils::dst::UnsizedCopy;
-use domain::zonetree::StoredName;
-use domain::zonetree::ZoneTree;
 use log::warn;
 use log::{debug, error, info};
-use serde::Deserialize;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
-use tokio::sync::RwLock;
 
 use crate::api::PolicyListResult;
 use crate::api::PolicyReloadResult;
@@ -46,13 +30,12 @@ use crate::api::ZoneAdd;
 use crate::api::ZoneAddResult;
 use crate::api::ZoneReloadResult;
 use crate::api::ZoneRemoveResult;
-use crate::api::ZoneSource;
 use crate::api::ZoneStage;
 use crate::api::ZoneStatusResult;
 use crate::api::ZonesListEntry;
 use crate::api::ZonesListResult;
+use crate::center::Center;
 use crate::comms::{ApplicationCommand, Terminated};
-use crate::manager::Component;
 // use crate::zone::Zones;
 
 const HTTP_UNIT_NAME: &str = "HS";
@@ -61,20 +44,19 @@ const HTTP_UNIT_NAME: &str = "HS";
 // a transmitter they can use to send the reply
 
 pub struct HttpServer {
+    pub center: Arc<Center>,
     pub listen_addr: SocketAddr,
 }
 
 struct HttpServerState {
-    pub component: Arc<RwLock<Component>>,
+    pub center: Arc<Center>,
 }
 
 impl HttpServer {
     pub async fn run(
         self,
         mut cmd_rx: mpsc::UnboundedReceiver<ApplicationCommand>,
-        component: Component,
     ) -> Result<(), Terminated> {
-        let component = Arc::new(RwLock::new(component));
         // Setup listener
         let sock = TcpListener::bind(self.listen_addr).await.map_err(|e| {
             error!("[{HTTP_UNIT_NAME}]: {}", e);
@@ -98,7 +80,9 @@ impl HttpServer {
             }
         });
 
-        let state = Arc::new(HttpServerState { component });
+        let state = Arc::new(HttpServerState {
+            center: self.center,
+        });
 
         // For now, only implemented the ZoneReviewApi for the Units:
         // "RS"   ZoneServerUnit
@@ -151,16 +135,15 @@ impl HttpServer {
     ) -> Json<ZoneAddResult> {
         let zone_name = zone_register.name.clone();
         state
-            .component
-            .read()
-            .await
-            .send_command(
-                "ZL",
+            .center
+            .app_cmd_tx
+            .send((
+                "ZL".into(),
                 ApplicationCommand::RegisterZone {
                     register: zone_register,
                 },
-            )
-            .await;
+            ))
+            .unwrap();
         Json(ZoneAddResult {
             name: zone_name,
             status: "Submitted".to_string(),
@@ -172,24 +155,22 @@ impl HttpServer {
     }
 
     async fn zones_list(State(state): State<Arc<HttpServerState>>) -> Json<ZonesListResult> {
-        let component = state.component.read().await;
-
         // The zone trees in the Component overlap. Therefore we take the
         // furthest a zone has progressed. We use a BTreeMap to sort the zones
         // while we're doing this.
         let mut all_zones = BTreeMap::new();
 
-        let unsigned_zones = component.unsigned_zones().load();
+        let unsigned_zones = state.center.unsigned_zones.load();
         for zone in unsigned_zones.iter_zones() {
             all_zones.insert(zone.apex_name().clone(), ZoneStage::Unsigned);
         }
 
-        let unsigned_zones = component.signed_zones().load();
+        let unsigned_zones = state.center.signed_zones.load();
         for zone in unsigned_zones.iter_zones() {
             all_zones.insert(zone.apex_name().clone(), ZoneStage::Signed);
         }
 
-        let unsigned_zones = component.published_zones().load();
+        let unsigned_zones = state.center.published_zones.load();
         for zone in unsigned_zones.iter_zones() {
             all_zones.insert(zone.apex_name().clone(), ZoneStage::Published);
         }
@@ -325,14 +306,13 @@ impl HttpServer {
     ) -> Result<Html<String>, StatusCode> {
         let (tx, mut rx) = mpsc::channel(10);
         state
-            .component
-            .read()
-            .await
-            .send_command(
-                unit,
+            .center
+            .app_cmd_tx
+            .send((
+                unit.into(),
                 ApplicationCommand::HandleZoneReviewApiStatus { http_tx: tx },
-            )
-            .await;
+            ))
+            .unwrap();
 
         let res = rx.recv().await;
         let Some(res) = res else {
@@ -394,11 +374,10 @@ impl HttpServer {
 
         let (tx, mut rx) = mpsc::channel(10);
         state
-            .component
-            .read()
-            .await
-            .send_command(
-                unit,
+            .center
+            .app_cmd_tx
+            .send((
+                unit.into(),
                 ApplicationCommand::HandleZoneReviewApi {
                     zone_name,
                     zone_serial,
@@ -406,8 +385,8 @@ impl HttpServer {
                     operation: action,
                     http_tx: tx,
                 },
-            )
-            .await;
+            ))
+            .unwrap();
 
         let res = rx.recv().await;
         let Some(res) = res else {

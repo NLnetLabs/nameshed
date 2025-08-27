@@ -1,91 +1,50 @@
-use core::fmt;
-use core::future::ready;
-
 use std::any::Any;
-use std::collections::btree_map::Entry;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt::{Debug, Display};
 use std::fs::File;
-use std::net::{IpAddr, SocketAddr};
-use std::ops::{ControlFlow, Deref};
+use std::net::SocketAddr;
+use std::ops::Deref;
 use std::pin::Pin;
-use std::str::FromStr;
-use std::sync::atomic::Ordering;
-use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
-use std::sync::{Arc, Weak};
-use std::time::Duration;
+use std::sync::Arc;
 
-use arc_swap::ArcSwap;
-use async_trait::async_trait;
-use bytes::{BufMut, Bytes, BytesMut};
-use chrono::{DateTime, Utc};
+use bytes::{BufMut, Bytes};
 use domain::base::iana::{Class, Rcode};
-use domain::base::name::Label;
-use domain::base::wire::Composer;
-use domain::base::{Name, NameBuilder, Rtype, Serial};
-use domain::net::server::buf::VecBufSource;
-use domain::net::server::dgram::{self, DgramServer};
-use domain::net::server::message::Request;
-use domain::net::server::middleware::cookies::CookiesMiddlewareSvc;
-use domain::net::server::middleware::edns::EdnsMiddlewareSvc;
-use domain::net::server::middleware::mandatory::MandatoryMiddlewareSvc;
-use domain::net::server::middleware::notify::{Notifiable, NotifyMiddlewareSvc};
-use domain::net::server::middleware::tsig::TsigMiddlewareSvc;
-use domain::net::server::middleware::xfr::XfrMiddlewareSvc;
-use domain::net::server::service::{CallResult, Service, ServiceError, ServiceResult};
-use domain::net::server::stream::{self, StreamServer};
-use domain::net::server::util::{mk_error_response, service_fn};
-use domain::net::server::ConnectionConfig;
+use domain::base::{Name, Rtype, Serial};
+use domain::net::server::middleware::notify::Notifiable;
 use domain::rdata::ZoneRecordData;
 use domain::tsig::KeyStore;
-use domain::tsig::{Algorithm, Key, KeyName};
-use domain::utils::base64;
 use domain::zonefile::inplace;
-use domain::zonetree::error::OutOfZone;
-use domain::zonetree::types::ZoneUpdate;
 use domain::zonetree::{
-    Answer, AnswerContent, InMemoryZoneDiff, ReadableZone, Rrset, SharedRrset, StoredName, WalkOp,
-    WritableZone, WritableZoneNode, Zone, ZoneBuilder, ZoneStore, ZoneTree,
+    AnswerContent, InMemoryZoneDiff, ReadableZone, StoredName, WritableZone, WritableZoneNode,
+    Zone, ZoneStore,
 };
-use futures::future::{select, Either};
-use futures::{pin_mut, Future};
-use indoc::formatdoc;
-use log::warn;
-use log::{debug, error, info, trace};
-use non_empty_vec::NonEmpty;
-use serde::{Deserialize, Serialize};
-use serde_with::{serde_as, DeserializeFromStr, DisplayFromStr};
-use tokio::net::UdpSocket;
-use tokio::sync::mpsc::{self, Receiver, Sender};
-use tokio::sync::{Mutex, RwLock};
-use tokio::time::{sleep, Instant};
+use futures::Future;
+use log::{debug, error, info};
+use tokio::sync::mpsc::{self, Sender};
+use tokio::time::Instant;
 
 #[cfg(feature = "tls")]
 use tokio_rustls::rustls::ServerConfig;
 
 use crate::api::ZoneSource;
+use crate::center::Center;
 use crate::common::light_weight_zone::LightWeightZone;
-use crate::common::net::{
-    ListenAddr, StandardTcpListenerFactory, StandardTcpStream, TcpListener, TcpListenerFactory,
-    TcpStreamWrapper,
-};
 use crate::common::tsig::{parse_key_strings, TsigKeyStore};
 use crate::common::xfr::parse_xfr_acl;
-use crate::comms::{ApplicationCommand, GraphStatus, Terminated};
-use crate::manager::Component;
-use crate::metrics::{self, util::append_per_router_metric, Metric, MetricType, MetricUnit};
+use crate::comms::{ApplicationCommand, Terminated};
 use crate::payload::Update;
-use crate::units::Unit;
 use crate::zonemaintenance::maintainer::{
-    Config, ConnectionFactory, DefaultConnFactory, TypedZone, ZoneLookup, ZoneMaintainer,
+    Config, ConnectionFactory, DefaultConnFactory, TypedZone, ZoneMaintainer,
 };
 use crate::zonemaintenance::types::{
-    CompatibilityMode, NotifyConfig, TransportStrategy, XfrConfig, XfrStrategy, ZoneConfig,
-    ZoneMaintainerKeyStore, ZoneRefreshCause, ZoneRefreshStatus, ZoneReportDetails,
+    NotifyConfig, TransportStrategy, XfrConfig, XfrStrategy, ZoneConfig,
 };
 
 #[derive(Debug)]
 pub struct ZoneLoader {
+    /// The center.
+    pub center: Arc<Center>,
+
     /// The zone names and (if primary) corresponding zone file paths to load.
     pub zones: Arc<HashMap<StoredName, String>>,
 
@@ -97,16 +56,12 @@ pub struct ZoneLoader {
 
     /// TSIG keys.
     pub tsig_keys: HashMap<String, String>,
-
-    /// Updates for the central command.
-    pub update_tx: mpsc::UnboundedSender<Update>,
 }
 
 impl ZoneLoader {
     pub async fn run(
         self,
         mut cmd_rx: mpsc::UnboundedReceiver<ApplicationCommand>,
-        component: Component,
     ) -> Result<(), Terminated> {
         // TODO: metrics and status reporting
 
@@ -117,14 +72,14 @@ impl ZoneLoader {
                 error!("[ZL]: Failed to parse TSIG key '{key_name}': {err}",);
                 Terminated
             })?;
-            component.tsig_key_store().insert(key);
+            self.center.old_tsig_key_store.insert(key);
         }
 
         let maintainer_config =
-            Config::<_, DefaultConnFactory>::new(component.tsig_key_store().clone());
+            Config::<_, DefaultConnFactory>::new(self.center.old_tsig_key_store.clone());
         let zone_maintainer = Arc::new(
             ZoneMaintainer::new_with_config(maintainer_config)
-                .with_zone_tree(component.unsigned_zones().clone()),
+                .with_zone_tree(self.center.unsigned_zones.clone()),
         );
 
         // Load primary zones.
@@ -134,7 +89,7 @@ impl ZoneLoader {
                 Self::register_primary_zone(
                     zone_name.clone(),
                     zone_path,
-                    component.tsig_key_store(),
+                    &self.center.old_tsig_key_store,
                     None,
                     &self.xfr_out,
                     &zone_updated_tx,
@@ -144,7 +99,7 @@ impl ZoneLoader {
                 info!("[ZL]: Adding secondary zone '{zone_name}'",);
                 Self::register_secondary_zone(
                     zone_name.clone(),
-                    component.tsig_key_store(),
+                    &self.center.old_tsig_key_store,
                     None,
                     &self.xfr_in,
                     zone_updated_tx.clone(),
@@ -166,7 +121,7 @@ impl ZoneLoader {
                 }
 
                 cmd = cmd_rx.recv() => {
-                    self.on_command(cmd, component.tsig_key_store(), &zone_maintainer, zone_updated_tx.clone()).await?;
+                    self.on_command(cmd, &self.center.old_tsig_key_store, &zone_maintainer, zone_updated_tx.clone()).await?;
                 }
             }
         }
@@ -177,7 +132,8 @@ impl ZoneLoader {
 
         info!("[ZL]: Received a new copy of zone '{zone_name}' at serial {zone_serial}",);
 
-        self.update_tx
+        self.center
+            .update_tx
             .send(Update::UnsignedZoneUpdatedEvent {
                 zone_name,
                 zone_serial,

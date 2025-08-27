@@ -1,64 +1,29 @@
-use std::fmt::Debug;
 use std::sync::Arc;
 
-use arc_swap::ArcSwap;
 use log::info;
-use serde::Deserialize;
-use serde_with::serde_as;
 use tokio::sync::mpsc;
 
+use crate::center::Center;
 use crate::comms::{ApplicationCommand, Terminated};
-use crate::manager::{Component, TargetCommand};
+use crate::manager::TargetCommand;
 use crate::payload::Update;
 
-#[derive(Debug)]
-pub struct CentralCommandTarget {
-    /// A receiver for updates.
-    pub update_rx: mpsc::UnboundedReceiver<Update>,
-
-    pub config: Config,
-}
-
-impl CentralCommandTarget {
-    pub async fn run(
-        self,
-        component: Component,
-        cmd: mpsc::UnboundedReceiver<TargetCommand>,
-    ) -> Result<(), Terminated> {
-        CentralCommand::new(self.config, component)
-            .run(cmd, self.update_rx)
-            .await
-    }
-}
-
-pub(super) struct CentralCommand {
-    component: Component,
-    #[allow(dead_code)]
-    config: Arc<ArcSwap<Config>>,
+pub struct CentralCommand {
+    pub center: Arc<Center>,
 }
 
 impl CentralCommand {
-    pub fn new(config: Config, component: Component) -> Self {
-        let config = Arc::new(ArcSwap::from_pointee(config));
-
-        // TODO: metrics and status reporting
-
-        Self { component, config }
-    }
-
     pub async fn run(
-        mut self,
+        self,
         cmd_rx: mpsc::UnboundedReceiver<TargetCommand>,
         update_rx: mpsc::UnboundedReceiver<Update>,
     ) -> Result<(), Terminated> {
-        let _component = &mut self.component;
-
         let arc_self = Arc::new(self);
 
         arc_self.do_run(cmd_rx, update_rx).await
     }
 
-    pub async fn do_run(
+    async fn do_run(
         self: &Arc<Self>,
         mut cmd_rx: mpsc::UnboundedReceiver<TargetCommand>,
         mut update_rx: mpsc::UnboundedReceiver<Update>,
@@ -180,7 +145,7 @@ impl CentralCommand {
         };
 
         info!("[CC]: {msg}");
-        self.component.send_command(target, cmd).await;
+        self.center.app_cmd_tx.send((target.into(), cmd)).unwrap();
     }
 }
 
@@ -189,9 +154,3 @@ impl std::fmt::Debug for CentralCommand {
         f.debug_struct("CentralCommand").finish()
     }
 }
-
-//------------ Config --------------------------------------------------------
-
-#[serde_as]
-#[derive(Debug, Default, Deserialize)]
-pub struct Config {}

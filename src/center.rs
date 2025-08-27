@@ -1,31 +1,50 @@
 //! Nameshed's central command.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
-use crate::{config::Config, policy::Policy, tsig::TsigStore, zone::ZoneByName};
+use arc_swap::ArcSwap;
+use domain::zonetree::ZoneTree;
+use tokio::sync::mpsc;
+
+use crate::{
+    comms::ApplicationCommand, config::Config, log::Logger, payload::Update, policy::Policy,
+    tsig::TsigStore, zone::ZoneByName,
+};
 
 //----------- Center -----------------------------------------------------------
 
 /// Nameshed's central command.
+#[derive(Debug)]
 pub struct Center {
     /// Global state.
     pub state: Mutex<State>,
-}
 
-//--- Initialization
+    /// The logger.
+    pub logger: &'static Logger,
 
-impl Center {
-    /// Initialize Nameshed.
-    pub fn launch(config: Config) -> Self {
-        Self {
-            state: Mutex::new(State::new(config)),
-        }
-    }
+    /// The latest unsigned contents of all zones.
+    pub unsigned_zones: Arc<ArcSwap<ZoneTree>>,
+
+    /// The latest signed contents of all zones.
+    pub signed_zones: Arc<ArcSwap<ZoneTree>>,
+
+    /// The latest published contents of all zones.
+    pub published_zones: Arc<ArcSwap<ZoneTree>>,
+
+    /// The old TSIG key store.
+    pub old_tsig_key_store: crate::common::tsig::TsigKeyStore,
+
+    /// A channel to send units commands.
+    pub app_cmd_tx: mpsc::UnboundedSender<(String, ApplicationCommand)>,
+
+    /// A channel to send the central command updates.
+    pub update_tx: mpsc::UnboundedSender<Update>,
 }
 
 //----------- State ------------------------------------------------------------
 
-/// Global state for Nameshed.
+/// Global state for Cascade.
+#[derive(Debug)]
 pub struct State {
     /// Configuration.
     ///
