@@ -177,8 +177,8 @@ pub async fn ixfr(
         let mut interpreter = XfrResponseInterpreter::new();
         let mut updates = interpreter.interpret_response(response)?.peekable();
 
-        match updates.peek().unwrap() {
-            Ok(ZoneUpdate::DeleteAllRecords) => {
+        match updates.peek() {
+            Some(Ok(ZoneUpdate::DeleteAllRecords)) => {
                 // This is an AXFR.
                 let _ = updates.next().unwrap();
                 let mut all = Vec::new();
@@ -193,7 +193,7 @@ pub async fn ixfr(
                 return Ok(Ixfr::Uncompressed(uncompressed));
             }
 
-            Ok(ZoneUpdate::BeginBatchDelete(_)) => {
+            Some(Ok(ZoneUpdate::BeginBatchDelete(_))) => {
                 // This is an IXFR.
                 let mut versions = Vec::new();
                 let mut this_soa = None;
@@ -217,7 +217,19 @@ pub async fn ixfr(
                 }
             }
 
-            Ok(ZoneUpdate::Finished(record)) => {
+            // NOTE: 'domain' currently reports 'None' for a single-SOA IXFR,
+            // apparently assuming it means the local copy is up-to-date.  But
+            // this misses two other possibilities:
+            // - The remote copy is older than the local copy.
+            // - The IXFR was too big for UDP.
+            None => {
+                // Assume the remote copy is identical to to the local copy.
+                return Ok(Ixfr::UpToDate);
+            }
+
+            // NOTE: The XFR response interpreter will not return this right
+            // now; it needs to be modified to report single-SOA IXFRs here.
+            Some(Ok(ZoneUpdate::Finished(record))) => {
                 let ZoneRecordData::Soa(soa) = record.data() else {
                     unreachable!("'ZoneUpdate::Finished' must hold a SOA");
                 };
