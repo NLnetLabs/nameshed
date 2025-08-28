@@ -30,10 +30,14 @@ use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio::sync::RwLock;
 
+use crate::api::PolicyListResult;
+use crate::api::PolicyReloadResult;
+use crate::api::PolicyShowResult;
 use crate::api::ServerStatusResult;
-use crate::api::ZoneRegister;
-use crate::api::ZoneRegisterResult;
+use crate::api::ZoneAdd;
+use crate::api::ZoneAddResult;
 use crate::api::ZoneReloadResult;
+use crate::api::ZoneRemoveResult;
 use crate::api::ZoneSource;
 use crate::api::ZoneStage;
 use crate::api::ZoneStatusResult;
@@ -88,9 +92,13 @@ impl HttpServer {
             .route("/", get(|| async { "Hello, World!" }))
             .route("/status", get(Self::status))
             .route("/zones/list", get(Self::zones_list))
-            .route("/zone/register", post(Self::zone_register))
+            .route("/zone/add", post(Self::zone_add))
+            .route("/zone/{name}/remove", post(Self::zone_remove))
             .route("/zone/{name}/status", get(Self::zone_status))
             .route("/zone/{name}/reload", post(Self::zone_reload))
+            .route("/policy/reload", post(Self::policy_reload))
+            .route("/policy/list", get(Self::policy_list))
+            .route("/policy/{name}", post(Self::policy_show))
             .with_state(component);
 
         axum::serve(sock, app).await.map_err(|e| {
@@ -99,10 +107,10 @@ impl HttpServer {
         })
     }
 
-    async fn zone_register(
+    async fn zone_add(
         State(component): State<Arc<RwLock<Component>>>,
-        Json(zone_register): Json<ZoneRegister>,
-    ) -> Json<ZoneRegisterResult> {
+        Json(zone_register): Json<ZoneAdd>,
+    ) -> Json<ZoneAddResult> {
         let zone_name = zone_register.name.clone();
         component
             .read()
@@ -114,10 +122,14 @@ impl HttpServer {
                 },
             )
             .await;
-        Json(ZoneRegisterResult {
+        Json(ZoneAddResult {
             name: zone_name,
             status: "Submitted".to_string(),
         })
+    }
+
+    async fn zone_remove(Path(payload): Path<Name<Bytes>>) -> Json<ZoneRemoveResult> {
+        todo!()
     }
 
     async fn zones_list(State(state): State<Arc<RwLock<Component>>>) -> Json<ZonesListResult> {
@@ -159,6 +171,18 @@ impl HttpServer {
         Path(payload): Path<Name<Bytes>>,
     ) -> Result<Json<ZoneReloadResult>, String> {
         Ok(Json(ZoneReloadResult { name: payload }))
+    }
+
+    async fn policy_list() -> Json<PolicyListResult> {
+        todo!()
+    }
+
+    async fn policy_reload() -> Json<PolicyReloadResult> {
+        todo!()
+    }
+
+    async fn policy_show() -> Json<PolicyShowResult> {
+        todo!()
     }
 
     async fn status() -> Json<ServerStatusResult> {

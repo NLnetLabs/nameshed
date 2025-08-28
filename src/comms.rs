@@ -69,7 +69,7 @@ use domain::base::Serial;
 use domain::zonetree::StoredName;
 use std::fmt::{self, Debug};
 
-use crate::api::ZoneRegister;
+use crate::api::ZoneAdd;
 
 //------------ GraphMetrics --------------------------------------------------
 pub trait GraphStatus: Send + Sync {
@@ -147,6 +147,6 @@ pub enum ApplicationCommand {
         zone_serial: Serial,
     },
     RegisterZone {
-        register: ZoneRegister,
+        register: ZoneAdd,
     },
 }

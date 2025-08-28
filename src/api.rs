@@ -9,16 +9,19 @@ use serde::{Deserialize, Serialize};
 const DEFAULT_AXFR_PORT: u16 = 53;
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
-pub struct ZoneRegister {
+pub struct ZoneAdd {
     pub name: Name<Bytes>,
     pub source: ZoneSource,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
-pub struct ZoneRegisterResult {
+pub struct ZoneAddResult {
     pub name: Name<Bytes>,
     pub status: String,
 }
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct ZoneRemoveResult {}
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub enum ZoneSource {
@@ -80,3 +83,14 @@ pub struct ZoneReloadResult {
 pub struct ServerStatusResult {
     // pub name: Name<Bytes>,
 }
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct PolicyReloadResult {}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct PolicyListResult {
+    pub policies: Vec<String>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct PolicyShowResult {}
