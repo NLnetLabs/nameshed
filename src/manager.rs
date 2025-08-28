@@ -4,6 +4,7 @@ use arc_swap::ArcSwap;
 use log::{debug, info};
 use std::collections::HashMap;
 use std::fmt::Display;
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::mpsc::{self, Receiver, Sender};
@@ -261,6 +262,11 @@ impl Manager {
         let tsig_key = std::env::var("ZL_TSIG_KEY")
             .unwrap_or("hmac-sha256:zlCZbVJPIhobIs1gJNQfrsS3xCxxsR9pMUrGwG8OgG8=".into());
 
+        // Global settings for dnst keyset
+        // TODO: Should probably be configurable
+        let dnst_keyset_bin_path: PathBuf = "dnst".into();
+        let dnst_keyset_data_dir: PathBuf = "/tmp/keyset/".into();
+
         self.spawn_unit(
             "ZL",
             Unit::ZoneLoader(ZoneLoader {
@@ -291,8 +297,8 @@ impl Manager {
         self.spawn_unit(
             "KM",
             Unit::KeyManager(KeyManagerUnit {
-                dnst_keyset_bin_path: "/tmp/dnst".into(),
-                dnst_keyset_data_dir: "/tmp".into(),
+                dnst_keyset_bin_path,
+                dnst_keyset_data_dir: dnst_keyset_data_dir.clone(),
                 update_tx: update_tx.clone(),
             }),
         );
@@ -300,7 +306,6 @@ impl Manager {
         self.spawn_unit(
             "ZS",
             Unit::ZoneSigner(ZoneSignerUnit {
-                keys_path: "/tmp/keys".into(),
                 treat_single_keys_as_csks: true,
                 max_concurrent_operations: 1,
                 max_concurrent_rrsig_generation_tasks: 32,
@@ -310,6 +315,7 @@ impl Manager {
                 rrsig_expiration_offset_secs: 60 * 60 * 24 * 14,
                 kmip_server_conn_settings,
                 update_tx: update_tx.clone(),
+                dnst_keyset_data_dir,
             }),
         );
 
