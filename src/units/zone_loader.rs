@@ -8,6 +8,7 @@ use std::fmt::Display;
 use std::fs::File;
 use std::net::{IpAddr, SocketAddr};
 use std::ops::{ControlFlow, Deref};
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::atomic::Ordering;
@@ -105,6 +106,12 @@ pub struct ZoneLoader {
     pub update_tx: mpsc::Sender<Update>,
 
     pub cmd_rx: mpsc::Receiver<ApplicationCommand>,
+
+    /// Path to the dnst binary for invoking `dnst keyset`
+    pub dnst_keyset_bin_path: PathBuf,
+
+    /// Path to the dnst data directory `dnst keyset`
+    pub dnst_keyset_data_dir: PathBuf,
 }
 
 impl ZoneLoader {
@@ -140,7 +147,7 @@ impl ZoneLoader {
 
             let zone = if !zone_path.is_empty() {
                 let xfr_out = self.xfr_out.get(zone_name).unwrap_or(&no_xfr_settings);
-                Self::register_primary_zone(
+                self.register_primary_zone(
                     apex_name,
                     zone_path,
                     component.tsig_key_store(),
@@ -151,7 +158,7 @@ impl ZoneLoader {
             } else {
                 info!("[ZL]: Adding secondary zone '{zone_name}'",);
                 let xfr_in = self.xfr_in.get(zone_name).unwrap_or(&no_xfr_settings);
-                Self::register_secondary_zone(
+                self.register_secondary_zone(
                     apex_name,
                     component.tsig_key_store(),
                     xfr_in,
@@ -223,7 +230,7 @@ impl ZoneLoader {
                                 ApplicationCommand::RegisterZone { register } => {
                                     let res = match register.source {
                                         ZoneSource::Zonefile { path /* Lacks XFR out settings */ } => {
-                                            Self::register_primary_zone(
+                                            self.register_primary_zone(
                                                 register.name.clone(),
                                                 &path.to_string(),
                                                 component.tsig_key_store(),
@@ -233,7 +240,7 @@ impl ZoneLoader {
                                         }
                                         ZoneSource::Server { addr /* Lacks TSIG key name */ } => {
                                             let xfr_in = format!("{addr}");
-                                            Self::register_secondary_zone(
+                                            self.register_secondary_zone(
                                                 register.name.clone(),
                                                 component.tsig_key_store(),
                                                 &xfr_in,
@@ -269,6 +276,7 @@ impl ZoneLoader {
     }
 
     async fn register_primary_zone(
+        &self,
         apex_name: Name<Bytes>,
         zone_path: &String,
         tsig_key_store: &TsigKeyStore,
@@ -277,7 +285,7 @@ impl ZoneLoader {
     ) -> Result<TypedZone, Terminated> {
         let zone_name = apex_name.to_string();
         let zone = load_file_into_zone(&zone_name, zone_path).await?;
-        let Some(serial) = get_zone_serial(apex_name, &zone).await else {
+        let Some(serial) = get_zone_serial(apex_name.clone(), &zone).await else {
             error!("[ZL]: Error: Zone file '{zone_path}' lacks a SOA record. Skipping zone.");
             return Err(Terminated);
         };
@@ -288,6 +296,8 @@ impl ZoneLoader {
             .await
             .unwrap();
         let zone = Zone::new(NotifyOnWriteZone::new(zone, zone_updated_tx.clone()));
+
+        self.initialize_keyset(apex_name)?;
         Ok(TypedZone::new(zone, zone_cfg))
     }
 
@@ -329,6 +339,7 @@ impl ZoneLoader {
     }
 
     fn register_secondary_zone(
+        &self,
         apex_name: Name<Bytes>,
         tsig_key_store: &TsigKeyStore,
         xfr_in: &str,
@@ -336,8 +347,10 @@ impl ZoneLoader {
     ) -> Result<TypedZone, Terminated> {
         let zone_name = &apex_name.to_string();
         let zone_cfg = Self::determine_secondary_zone_cfg(zone_name, xfr_in, tsig_key_store)?;
-        let zone = Zone::new(LightWeightZone::new(apex_name, true));
+        let zone = Zone::new(LightWeightZone::new(apex_name.clone(), true));
         let zone = Zone::new(NotifyOnWriteZone::new(zone, zone_updated_tx));
+
+        self.initialize_keyset(apex_name)?;
         Ok(TypedZone::new(zone, zone_cfg))
     }
 
@@ -375,6 +388,37 @@ impl ZoneLoader {
         }
 
         Ok(zone_cfg)
+    }
+
+    fn initialize_keyset(&self, apex_name: Name<Bytes>) -> Result<(), Terminated> {
+        let base_cmd = || {
+            let mut cmd = std::process::Command::new(&self.dnst_keyset_bin_path);
+            let cfg_path = self.dnst_keyset_data_dir.join(format!("{apex_name}.cfg"));
+            cmd.arg("keyset").arg("-c").arg(cfg_path);
+            cmd
+        };
+
+        let status = base_cmd()
+            .arg("create")
+            .arg("-n")
+            .arg(apex_name.to_string())
+            .arg("-s")
+            .arg(self.dnst_keyset_data_dir.join(format!("{apex_name}.state")))
+            .status();
+
+        if let Err(_) = status {
+            error!("[ZL]: Error creating keyset");
+            return Err(Terminated);
+        }
+
+        let status = base_cmd().arg("init").status();
+
+        if let Err(_) = status {
+            error!("[ZL]: Error initializing keyset");
+            return Err(Terminated);
+        }
+
+        Ok(())
     }
 
     async fn server<Svc>(addr: ListenAddr, svc: Svc) -> Result<(), std::io::Error>

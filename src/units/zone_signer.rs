@@ -138,6 +138,8 @@ pub struct ZoneSignerUnit {
     pub update_tx: mpsc::Sender<Update>,
 
     pub cmd_rx: mpsc::Receiver<ApplicationCommand>,
+
+    pub dnst_keyset_data_dir: PathBuf,
 }
 
 #[allow(dead_code)]
@@ -227,6 +229,7 @@ impl ZoneSignerUnit {
             self.update_tx,
             self.keys_path,
             kmip_servers,
+            self.dnst_keyset_data_dir,
         )
         .run(self.cmd_rx)
         .await?;
@@ -293,6 +296,7 @@ struct ZoneSigner {
     update_tx: mpsc::Sender<Update>,
     _keys_path: PathBuf,
     kmip_servers: HashMap<String, SyncConnPool>,
+    dnst_keyset_data_dir: PathBuf,
 }
 
 impl ZoneSigner {
@@ -309,6 +313,7 @@ impl ZoneSigner {
         update_tx: mpsc::Sender<Update>,
         keys_path: PathBuf,
         kmip_servers: HashMap<String, SyncConnPool>,
+        dnst_keyset_data_dir: PathBuf,
     ) -> Self {
         Self {
             component,
@@ -323,6 +328,7 @@ impl ZoneSigner {
             update_tx,
             _keys_path: keys_path,
             kmip_servers,
+            dnst_keyset_data_dir,
         }
     }
 
@@ -427,7 +433,7 @@ impl ZoneSigner {
         trace!("Reading dnst keyset DNSKEY RRs and RRSIG RRs");
         // Read the DNSKEY RRs and DNSKEY RRSIG RR from the keyset state.
         let apex_name = zone.apex_name().to_string();
-        let state_path = Path::new("/tmp/").join(format!("{apex_name}.state"));
+        let state_path = self.dnst_keyset_data_dir.join(format!("{apex_name}.state"));
         let state = std::fs::read_to_string(&state_path).map_err(|err| format!("Unable to read `dnst keyset` state file '{}' while signing zone {zone_name}: {err}", state_path.display()))?;
         let state: KeySetState = serde_json::from_str(&state).unwrap();
         for dnskey_rr in state.dnskey_rrset {

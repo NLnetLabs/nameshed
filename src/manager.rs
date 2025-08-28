@@ -4,6 +4,7 @@ use arc_swap::ArcSwap;
 use log::{debug, info};
 use std::collections::HashMap;
 use std::fmt::Display;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::{self, Receiver, Sender};
@@ -494,6 +495,11 @@ impl Manager {
         let tsig_key = std::env::var("ZL_TSIG_KEY")
             .unwrap_or("hmac-sha256:zlCZbVJPIhobIs1gJNQfrsS3xCxxsR9pMUrGwG8OgG8=".into());
 
+        // Global settings for dnst keyset
+        // TODO: Should probably be configurable
+        let dnst_keyset_bin_path: PathBuf = "dnst".into();
+        let dnst_keyset_data_dir: PathBuf = "/tmp/keyset/".into();
+
         let units = [
             (
                 String::from("ZL"),
@@ -508,6 +514,8 @@ impl Manager {
                     tsig_keys: HashMap::from([(tsig_key_name, tsig_key)]),
                     update_tx: update_tx.clone(),
                     cmd_rx: zl_rx,
+                    dnst_keyset_bin_path: dnst_keyset_bin_path.clone(),
+                    dnst_keyset_data_dir: dnst_keyset_data_dir.clone(),
                 }),
             ),
             (
@@ -529,8 +537,8 @@ impl Manager {
             (
                 String::from("KM"),
                 Unit::KeyManager(KeyManagerUnit {
-                    dnst_keyset_bin_path: "/tmp/dnst".into(),
-                    dnst_keyset_data_dir: "/tmp".into(),
+                    dnst_keyset_bin_path,
+                    dnst_keyset_data_dir: dnst_keyset_data_dir.clone(),
                     update_tx: update_tx.clone(),
                     cmd_rx: km_rx,
                 }),
@@ -549,6 +557,7 @@ impl Manager {
                     kmip_server_conn_settings,
                     update_tx: update_tx.clone(),
                     cmd_rx: zs_rx,
+                    dnst_keyset_data_dir,
                 }),
             ),
             (
