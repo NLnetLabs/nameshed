@@ -54,7 +54,7 @@ const HTTP_UNIT_NAME: &str = "HS";
 
 pub struct HttpServer {
     pub listen_addr: SocketAddr,
-    pub cmd_rx: Option<mpsc::Receiver<ApplicationCommand>>,
+    pub cmd_rx: Option<mpsc::UnboundedReceiver<ApplicationCommand>>,
 }
 
 impl HttpServer {

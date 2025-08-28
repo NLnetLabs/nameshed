@@ -35,7 +35,7 @@ impl Target {
     pub async fn run(
         self,
         component: Component,
-        cmd: mpsc::Receiver<TargetCommand>,
+        cmd: mpsc::UnboundedReceiver<TargetCommand>,
     ) -> Result<(), Terminated> {
         match self {
             Target::CentraLCommand(target) => target.run(component, cmd).await,

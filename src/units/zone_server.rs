@@ -125,9 +125,9 @@ pub struct ZoneServerUnit {
 
     pub source: Source,
 
-    pub update_tx: mpsc::Sender<Update>,
+    pub update_tx: mpsc::UnboundedSender<Update>,
 
-    pub cmd_rx: mpsc::Receiver<ApplicationCommand>,
+    pub cmd_rx: mpsc::UnboundedReceiver<ApplicationCommand>,
 }
 
 impl ZoneServerUnit {
@@ -276,8 +276,8 @@ impl ZoneServer {
     async fn run(
         self,
         unit_name: &str,
-        update_tx: mpsc::Sender<Update>,
-        mut cmd_rx: mpsc::Receiver<ApplicationCommand>,
+        update_tx: mpsc::UnboundedSender<Update>,
+        mut cmd_rx: mpsc::UnboundedReceiver<ApplicationCommand>,
     ) -> Result<(), crate::comms::Terminated> {
         // let status_reporter = self.status_reporter.clone();
 
@@ -328,10 +328,10 @@ impl ZoneServer {
                                 // Approve immediately.
                                 match arc_self.source {
                                     Source::UnsignedZones => {
-                                        update_tx.send(Update::UnsignedZoneApprovedEvent { zone_name: zone_name.clone(), zone_serial: *zone_serial }).await.unwrap();
+                                        update_tx.send(Update::UnsignedZoneApprovedEvent { zone_name: zone_name.clone(), zone_serial: *zone_serial }).unwrap();
                                     }
                                     Source::SignedZones => {
-                                        update_tx.send(Update::SignedZoneApprovedEvent { zone_name: zone_name.clone(), zone_serial: *zone_serial }).await.unwrap();
+                                        update_tx.send(Update::SignedZoneApprovedEvent { zone_name: zone_name.clone(), zone_serial: *zone_serial }).unwrap();
                                     }
                                     Source::PublishedZones => unreachable!(),
                                 }

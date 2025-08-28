@@ -102,9 +102,9 @@ pub struct ZoneLoader {
     pub tsig_keys: HashMap<String, String>,
 
     /// Updates for the central command.
-    pub update_tx: mpsc::Sender<Update>,
+    pub update_tx: mpsc::UnboundedSender<Update>,
 
-    pub cmd_rx: mpsc::Receiver<ApplicationCommand>,
+    pub cmd_rx: mpsc::UnboundedReceiver<ApplicationCommand>,
 }
 
 impl ZoneLoader {
@@ -204,7 +204,6 @@ impl ZoneLoader {
                             zone_name,
                             zone_serial,
                         })
-                        .await
                         .unwrap();
                 }
 

@@ -135,9 +135,9 @@ pub struct ZoneSignerUnit {
 
     pub kmip_server_conn_settings: HashMap<String, KmipServerConnectionSettings>,
 
-    pub update_tx: mpsc::Sender<Update>,
+    pub update_tx: mpsc::UnboundedSender<Update>,
 
-    pub cmd_rx: mpsc::Receiver<ApplicationCommand>,
+    pub cmd_rx: mpsc::UnboundedReceiver<ApplicationCommand>,
 }
 
 #[allow(dead_code)]
@@ -290,7 +290,7 @@ struct ZoneSigner {
     max_concurrent_rrsig_generation_tasks: usize,
     signer_status: Arc<RwLock<ZoneSignerStatus>>,
     treat_single_keys_as_csks: bool,
-    update_tx: mpsc::Sender<Update>,
+    update_tx: mpsc::UnboundedSender<Update>,
     _keys_path: PathBuf,
     kmip_servers: HashMap<String, SyncConnPool>,
 }
@@ -306,7 +306,7 @@ impl ZoneSigner {
         max_concurrent_operations: usize,
         max_concurrent_rrsig_generation_tasks: usize,
         treat_single_keys_as_csks: bool,
-        update_tx: mpsc::Sender<Update>,
+        update_tx: mpsc::UnboundedSender<Update>,
         keys_path: PathBuf,
         kmip_servers: HashMap<String, SyncConnPool>,
     ) -> Self {
@@ -328,7 +328,7 @@ impl ZoneSigner {
 
     async fn run(
         self,
-        mut cmd_rx: mpsc::Receiver<ApplicationCommand>,
+        mut cmd_rx: mpsc::UnboundedReceiver<ApplicationCommand>,
     ) -> Result<(), crate::comms::Terminated> {
         while let Some(cmd) = cmd_rx.recv().await {
             info!("[ZS]: Received command: {cmd:?}");
@@ -714,7 +714,6 @@ impl ZoneSigner {
                 zone_name: zone_name.clone(),
                 zone_serial,
             })
-            .await
             .unwrap();
 
         Ok(())
