@@ -455,7 +455,7 @@ impl FromStr for LogFacility {
 
 //------------ LogFilter -----------------------------------------------------
 
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(try_from = "String")]
 pub struct LogFilter(log::LevelFilter);
 
@@ -498,6 +498,13 @@ impl TryFrom<String> for LogFilter {
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
         log::LevelFilter::from_str(&value).map(LogFilter)
+    }
+}
+
+impl FromStr for LogFilter {
+    type Err = log::ParseLevelError;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        log::LevelFilter::from_str(value).map(LogFilter)
     }
 }
 

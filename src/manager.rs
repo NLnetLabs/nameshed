@@ -14,6 +14,7 @@ use crate::comms::ApplicationCommand;
 use crate::metrics;
 use crate::targets::central_command::{self, CentralCommandTarget};
 use crate::targets::Target;
+use crate::units::http_server::HttpServer;
 use crate::units::key_manager::KeyManagerUnit;
 use crate::units::zone_loader::ZoneLoader;
 use crate::units::zone_server::{self, ZoneServerUnit};
@@ -149,6 +150,9 @@ pub struct Manager {
     /// Commands for the central command.
     center_tx: Option<mpsc::Sender<TargetCommand>>,
 
+    /// Commands for the http server.
+    http_tx: Option<mpsc::Sender<ApplicationCommand>>,
+
     /// The metrics collection maintained by this manager.
     metrics: metrics::Collection,
 
@@ -193,6 +197,7 @@ impl Manager {
             review2_tx: None,
             publish_tx: None,
             center_tx: None,
+            http_tx: None,
             metrics: Default::default(),
             file_io: TheFileIo::default(),
             unsigned_zones,
@@ -220,6 +225,7 @@ impl Manager {
                 "ZS" => self.signer_tx.as_ref(),
                 "RS2" => self.review2_tx.as_ref(),
                 "PS" => self.publish_tx.as_ref(),
+                "HS" => self.http_tx.as_ref(),
                 _ => None,
             }) else {
                 continue;
@@ -386,6 +392,7 @@ impl Manager {
         let (zs_tx, zs_rx) = mpsc::channel(10);
         let (rs2_tx, rs2_rx) = mpsc::channel(10);
         let (ps_tx, ps_rx) = mpsc::channel(10);
+        let (http_tx, http_rx) = mpsc::channel(10);
 
         self.loader_tx = Some(zl_tx);
         self.review_tx = Some(rs_tx);
@@ -393,6 +400,7 @@ impl Manager {
         self.signer_tx = Some(zs_tx);
         self.review2_tx = Some(rs2_tx);
         self.publish_tx = Some(ps_tx);
+        self.http_tx = Some(http_tx);
 
         let (update_tx, update_rx) = mpsc::channel(10);
 
@@ -481,6 +489,7 @@ impl Manager {
         let zone_name = std::env::var("ZL_IN_ZONE").unwrap_or("example.com.".into());
         let zone_file = std::env::var("ZL_IN_ZONE_FILE").unwrap_or("".into());
         let xfr_in = std::env::var("ZL_XFR_IN").unwrap_or("127.0.0.1:8055 KEY sec1-key".into());
+        let xfr_out = std::env::var("PS_XFR_OUT").unwrap_or("127.0.0.1:8055 KEY sec1-key".into());
         let tsig_key_name = std::env::var("ZL_TSIG_KEY_NAME").unwrap_or("sec1-key".into());
         let tsig_key = std::env::var("ZL_TSIG_KEY")
             .unwrap_or("hmac-sha256:zlCZbVJPIhobIs1gJNQfrsS3xCxxsR9pMUrGwG8OgG8=".into());
@@ -494,7 +503,8 @@ impl Manager {
                         "udp:127.0.0.1:8054".parse().unwrap(),
                     ],
                     zones: Arc::new(HashMap::from([(zone_name.clone(), zone_file)])),
-                    xfr_in: Arc::new(HashMap::from([(zone_name, xfr_in)])),
+                    xfr_in: Arc::new(HashMap::from([(zone_name.clone(), xfr_in)])),
+                    xfr_out: Arc::new(HashMap::from([(zone_name.clone(), xfr_out.clone())])),
                     tsig_keys: HashMap::from([(tsig_key_name, tsig_key)]),
                     update_tx: update_tx.clone(),
                     cmd_rx: zl_rx,
@@ -507,10 +517,7 @@ impl Manager {
                         "tcp:127.0.0.1:8056".parse().unwrap(),
                         "udp:127.0.0.1:8056".parse().unwrap(),
                     ],
-                    xfr_out: HashMap::from([(
-                        "example.com".into(),
-                        "127.0.0.1:8055 KEY sec1-key".into(),
-                    )]),
+                    xfr_out: HashMap::from([(zone_name, xfr_out)]),
                     // Temporarily disable hooks as the required HTTP functionality has been removed pending replacement.
                     hooks: vec![], // vec![String::from("/tmp/approve_or_deny.sh")],
                     mode: zone_server::Mode::Prepublish,
@@ -578,6 +585,14 @@ impl Manager {
                     cmd_rx: ps_rx,
                 }),
             ),
+            (
+                String::from("HS"),
+                Unit::HttpServer(HttpServer {
+                    // TODO: config/argument option
+                    listen_addr: "127.0.0.1:8950".parse().unwrap(),
+                    cmd_rx: Some(http_rx),
+                }),
+            ),
         ];
 
         // Spawn and terminate units
@@ -605,6 +620,7 @@ impl Manager {
             ("ZS", self.signer_tx.take().unwrap()),
             ("RS2", self.review2_tx.take().unwrap()),
             ("PS", self.publish_tx.take().unwrap()),
+            ("HS", self.http_tx.take().unwrap()),
         ];
         for (name, tx) in units {
             info!("Stopping unit '{name}'");
