@@ -100,9 +100,24 @@ impl HttpServer {
     }
 
     async fn zone_register(
-        Json(_payload): Json<ZoneRegister>,
-    ) -> Result<Json<ZoneRegisterResult>, String> {
-        todo!()
+        State(component): State<Arc<RwLock<Component>>>,
+        Json(zone_register): Json<ZoneRegister>,
+    ) -> Json<ZoneRegisterResult> {
+        let zone_name = zone_register.name.clone();
+        component
+            .read()
+            .await
+            .send_command(
+                "ZL",
+                ApplicationCommand::RegisterZone {
+                    register: zone_register,
+                },
+            )
+            .await;
+        Json(ZoneRegisterResult {
+            name: zone_name,
+            status: "Submitted".to_string(),
+        })
     }
 
     async fn zones_list(State(state): State<Arc<RwLock<Component>>>) -> Json<ZonesListResult> {
