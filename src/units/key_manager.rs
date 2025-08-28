@@ -90,7 +90,7 @@ impl KeyManager {
         let mut ks_info = self.ks_info.lock().await;
         for zone in zone_tree.load().iter_zones() {
             let apex_name = zone.apex_name().to_string();
-            let state_path = Path::new("/tmp/").join(format!("{apex_name}.state"));
+            let state_path = self.dnst_keyset_data_dir.join(format!("{apex_name}.state"));
             if !state_path.exists() {
                 continue;
             }
