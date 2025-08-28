@@ -28,6 +28,10 @@ pub enum ZoneCommand {
         source: ZoneSource,
     },
 
+    /// Remove a zone
+    #[command(name = "remove")]
+    Remove { name: Name<Bytes> },
+
     /// List registered zones
     #[command(name = "list")]
     List,
@@ -71,6 +75,19 @@ impl Zone {
                     })?;
 
                 println!("Registered zone {}", res.name);
+            }
+            ZoneCommand::Remove { name } => {
+                let res: ZoneAddResult = client
+                    .post(&format!("zone/{name}/remove"))
+                    .send()
+                    .and_then(|r| r.json())
+                    .await
+                    .map_err(|e| {
+                        error!("HTTP request failed: {e}");
+                        ExitError
+                    })?;
+
+                println!("Removed zone {}", res.name);
             }
             ZoneCommand::List => {
                 let response: ZonesListResult = client

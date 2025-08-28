@@ -21,6 +21,9 @@ pub struct ZoneAddResult {
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct ZoneRemoveResult {}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
 pub enum ZoneSource {
     Zonefile { path: Box<Utf8Path> },
     Server { addr: SocketAddr },

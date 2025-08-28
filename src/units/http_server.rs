@@ -34,6 +34,7 @@ use crate::api::ServerStatusResult;
 use crate::api::ZoneAdd;
 use crate::api::ZoneAddResult;
 use crate::api::ZoneReloadResult;
+use crate::api::ZoneRemoveResult;
 use crate::api::ZoneSource;
 use crate::api::ZoneStage;
 use crate::api::ZoneStatusResult;
@@ -89,6 +90,7 @@ impl HttpServer {
             .route("/status", get(Self::status))
             .route("/zones/list", get(Self::zones_list))
             .route("/zone/add", post(Self::zone_add))
+            .route("/zone/{name}/remove", post(Self::zone_remove))
             .route("/zone/{name}/status", get(Self::zone_status))
             .route("/zone/{name}/reload", post(Self::zone_reload))
             .with_state(component);
@@ -118,6 +120,10 @@ impl HttpServer {
             name: zone_name,
             status: "Submitted".to_string(),
         })
+    }
+
+    async fn zone_remove(Path(payload): Path<Name<Bytes>>) -> Json<ZoneRemoveResult> {
+        todo!()
     }
 
     async fn zones_list(State(state): State<Arc<RwLock<Component>>>) -> Json<ZonesListResult> {
