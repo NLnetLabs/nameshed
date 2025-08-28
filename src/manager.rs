@@ -496,10 +496,6 @@ impl Manager {
             (
                 String::from("ZL"),
                 Unit::ZoneLoader(ZoneLoader {
-                    listen: vec![
-                        "tcp:127.0.0.1:8054".parse().unwrap(),
-                        "udp:127.0.0.1:8054".parse().unwrap(),
-                    ],
                     zones: Arc::new(HashMap::from([(zone_name.clone(), zone_file)])),
                     xfr_in: Arc::new(HashMap::from([(zone_name.clone(), xfr_in)])),
                     xfr_out: Arc::new(HashMap::from([(zone_name.clone(), xfr_out.clone())])),
