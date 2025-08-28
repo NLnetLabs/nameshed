@@ -5,7 +5,7 @@ use futures::TryFutureExt;
 use log::error;
 
 use crate::api::{
-    ZoneRegister, ZoneRegisterResult, ZoneSource, ZoneStage, ZoneStatusResult, ZonesListResult,
+    ZoneAdd, ZoneAddResult, ZoneSource, ZoneStage, ZoneStatusResult, ZonesListResult,
 };
 use crate::cli::client::NameshedApiClient;
 use crate::log::ExitError;
@@ -19,8 +19,8 @@ pub struct Zone {
 #[derive(Clone, Debug, clap::Subcommand)]
 pub enum ZoneCommand {
     /// Register a new zone
-    #[command(name = "register")]
-    Register {
+    #[command(name = "add")]
+    Add {
         name: Name<Bytes>,
         /// The zone source can be an IP address (with or without port,
         /// defaults to port 53) or a file path.
@@ -58,10 +58,10 @@ pub enum ZoneCommand {
 impl Zone {
     pub async fn execute(self, client: NameshedApiClient) -> Result<(), ExitError> {
         match self.command {
-            ZoneCommand::Register { name, source } => {
-                let res: ZoneRegisterResult = client
-                    .post("zone/register")
-                    .json(&ZoneRegister { name, source })
+            ZoneCommand::Add { name, source } => {
+                let res: ZoneAddResult = client
+                    .post("zone/add")
+                    .json(&ZoneAdd { name, source })
                     .send()
                     .and_then(|r| r.json())
                     .await

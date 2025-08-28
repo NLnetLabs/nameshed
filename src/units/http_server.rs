@@ -31,8 +31,8 @@ use tokio::sync::mpsc;
 use tokio::sync::RwLock;
 
 use crate::api::ServerStatusResult;
-use crate::api::ZoneRegister;
-use crate::api::ZoneRegisterResult;
+use crate::api::ZoneAdd;
+use crate::api::ZoneAddResult;
 use crate::api::ZoneReloadResult;
 use crate::api::ZoneSource;
 use crate::api::ZoneStage;
@@ -88,7 +88,7 @@ impl HttpServer {
             .route("/", get(|| async { "Hello, World!" }))
             .route("/status", get(Self::status))
             .route("/zones/list", get(Self::zones_list))
-            .route("/zone/register", post(Self::zone_register))
+            .route("/zone/add", post(Self::zone_add))
             .route("/zone/{name}/status", get(Self::zone_status))
             .route("/zone/{name}/reload", post(Self::zone_reload))
             .with_state(component);
@@ -99,10 +99,10 @@ impl HttpServer {
         })
     }
 
-    async fn zone_register(
+    async fn zone_add(
         State(component): State<Arc<RwLock<Component>>>,
-        Json(zone_register): Json<ZoneRegister>,
-    ) -> Json<ZoneRegisterResult> {
+        Json(zone_register): Json<ZoneAdd>,
+    ) -> Json<ZoneAddResult> {
         let zone_name = zone_register.name.clone();
         component
             .read()
@@ -114,7 +114,7 @@ impl HttpServer {
                 },
             )
             .await;
-        Json(ZoneRegisterResult {
+        Json(ZoneAddResult {
             name: zone_name,
             status: "Submitted".to_string(),
         })
