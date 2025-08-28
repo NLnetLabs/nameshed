@@ -570,7 +570,6 @@ where
         rx.await.map_err(|_| ZoneMaintainerError::UnknownZone)
     }
 
-    #[allow(dead_code)]
     pub async fn force_zone_refresh(&self, apex_name: &StoredName, class: Class) {
         self.event_tx
             .send(Event::ZoneRefreshRequested {
