@@ -22,8 +22,8 @@ use tokio::time::MissedTickBehavior;
 pub struct KeyManagerUnit {
     pub dnst_keyset_bin_path: PathBuf,
     pub dnst_keyset_data_dir: PathBuf,
-    pub update_tx: mpsc::Sender<Update>,
-    pub cmd_rx: mpsc::Receiver<ApplicationCommand>,
+    pub update_tx: mpsc::UnboundedSender<Update>,
+    pub cmd_rx: mpsc::UnboundedReceiver<ApplicationCommand>,
 }
 
 impl KeyManagerUnit {
@@ -49,7 +49,7 @@ struct KeyManager {
     component: Component,
     dnst_keyset_bin_path: PathBuf,
     dnst_keyset_data_dir: PathBuf,
-    update_tx: mpsc::Sender<Update>,
+    update_tx: mpsc::UnboundedSender<Update>,
     ks_info: Mutex<HashMap<String, KeySetInfo>>,
 }
 
@@ -58,7 +58,7 @@ impl KeyManager {
         component: Component,
         dnst_keyset_bin_path: PathBuf,
         dnst_keyset_data_dir: PathBuf,
-        update_tx: mpsc::Sender<Update>,
+        update_tx: mpsc::UnboundedSender<Update>,
     ) -> Self {
         Self {
             component,
@@ -71,7 +71,7 @@ impl KeyManager {
 
     async fn run(
         self,
-        cmd_rx: mpsc::Receiver<ApplicationCommand>,
+        cmd_rx: mpsc::UnboundedReceiver<ApplicationCommand>,
     ) -> Result<(), crate::comms::Terminated> {
         let mut interval = tokio::time::interval(Duration::from_secs(5));
         interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -112,7 +112,6 @@ impl KeyManager {
                     .send(Update::ResignZoneEvent {
                         zone_name: zone.apex_name().clone(),
                     })
-                    .await
                     .unwrap();
                 continue;
             }
@@ -163,7 +162,6 @@ impl KeyManager {
                             .send(Update::ResignZoneEvent {
                                 zone_name: zone.apex_name().clone(),
                             })
-                            .await
                             .unwrap();
                         continue;
                     }

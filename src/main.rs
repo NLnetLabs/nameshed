@@ -81,7 +81,7 @@ fn main() -> ExitCode {
         };
 
         // Shut down Nameshed.
-        manager.terminate();
+        manager.terminate().await;
         result
     })
 }
