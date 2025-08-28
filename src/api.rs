@@ -83,3 +83,14 @@ pub struct ZoneReloadResult {
 pub struct ServerStatusResult {
     // pub name: Name<Bytes>,
 }
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct PolicyReloadResult {}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct PolicyListResult {
+    pub policies: Vec<String>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct PolicyShowResult {}

@@ -30,6 +30,9 @@ use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio::sync::RwLock;
 
+use crate::api::PolicyListResult;
+use crate::api::PolicyReloadResult;
+use crate::api::PolicyShowResult;
 use crate::api::ServerStatusResult;
 use crate::api::ZoneAdd;
 use crate::api::ZoneAddResult;
@@ -93,6 +96,9 @@ impl HttpServer {
             .route("/zone/{name}/remove", post(Self::zone_remove))
             .route("/zone/{name}/status", get(Self::zone_status))
             .route("/zone/{name}/reload", post(Self::zone_reload))
+            .route("/policy/reload", post(Self::policy_reload))
+            .route("/policy/list", get(Self::policy_list))
+            .route("/policy/{name}", post(Self::policy_show))
             .with_state(component);
 
         axum::serve(sock, app).await.map_err(|e| {
@@ -165,6 +171,18 @@ impl HttpServer {
         Path(payload): Path<Name<Bytes>>,
     ) -> Result<Json<ZoneReloadResult>, String> {
         Ok(Json(ZoneReloadResult { name: payload }))
+    }
+
+    async fn policy_list() -> Json<PolicyListResult> {
+        todo!()
+    }
+
+    async fn policy_reload() -> Json<PolicyReloadResult> {
+        todo!()
+    }
+
+    async fn policy_show() -> Json<PolicyShowResult> {
+        todo!()
     }
 
     async fn status() -> Json<ServerStatusResult> {
