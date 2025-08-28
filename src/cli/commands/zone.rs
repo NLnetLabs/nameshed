@@ -1,11 +1,11 @@
 use bytes::Bytes;
+use camino::Utf8PathBuf;
 use domain::base::Name;
 use futures::TryFutureExt;
 use log::error;
 
 use crate::api::{
-    ZoneRegister, ZoneRegisterResult, ZoneSource, ZoneStatusResult,
-    ZonesListResult,
+    ZoneRegister, ZoneRegisterResult, ZoneSource, ZoneStage, ZoneStatusResult, ZonesListResult,
 };
 use crate::cli::client::NameshedApiClient;
 use crate::log::ExitError;
@@ -56,14 +56,11 @@ pub enum ZoneCommand {
 // - reload zone (i.e. from file)
 
 impl Zone {
-    pub async fn execute(
-        self,
-        client: NameshedApiClient,
-    ) -> Result<(), ExitError> {
+    pub async fn execute(self, client: NameshedApiClient) -> Result<(), ExitError> {
         match self.command {
             ZoneCommand::Register { name, source } => {
                 let res: ZoneRegisterResult = client
-                    .post("/zone/register")
+                    .post("zone/register")
                     .json(&ZoneRegister { name, source })
                     .send()
                     .and_then(|r| r.json())
@@ -77,7 +74,7 @@ impl Zone {
             }
             ZoneCommand::List => {
                 let response: ZonesListResult = client
-                    .get("/zones/list")
+                    .get("zones/list")
                     .send()
                     .and_then(|r| r.json())
                     .await
@@ -86,10 +83,18 @@ impl Zone {
                         ExitError
                     })?;
 
-                println!("Response: {:?}", response.zones);
+                for zone in response.zones {
+                    let name = zone.name;
+                    let stage = match zone.stage {
+                        ZoneStage::Unsigned => "unsigned",
+                        ZoneStage::Signed => "signed",
+                        ZoneStage::Published => "published",
+                    };
+                    println!("{name}\t{stage}");
+                }
             }
             ZoneCommand::Reload { zone } => {
-                let url = format!("/zone/{zone}/reload");
+                let url = format!("zone/{zone}/reload");
                 client
                     .post(&url)
                     .send()
@@ -105,7 +110,7 @@ impl Zone {
             ZoneCommand::Status { zone } => {
                 // TODO: move to function that can be called by the general
                 // status command with a zone arg?
-                let url = format!("/zone/{}/status", zone);
+                let url = format!("zone/{}/status", zone);
                 let response: ZoneStatusResult = client
                     .get(&url)
                     .send()
@@ -116,10 +121,7 @@ impl Zone {
                         ExitError
                     })?;
 
-                println!(
-                    "Success: Sent zone reload command for {}",
-                    response.name
-                );
+                println!("Server status: {:?}", response);
             }
         }
         Ok(())

@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::future::Future;
 use std::io;
@@ -8,6 +9,7 @@ use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::Arc;
 
+use arc_swap::ArcSwap;
 use axum::extract;
 use axum::extract::Path;
 use axum::extract::State;
@@ -16,8 +18,12 @@ use axum::routing::post;
 use axum::Json;
 use axum::Router;
 use bytes::Bytes;
+use chrono::DateTime;
 use domain::base::Name;
+use domain::base::ToName;
+use domain::utils::dst::UnsizedCopy;
 use domain::zonetree::StoredName;
+use domain::zonetree::ZoneTree;
 use log::{debug, error, info};
 use serde::Deserialize;
 use tokio::net::TcpListener;
@@ -28,7 +34,10 @@ use crate::api::ServerStatusResult;
 use crate::api::ZoneRegister;
 use crate::api::ZoneRegisterResult;
 use crate::api::ZoneReloadResult;
+use crate::api::ZoneSource;
+use crate::api::ZoneStage;
 use crate::api::ZoneStatusResult;
+use crate::api::ZonesListEntry;
 use crate::api::ZonesListResult;
 use crate::comms::{ApplicationCommand, Terminated};
 use crate::manager::Component;
@@ -41,13 +50,13 @@ const HTTP_UNIT_NAME: &str = "HS";
 
 pub struct HttpServer {
     pub listen_addr: SocketAddr,
-    // pub zones: Arc<Zones>,
     pub cmd_rx: Option<mpsc::Receiver<ApplicationCommand>>,
 }
 
 impl HttpServer {
     pub async fn run(mut self, component: Component) -> Result<(), Terminated> {
-        let _component = Arc::new(RwLock::new(component));
+        let component = Arc::new(RwLock::new(component));
+
         // Setup listener
         let sock = TcpListener::bind(self.listen_addr).await.map_err(|e| {
             error!("[{HTTP_UNIT_NAME}]: {}", e);
@@ -75,8 +84,6 @@ impl HttpServer {
             }
         });
 
-        let state = Arc::new(self);
-
         let app = Router::new()
             .route("/", get(|| async { "Hello, World!" }))
             .route("/status", get(Self::status))
@@ -84,7 +91,8 @@ impl HttpServer {
             .route("/zone/register", post(Self::zone_register))
             .route("/zone/{name}/status", get(Self::zone_status))
             .route("/zone/{name}/reload", post(Self::zone_reload))
-            .with_state(state);
+            .with_state(component);
+
         axum::serve(sock, app).await.map_err(|e| {
             error!("[{HTTP_UNIT_NAME}]: {}", e);
             Terminated
@@ -92,55 +100,65 @@ impl HttpServer {
     }
 
     async fn zone_register(
-        Json(payload): Json<ZoneRegister>,
+        State(component): State<Arc<RwLock<Component>>>,
+        Json(zone_register): Json<ZoneRegister>,
     ) -> Json<ZoneRegisterResult> {
+        let zone_name = zone_register.name.clone();
+        component
+            .read()
+            .await
+            .send_command(
+                "ZL",
+                ApplicationCommand::RegisterZone {
+                    register: zone_register,
+                },
+            )
+            .await;
         Json(ZoneRegisterResult {
-            name: payload.name.clone(),
-            status: "Maybe Success".into(),
+            name: zone_name,
+            status: "Submitted".to_string(),
         })
     }
 
-    async fn zones_list(
-        // TODO: replace HttpServer with slimmed down state struct?
-        State(_state): State<Arc<HttpServer>>,
-    ) -> Json<ZonesListResult> {
-        // let zones = state
-        //     .zones
-        //     .list()
-        //     .iter()
-        //     .map(|n| {
-        //         // TODO: find a way to get correct `Name`s back from `Zones`
-        //         let mut sv = Vec::new();
-        //         let mut buf = String::with_capacity(256);
-        //         let mut first = true;
-        //         for l in n.labels() {
-        //             sv.push(l);
-        //         }
-        //         sv.reverse();
-        //         for l in sv {
-        //             if !first {
-        //                 buf.push('.');
-        //             }
-        //             buf.push_str(&l.to_string());
-        //             first = false;
-        //         }
-        //         Name::from_str(&buf).unwrap()
-        //     })
-        //     .collect();
-        // Json(ZonesListResult { zones })
-        Json(ZonesListResult { zones: Vec::default() })
+    async fn zones_list(State(state): State<Arc<RwLock<Component>>>) -> Json<ZonesListResult> {
+        let state = state.read().await;
+
+        // The zone trees in the Component overlap. Therefore we take the
+        // furthest a zone has progressed. We use a BTreeMap to sort the zones
+        // while we're doing this.
+        let mut all_zones = BTreeMap::new();
+
+        let unsigned_zones = state.unsigned_zones().load();
+        for zone in unsigned_zones.iter_zones() {
+            all_zones.insert(zone.apex_name().clone(), ZoneStage::Unsigned);
+        }
+
+        let unsigned_zones = state.signed_zones().load();
+        for zone in unsigned_zones.iter_zones() {
+            all_zones.insert(zone.apex_name().clone(), ZoneStage::Signed);
+        }
+
+        let unsigned_zones = state.published_zones().load();
+        for zone in unsigned_zones.iter_zones() {
+            all_zones.insert(zone.apex_name().clone(), ZoneStage::Published);
+        }
+
+        let zones = all_zones
+            .into_iter()
+            .map(|(name, stage)| ZonesListEntry { name, stage })
+            .collect();
+
+        Json(ZonesListResult { zones })
     }
 
-    async fn zone_status(
-        Path(name): Path<Name<Bytes>>,
-    ) -> Json<ZoneStatusResult> {
+    async fn zone_status(Path(name): Path<Name<Bytes>>) -> Json<ZoneStatusResult> {
         Json(ZoneStatusResult { name })
     }
 
     async fn zone_reload(
-        Path(name): Path<Name<Bytes>>,
-    ) -> Json<ZoneReloadResult> {
-        Json(ZoneReloadResult { name })
+        Path(payload): Path<Name<Bytes>>,
+    ) -> Result<Json<ZoneReloadResult>, String> {
+        Ok(Json(ZoneReloadResult { name: payload }))
     }
 
     async fn status() -> Json<ServerStatusResult> {
