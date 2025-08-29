@@ -116,6 +116,7 @@ impl HttpServer {
 
         let app = Router::new()
             .route("/", get(|| async { "Hello, World!" }))
+            // Using the /_unit sub-path to not clutter the rest of the API
             .nest("/_unit", unit_router)
             .route("/status", get(Self::status))
             .route("/zones/list", get(Self::zones_list))
