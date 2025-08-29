@@ -116,11 +116,11 @@ assets = [
 		"usr/bin/",
 		"755",
 	],
-	# [
-	#     "target/release/cascadec",
-	#     "usr/bin/",
-	#     "755",
-	# ],
+	[
+		"target/release/cascadec",
+		"usr/bin/",
+		"755",
+	],
 	[
 		"README.md",
 		"usr/share/doc/cascade/",
@@ -157,6 +157,7 @@ systemd-units = { unit-name = "cascade", unit-scripts = "pkg/common", enable = f
 [package.metadata.generate-rpm]
 assets = [
 	{ source = "target/release/cascade", dest = "/usr/bin/cascade", mode = "755" },
+	{ source = "target/release/cascadec", dest = "/usr/bin/cascadec", mode = "755" },
 	{ source = "target/rpm/cascade.service", dest = "/usr/lib/systemd/system/cascade.service", mode = "644" },
 	#{ source = "doc/cascade.1", dest = "/usr/share/man/man1/cascade.1", mode = "644", doc = true },
 	#{ source = "doc/cascadec.1", dest = "/usr/share/man/man1/cascadec.1", mode = "644", doc = true },
