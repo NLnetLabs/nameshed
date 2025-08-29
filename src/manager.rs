@@ -449,42 +449,6 @@ impl Manager {
             }
         }
 
-        let client_cert_path = std::env::var("PYKMIP_CLIENT_CERT_PATH").ok();
-        let client_key_path = std::env::var("PYKMIP_CLIENT_KEY_PATH").ok();
-
-        if client_cert_path.is_some() && client_key_path.is_some() {
-            kmip_server_conn_settings.insert(
-                "pykmip".to_string(),
-                KmipServerConnectionSettings {
-                    server_addr: "127.0.0.1".into(),
-                    server_port: 5696,
-                    server_insecure: true,
-                    client_cert_path: Some(
-                        "/home/ximon/docker_data/pykmip/pykmip-data/selfsigned.crt".into(),
-                    ),
-                    client_key_path: Some(
-                        "/home/ximon/docker_data/pykmip/pykmip-data/selfsigned.key".into(),
-                    ),
-                    ..Default::default()
-                },
-            );
-        }
-
-        let server_username = std::env::var("FORTANIX_USER").ok();
-        let server_password = std::env::var("FORTANIX_PASS").ok();
-        if server_username.is_some() && server_password.is_some() {
-            kmip_server_conn_settings.insert(
-                "fortanix".to_string(),
-                KmipServerConnectionSettings {
-                    server_addr: "eu.smartkey.io".into(),
-                    server_insecure: true,
-                    server_username,
-                    server_password,
-                    ..Default::default()
-                },
-            );
-        }
-
         let zone_name = std::env::var("ZL_IN_ZONE").unwrap_or("example.com.".into());
         let zone_file = std::env::var("ZL_IN_ZONE_FILE").unwrap_or("".into());
         let xfr_in = std::env::var("ZL_XFR_IN").unwrap_or("127.0.0.1:8055 KEY sec1-key".into());
