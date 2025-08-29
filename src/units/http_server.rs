@@ -1,4 +1,4 @@
-use std::borrow::Cow;
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::future::Future;
@@ -10,6 +10,7 @@ use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::Arc;
 
+use arc_swap::ArcSwap;
 use axum::extract;
 use axum::extract::OriginalUri;
 use axum::extract::Path;
@@ -23,9 +24,13 @@ use axum::routing::post;
 use axum::Json;
 use axum::Router;
 use bytes::Bytes;
+use chrono::DateTime;
 use domain::base::Name;
 use domain::base::Serial;
+use domain::base::ToName;
+use domain::utils::dst::UnsizedCopy;
 use domain::zonetree::StoredName;
+use domain::zonetree::ZoneTree;
 use log::warn;
 use log::{debug, error, info};
 use serde::Deserialize;
@@ -33,11 +38,18 @@ use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio::sync::RwLock;
 
+use crate::api::PolicyListResult;
+use crate::api::PolicyReloadResult;
+use crate::api::PolicyShowResult;
 use crate::api::ServerStatusResult;
-use crate::api::ZoneRegister;
-use crate::api::ZoneRegisterResult;
+use crate::api::ZoneAdd;
+use crate::api::ZoneAddResult;
 use crate::api::ZoneReloadResult;
+use crate::api::ZoneRemoveResult;
+use crate::api::ZoneSource;
+use crate::api::ZoneStage;
 use crate::api::ZoneStatusResult;
+use crate::api::ZonesListEntry;
 use crate::api::ZonesListResult;
 use crate::comms::{ApplicationCommand, Terminated};
 use crate::manager::Component;
@@ -50,17 +62,16 @@ const HTTP_UNIT_NAME: &str = "HS";
 
 pub struct HttpServer {
     pub listen_addr: SocketAddr,
-    // pub zones: Arc<Zones>,
-    pub cmd_rx: Option<mpsc::Receiver<ApplicationCommand>>,
+    pub cmd_rx: Option<mpsc::UnboundedReceiver<ApplicationCommand>>,
 }
 
 struct HttpServerState {
-    pub component: Component,
+    pub component: Arc<RwLock<Component>>,
 }
 
 impl HttpServer {
     pub async fn run(mut self, component: Component) -> Result<(), Terminated> {
-        // let _component = Arc::new(RwLock::new(component));
+        let component = Arc::new(RwLock::new(component));
         // Setup listener
         let sock = TcpListener::bind(self.listen_addr).await.map_err(|e| {
             error!("[{HTTP_UNIT_NAME}]: {}", e);
@@ -120,59 +131,98 @@ impl HttpServer {
             .nest("/_unit", unit_router)
             .route("/status", get(Self::status))
             .route("/zones/list", get(Self::zones_list))
-            .route("/zone/register", post(Self::zone_register))
+            .route("/zone/add", post(Self::zone_add))
+            .route("/zone/{name}/remove", post(Self::zone_remove))
             .route("/zone/{name}/status", get(Self::zone_status))
             .route("/zone/{name}/reload", post(Self::zone_reload))
+            .route("/policy/reload", post(Self::policy_reload))
+            .route("/policy/list", get(Self::policy_list))
+            .route("/policy/{name}", post(Self::policy_show))
             .with_state(state);
+
         axum::serve(sock, app).await.map_err(|e| {
             error!("[{HTTP_UNIT_NAME}]: {}", e);
             Terminated
         })
     }
 
-    async fn zone_register(Json(payload): Json<ZoneRegister>) -> Json<ZoneRegisterResult> {
-        Json(ZoneRegisterResult {
-            name: payload.name.clone(),
-            status: "Maybe Success".into(),
+    async fn zone_add(
+        State(state): State<Arc<HttpServerState>>,
+        Json(zone_register): Json<ZoneAdd>,
+    ) -> Json<ZoneAddResult> {
+        let zone_name = zone_register.name.clone();
+        state
+            .component
+            .read()
+            .await
+            .send_command(
+                "ZL",
+                ApplicationCommand::RegisterZone {
+                    register: zone_register,
+                },
+            )
+            .await;
+        Json(ZoneAddResult {
+            name: zone_name,
+            status: "Submitted".to_string(),
         })
     }
 
-    async fn zones_list(State(_state): State<Arc<HttpServerState>>) -> Json<ZonesListResult> {
-        // let zones = state
-        //     .zones
-        //     .list()
-        //     .iter()
-        //     .map(|n| {
-        //         // TODO: find a way to get correct `Name`s back from `Zones`
-        //         let mut sv = Vec::new();
-        //         let mut buf = String::with_capacity(256);
-        //         let mut first = true;
-        //         for l in n.labels() {
-        //             sv.push(l);
-        //         }
-        //         sv.reverse();
-        //         for l in sv {
-        //             if !first {
-        //                 buf.push('.');
-        //             }
-        //             buf.push_str(&l.to_string());
-        //             first = false;
-        //         }
-        //         Name::from_str(&buf).unwrap()
-        //     })
-        //     .collect();
-        // Json(ZonesListResult { zones })
-        Json(ZonesListResult {
-            zones: Vec::default(),
-        })
+    async fn zone_remove(Path(payload): Path<Name<Bytes>>) -> Json<ZoneRemoveResult> {
+        todo!()
+    }
+
+    async fn zones_list(State(state): State<Arc<HttpServerState>>) -> Json<ZonesListResult> {
+        let state = state.read().await;
+
+        // The zone trees in the Component overlap. Therefore we take the
+        // furthest a zone has progressed. We use a BTreeMap to sort the zones
+        // while we're doing this.
+        let mut all_zones = BTreeMap::new();
+
+        let unsigned_zones = state.unsigned_zones().load();
+        for zone in unsigned_zones.iter_zones() {
+            all_zones.insert(zone.apex_name().clone(), ZoneStage::Unsigned);
+        }
+
+        let unsigned_zones = state.signed_zones().load();
+        for zone in unsigned_zones.iter_zones() {
+            all_zones.insert(zone.apex_name().clone(), ZoneStage::Signed);
+        }
+
+        let unsigned_zones = state.published_zones().load();
+        for zone in unsigned_zones.iter_zones() {
+            all_zones.insert(zone.apex_name().clone(), ZoneStage::Published);
+        }
+
+        let zones = all_zones
+            .into_iter()
+            .map(|(name, stage)| ZonesListEntry { name, stage })
+            .collect();
+
+        Json(ZonesListResult { zones })
     }
 
     async fn zone_status(Path(name): Path<Name<Bytes>>) -> Json<ZoneStatusResult> {
         Json(ZoneStatusResult { name })
     }
 
-    async fn zone_reload(Path(name): Path<Name<Bytes>>) -> Json<ZoneReloadResult> {
-        Json(ZoneReloadResult { name })
+    async fn zone_reload(
+        Path(payload): Path<Name<Bytes>>,
+    ) -> Result<Json<ZoneReloadResult>, String> {
+        Ok(Json(ZoneReloadResult { name: payload }))
+    }
+
+    async fn policy_list() -> Json<PolicyListResult> {
+        todo!()
+    }
+
+    async fn policy_reload() -> Json<PolicyReloadResult> {
+        todo!()
+    }
+
+    async fn policy_show() -> Json<PolicyShowResult> {
+        todo!()
     }
 
     async fn status() -> Json<ServerStatusResult> {

@@ -70,6 +70,8 @@ use domain::zonetree::StoredName;
 use std::fmt::{self, Debug};
 use tokio::sync::mpsc;
 
+use crate::api::ZoneAdd;
+
 //------------ GraphMetrics --------------------------------------------------
 pub trait GraphStatus: Send + Sync {
     fn status_text(&self) -> String;
@@ -154,5 +156,8 @@ pub enum ApplicationCommand {
     PublishSignedZone {
         zone_name: StoredName,
         zone_serial: Serial,
+    },
+    RegisterZone {
+        register: ZoneAdd,
     },
 }

@@ -1,5 +1,6 @@
 //! The commands of _nameshedc_.
 
+pub mod policy;
 pub mod status;
 pub mod zone;
 
@@ -18,7 +19,11 @@ pub enum Command {
     Status(self::status::Status),
     // - get status (what zones are there, what are things doing)
     // - get dnssec status on zone
-
+    //
+    /// Manage policies
+    #[command(name = "policy")]
+    Policy(self::policy::Policy),
+    //
     // /// Manage keys
     // #[command(name = "key")]
     // Key(self::key::Key),
@@ -41,6 +46,7 @@ impl Command {
         match self {
             Self::Zone(zone) => zone.execute(client).await,
             Self::Status(status) => status.execute(client).await,
+            Self::Policy(policy) => policy.execute(client).await,
             // Self::Help(help) => help.execute(),
         }
     }

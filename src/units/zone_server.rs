@@ -128,9 +128,9 @@ pub struct ZoneServerUnit {
 
     pub source: Source,
 
-    pub update_tx: mpsc::Sender<Update>,
+    pub update_tx: mpsc::UnboundedSender<Update>,
 
-    pub cmd_rx: mpsc::Receiver<ApplicationCommand>,
+    pub cmd_rx: mpsc::UnboundedReceiver<ApplicationCommand>,
 }
 
 impl ZoneServerUnit {
@@ -285,8 +285,8 @@ impl ZoneServer {
     async fn run(
         mut self,
         unit_name: &str,
-        update_tx: mpsc::Sender<Update>,
-        mut cmd_rx: mpsc::Receiver<ApplicationCommand>,
+        update_tx: mpsc::UnboundedSender<Update>,
+        mut cmd_rx: mpsc::UnboundedReceiver<ApplicationCommand>,
     ) -> Result<(), crate::comms::Terminated> {
         // let status_reporter = self.status_reporter.clone();
 
@@ -381,6 +381,19 @@ impl ZoneServer {
                             if arc_self.last_approvals.read().await.contains_key(&(zone_name.clone(), *zone_serial)) {
                                 trace!("Skipping approval request for already approved {zone_type} zone '{zone_name}' at serial {zone_serial}.");
                                 continue;
+                            }
+
+                            if arc_self.hooks.is_empty() {
+                                // Approve immediately.
+                                match arc_self.source {
+                                    Source::UnsignedZones => {
+                                        update_tx.send(Update::UnsignedZoneApprovedEvent { zone_name: zone_name.clone(), zone_serial: *zone_serial }).unwrap();
+                                    }
+                                    Source::SignedZones => {
+                                        update_tx.send(Update::SignedZoneApprovedEvent { zone_name: zone_name.clone(), zone_serial: *zone_serial }).unwrap();
+                                    }
+                                    Source::PublishedZones => unreachable!(),
+                                }
                             }
 
                             info!("[{unit_name}]: Seeking approval for {zone_type} zone '{zone_name}' at serial {zone_serial}.");

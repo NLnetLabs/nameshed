@@ -5,7 +5,6 @@ use log::{debug, info};
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 
 use crate::common::file_io::TheFileIo;
@@ -130,28 +129,28 @@ impl Display for TargetCommand {
 /// `Handle::enter()`).
 pub struct Manager {
     /// Commands for the zone loader.
-    loader_tx: Option<mpsc::Sender<ApplicationCommand>>,
+    loader_tx: Option<mpsc::UnboundedSender<ApplicationCommand>>,
 
     /// Commands for the review server.
-    review_tx: Option<mpsc::Sender<ApplicationCommand>>,
+    review_tx: Option<mpsc::UnboundedSender<ApplicationCommand>>,
 
     /// Commands for the key manager.
-    key_manager_tx: Option<mpsc::Sender<ApplicationCommand>>,
+    key_manager_tx: Option<mpsc::UnboundedSender<ApplicationCommand>>,
 
     /// Commands for the zone signer.
-    signer_tx: Option<mpsc::Sender<ApplicationCommand>>,
+    signer_tx: Option<mpsc::UnboundedSender<ApplicationCommand>>,
 
     /// Commands for the secondary review server.
-    review2_tx: Option<mpsc::Sender<ApplicationCommand>>,
+    review2_tx: Option<mpsc::UnboundedSender<ApplicationCommand>>,
 
     /// Commands for the publish server.
-    publish_tx: Option<mpsc::Sender<ApplicationCommand>>,
+    publish_tx: Option<mpsc::UnboundedSender<ApplicationCommand>>,
 
     /// Commands for the central command.
-    center_tx: Option<mpsc::Sender<TargetCommand>>,
+    center_tx: Option<mpsc::UnboundedSender<TargetCommand>>,
 
     /// Commands for the http server.
-    http_tx: Option<mpsc::Sender<ApplicationCommand>>,
+    http_tx: Option<mpsc::UnboundedSender<ApplicationCommand>>,
 
     /// The metrics collection maintained by this manager.
     metrics: metrics::Collection,
@@ -231,7 +230,7 @@ impl Manager {
                 continue;
             };
             debug!("Forwarding application command to unit '{unit_name}'");
-            tx.send(data).await.unwrap();
+            tx.send(data).unwrap();
         }
     }
 
@@ -384,15 +383,15 @@ impl Manager {
         spawn_target: SpawnTarget,
     ) where
         SpawnUnit: Fn(Component, Unit),
-        SpawnTarget: Fn(Component, Target, Receiver<TargetCommand>),
+        SpawnTarget: Fn(Component, Target, mpsc::UnboundedReceiver<TargetCommand>),
     {
-        let (zl_tx, zl_rx) = mpsc::channel(10);
-        let (rs_tx, rs_rx) = mpsc::channel(10);
-        let (km_tx, km_rx) = mpsc::channel(10);
-        let (zs_tx, zs_rx) = mpsc::channel(10);
-        let (rs2_tx, rs2_rx) = mpsc::channel(10);
-        let (ps_tx, ps_rx) = mpsc::channel(10);
-        let (http_tx, http_rx) = mpsc::channel(10);
+        let (zl_tx, zl_rx) = mpsc::unbounded_channel();
+        let (rs_tx, rs_rx) = mpsc::unbounded_channel();
+        let (km_tx, km_rx) = mpsc::unbounded_channel();
+        let (zs_tx, zs_rx) = mpsc::unbounded_channel();
+        let (rs2_tx, rs2_rx) = mpsc::unbounded_channel();
+        let (ps_tx, ps_rx) = mpsc::unbounded_channel();
+        let (http_tx, http_rx) = mpsc::unbounded_channel();
 
         self.loader_tx = Some(zl_tx);
         self.review_tx = Some(rs_tx);
@@ -402,7 +401,7 @@ impl Manager {
         self.publish_tx = Some(ps_tx);
         self.http_tx = Some(http_tx);
 
-        let (update_tx, update_rx) = mpsc::channel(10);
+        let (update_tx, update_rx) = mpsc::unbounded_channel();
 
         {
             let name = String::from("CC");
@@ -422,7 +421,7 @@ impl Manager {
             );
 
             info!("Starting target '{name}'");
-            let (cmd_tx, cmd_rx) = mpsc::channel(100);
+            let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
             spawn_target(component, new_target, cmd_rx);
             self.center_tx = Some(cmd_tx);
         }
@@ -489,6 +488,7 @@ impl Manager {
         let zone_name = std::env::var("ZL_IN_ZONE").unwrap_or("example.com.".into());
         let zone_file = std::env::var("ZL_IN_ZONE_FILE").unwrap_or("".into());
         let xfr_in = std::env::var("ZL_XFR_IN").unwrap_or("127.0.0.1:8055 KEY sec1-key".into());
+        let xfr_out = std::env::var("PS_XFR_OUT").unwrap_or("127.0.0.1:8055 KEY sec1-key".into());
         let tsig_key_name = std::env::var("ZL_TSIG_KEY_NAME").unwrap_or("sec1-key".into());
         let tsig_key = std::env::var("ZL_TSIG_KEY")
             .unwrap_or("hmac-sha256:zlCZbVJPIhobIs1gJNQfrsS3xCxxsR9pMUrGwG8OgG8=".into());
@@ -502,7 +502,8 @@ impl Manager {
                         "udp:127.0.0.1:8054".parse().unwrap(),
                     ],
                     zones: Arc::new(HashMap::from([(zone_name.clone(), zone_file)])),
-                    xfr_in: Arc::new(HashMap::from([(zone_name, xfr_in)])),
+                    xfr_in: Arc::new(HashMap::from([(zone_name.clone(), xfr_in)])),
+                    xfr_out: Arc::new(HashMap::from([(zone_name.clone(), xfr_out.clone())])),
                     tsig_keys: HashMap::from([(tsig_key_name, tsig_key)]),
                     update_tx: update_tx.clone(),
                     cmd_rx: zl_rx,
@@ -515,10 +516,7 @@ impl Manager {
                         "tcp:127.0.0.1:8056".parse().unwrap(),
                         "udp:127.0.0.1:8056".parse().unwrap(),
                     ],
-                    xfr_out: HashMap::from([(
-                        "example.com".into(),
-                        "127.0.0.1:8055 KEY sec1-key".into(),
-                    )]),
+                    xfr_out: HashMap::from([(zone_name, xfr_out)]),
                     hooks: vec![String::from("/tmp/approve_or_deny.sh")],
                     mode: zone_server::Mode::Prepublish,
                     source: zone_server::Source::UnsignedZones,
@@ -592,7 +590,6 @@ impl Manager {
                 Unit::HttpServer(HttpServer {
                     // TODO: config/argument option
                     listen_addr: "127.0.0.1:8950".parse().unwrap(),
-                    // zones: self.zones.clone(),
                     cmd_rx: Some(http_rx),
                 }),
             ),
@@ -616,7 +613,7 @@ impl Manager {
         }
     }
 
-    pub fn terminate(&mut self) {
+    pub async fn terminate(&mut self) {
         let units = [
             ("ZL", self.loader_tx.take().unwrap()),
             ("RS", self.review_tx.take().unwrap()),
@@ -627,18 +624,15 @@ impl Manager {
         ];
         for (name, tx) in units {
             info!("Stopping unit '{name}'");
-            tokio::spawn(async move {
-                let _ = tx.send(ApplicationCommand::Terminate).await;
-                tx.closed().await;
-            });
+            let _ = tx.send(ApplicationCommand::Terminate);
+            tx.closed().await;
         }
 
         {
-            let cmd_tx = Arc::new(self.center_tx.take().unwrap());
-            Self::terminate_target("CC", cmd_tx.clone());
-            while !cmd_tx.is_closed() {
-                std::thread::sleep(Duration::from_millis(10));
-            }
+            info!("Stopping target 'CC'");
+            let tx = self.center_tx.take().unwrap();
+            let _ = tx.send(TargetCommand::Terminate);
+            tx.closed().await;
         }
     }
 
@@ -646,15 +640,12 @@ impl Manager {
         tokio::spawn(new_unit.run(component));
     }
 
-    fn spawn_target(component: Component, new_target: Target, cmd_rx: Receiver<TargetCommand>) {
+    fn spawn_target(
+        component: Component,
+        new_target: Target,
+        cmd_rx: mpsc::UnboundedReceiver<TargetCommand>,
+    ) {
         tokio::spawn(new_target.run(component, cmd_rx));
-    }
-
-    fn terminate_target(name: &str, sender: Arc<Sender<TargetCommand>>) {
-        info!("Stopping target '{name}'");
-        tokio::spawn(async move {
-            let _ = sender.send(TargetCommand::Terminate).await;
-        });
     }
 
     /// Returns a new reference to the manager’s metrics collection.
