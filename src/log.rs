@@ -48,22 +48,16 @@ impl Logger {
         };
 
         if let Some(inner) = &*inner {
-            let primary = if !inner.primary.matches(&config.target.value) {
-                Some(PrimaryLogger::new(&config.target.value)?)
+            let primary = if !inner.primary.matches(config.target.value()) {
+                Some(PrimaryLogger::new(config.target.value())?)
             } else {
                 None
             };
 
-            let level = config.level.value.into();
+            let level = (*config.level.value()).into();
 
-            let trace_targets = Some(
-                config
-                    .trace_targets
-                    .iter()
-                    .map(|v| v.value.clone())
-                    .collect(),
-            )
-            .filter(|trace_targets| &inner.trace_targets != trace_targets);
+            let trace_targets = Some(config.trace_targets.value().clone())
+                .filter(|trace_targets| &inner.trace_targets != trace_targets);
 
             if primary.is_none() && inner.level == level && trace_targets.is_none() {
                 return Ok(None);
@@ -76,15 +70,9 @@ impl Logger {
             }))
         } else {
             Ok(Some(PreparedChange {
-                primary: Some(PrimaryLogger::new(&config.target.value)?),
-                level: config.level.value.into(),
-                trace_targets: Some(
-                    config
-                        .trace_targets
-                        .iter()
-                        .map(|v| v.value.clone())
-                        .collect(),
-                ),
+                primary: Some(PrimaryLogger::new(config.target.value())?),
+                level: (*config.level.value()).into(),
+                trace_targets: Some(config.trace_targets.value().clone()),
             }))
         }
     }

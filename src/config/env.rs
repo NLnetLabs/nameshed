@@ -4,7 +4,7 @@ use std::fmt;
 
 use camino::{Utf8Path, Utf8PathBuf};
 
-use super::{Config, LogLevel, LogTarget, Setting, SettingSource};
+use super::{Config, LogLevel, LogTarget};
 
 //----------- EnvSpec ----------------------------------------------------------
 
@@ -21,7 +21,7 @@ pub struct EnvSpec {
     pub log_target: Option<LogTargetSpec>,
 
     /// A set of targets to trace.
-    pub log_trace_targets: foldhash::HashSet<Box<str>>,
+    pub log_trace_targets: Option<foldhash::HashSet<Box<str>>>,
 }
 
 impl EnvSpec {
@@ -33,7 +33,7 @@ impl EnvSpec {
                 .transpose()
         }
 
-        let config_path =
+        let config =
             var("NAMESHED_CONFIG_PATH")?.map(|path| Utf8PathBuf::from(path).into_boxed_path());
 
         let log_level = var("NAMESHED_LOG_LEVEL")?
@@ -50,16 +50,15 @@ impl EnvSpec {
             })
             .transpose()?;
 
-        let log = var("NAMESHED_LOG")?.map(LogTargetSpec::parse).transpose()?;
+        let log_target = var("NAMESHED_LOG")?.map(LogTargetSpec::parse).transpose()?;
 
         let log_trace_targets = var("NAMESHED_LOG_TRACE_TARGETS")?
-            .map(|value| value.split(",").map(|s| s.into()).collect())
-            .unwrap_or_default();
+            .map(|value| value.split(",").map(|s| s.into()).collect());
 
         Ok(Self {
-            config: config_path,
+            config,
             log_level,
-            log_target: log,
+            log_target,
             log_trace_targets,
         })
     }
@@ -67,19 +66,10 @@ impl EnvSpec {
     /// Merge this into a [`Config`].
     pub fn merge(self, config: &mut Config) {
         let daemon = &mut config.daemon;
-        let source = SettingSource::Env;
-        daemon.logging.level.merge_value(self.log_level, source);
-        daemon
-            .logging
-            .target
-            .merge_value(self.log_target.map(|t| t.build()), source);
-        for value in self.log_trace_targets {
-            daemon
-                .logging
-                .trace_targets
-                .insert(Setting { source, value });
-        }
-        daemon.config_file.merge_value(self.config, source);
+        daemon.logging.level.env = self.log_level;
+        daemon.logging.target.env = self.log_target.map(|t| t.build());
+        daemon.logging.trace_targets.env = self.log_trace_targets;
+        daemon.config_file.env = self.config;
     }
 }
 
