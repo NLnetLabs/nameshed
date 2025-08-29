@@ -173,24 +173,24 @@ impl HttpServer {
     }
 
     async fn zones_list(State(state): State<Arc<HttpServerState>>) -> Json<ZonesListResult> {
-        let state = state.read().await;
+        let component = state.component.read().await;
 
         // The zone trees in the Component overlap. Therefore we take the
         // furthest a zone has progressed. We use a BTreeMap to sort the zones
         // while we're doing this.
         let mut all_zones = BTreeMap::new();
 
-        let unsigned_zones = state.unsigned_zones().load();
+        let unsigned_zones = component.unsigned_zones().load();
         for zone in unsigned_zones.iter_zones() {
             all_zones.insert(zone.apex_name().clone(), ZoneStage::Unsigned);
         }
 
-        let unsigned_zones = state.signed_zones().load();
+        let unsigned_zones = component.signed_zones().load();
         for zone in unsigned_zones.iter_zones() {
             all_zones.insert(zone.apex_name().clone(), ZoneStage::Signed);
         }
 
-        let unsigned_zones = state.published_zones().load();
+        let unsigned_zones = component.published_zones().load();
         for zone in unsigned_zones.iter_zones() {
             all_zones.insert(zone.apex_name().clone(), ZoneStage::Published);
         }
@@ -327,6 +327,8 @@ impl HttpServer {
         let (tx, mut rx) = mpsc::channel(10);
         state
             .component
+            .read()
+            .await
             .send_command(
                 unit,
                 ApplicationCommand::HandleZoneReviewApiStatus { http_tx: tx },
@@ -380,6 +382,8 @@ impl HttpServer {
                     let (tx, mut rx) = mpsc::channel(10);
                     state
                         .component
+                        .read()
+                        .await
                         .send_command(
                             unit,
                             ApplicationCommand::HandleZoneReviewApi {

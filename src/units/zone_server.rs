@@ -657,7 +657,7 @@ impl ZoneReviewApi {
                                     .entry((zone_name.clone(), zone_serial))
                                     .and_modify(|instant| *instant = approved_at)
                                     .or_insert(approved_at);
-                                self.update_tx.send(event).await.unwrap();
+                                self.update_tx.send(event).unwrap();
                                 remove_approvals = true;
                             }
                         }
@@ -692,7 +692,7 @@ impl ZoneReviewApi {
 //------------ ZoneReviewApi -------------------------------------------------
 
 struct ZoneReviewApi {
-    update_tx: mpsc::Sender<Update>,
+    update_tx: mpsc::UnboundedSender<Update>,
     #[allow(clippy::type_complexity)]
     pending_approvals: Arc<RwLock<HashMap<(Name<Bytes>, Serial), Vec<Uuid>>>>,
     last_approvals: Arc<RwLock<HashMap<(Name<Bytes>, Serial), Instant>>>,
@@ -705,7 +705,7 @@ struct ZoneReviewApi {
 impl ZoneReviewApi {
     #[allow(clippy::type_complexity)]
     fn new(
-        update_tx: mpsc::Sender<Update>,
+        update_tx: mpsc::UnboundedSender<Update>,
         pending_approvals: Arc<RwLock<HashMap<(Name<Bytes>, Serial), Vec<Uuid>>>>,
         last_approvals: Arc<RwLock<HashMap<(Name<Bytes>, Serial), Instant>>>,
         zones: XfrDataProvidingZonesWrapper,
