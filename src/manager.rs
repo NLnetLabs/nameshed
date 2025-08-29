@@ -4,6 +4,7 @@ use arc_swap::ArcSwap;
 use log::{debug, info};
 use std::collections::HashMap;
 use std::fmt::Display;
+use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 
@@ -19,7 +20,7 @@ use crate::units::zone_loader::ZoneLoader;
 use crate::units::zone_server::{self, ZoneServerUnit};
 use crate::units::zone_signer::{KmipServerConnectionSettings, TomlDenialConfig, ZoneSignerUnit};
 use crate::units::Unit;
-use domain::zonetree::ZoneTree;
+use domain::zonetree::{StoredName, ZoneTree};
 
 //------------ Component -----------------------------------------------------
 
@@ -449,7 +450,10 @@ impl Manager {
             }
         }
 
-        let zone_name = std::env::var("ZL_IN_ZONE").unwrap_or("example.com.".into());
+        let zone_name = StoredName::from_str(
+            &std::env::var("ZL_IN_ZONE").unwrap_or("example.com.".to_string()),
+        )
+        .unwrap();
         let xfr_in = std::env::var("ZL_XFR_IN").unwrap_or("127.0.0.1:8055 KEY sec1-key".into());
         let xfr_out = std::env::var("PS_XFR_OUT").unwrap_or("127.0.0.1:8055 KEY sec1-key".into());
         let tsig_key_name = std::env::var("ZL_TSIG_KEY_NAME").unwrap_or("sec1-key".into());

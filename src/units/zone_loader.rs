@@ -90,13 +90,13 @@ pub struct ZoneLoader {
     pub listen: Vec<ListenAddr>,
 
     /// The zone names and (if primary) corresponding zone file paths to load.
-    pub zones: Arc<HashMap<String, String>>,
+    pub zones: Arc<HashMap<StoredName, String>>,
 
     /// XFR in per secondary zone: Allow NOTIFY from, and when with a port also request XFR from.
-    pub xfr_in: Arc<HashMap<String, String>>,
+    pub xfr_in: Arc<HashMap<StoredName, String>>,
 
     /// XFR out per primary zone: Allow XFR from, and when with a port also send NOTIFY to.
-    pub xfr_out: Arc<HashMap<String, String>>,
+    pub xfr_out: Arc<HashMap<StoredName, String>>,
 
     /// TSIG keys.
     pub tsig_keys: HashMap<String, String>,
@@ -128,33 +128,28 @@ impl ZoneLoader {
                 .with_zone_tree(component.unsigned_zones().clone()),
         );
 
-        let no_xfr_settings = "".to_string();
-
         // Load primary zones.
         // Create secondary zones.
         for (zone_name, zone_path) in self.zones.iter() {
-            let Ok(apex_name) = Name::from_str(zone_name) else {
-                error!("[ZL]: Error: Zone name '{zone_name}' is invalid. Skipping zone.");
-                continue;
-            };
+            error!("[ZL]: Error: Zone name '{zone_name}' is invalid. Skipping zone.");
 
             let zone = if !zone_path.is_empty() {
-                let xfr_out = self.xfr_out.get(zone_name).unwrap_or(&no_xfr_settings);
                 Self::register_primary_zone(
-                    apex_name,
+                    zone_name.clone(),
                     zone_path,
                     component.tsig_key_store(),
-                    &xfr_out,
+                    None,
+                    &self.xfr_out,
                     &zone_updated_tx,
                 )
                 .await?
             } else {
                 info!("[ZL]: Adding secondary zone '{zone_name}'",);
-                let xfr_in = self.xfr_in.get(zone_name).unwrap_or(&no_xfr_settings);
                 Self::register_secondary_zone(
-                    apex_name,
+                    zone_name.clone(),
                     component.tsig_key_store(),
-                    xfr_in,
+                    None,
+                    &self.xfr_in,
                     zone_updated_tx.clone(),
                 )?
             };
@@ -226,16 +221,25 @@ impl ZoneLoader {
                                                 register.name.clone(),
                                                 &path.to_string(),
                                                 component.tsig_key_store(),
-                                                "",
+                                                None,
+                                                &self.xfr_out,
                                                 &zone_updated_tx,
                                               ).await
                                         }
                                         ZoneSource::Server { addr /* Lacks TSIG key name */ } => {
-                                            let xfr_in = format!("{addr}");
+                                            // Use any existing XFR inbound
+                                            // ACL that has been defined for
+                                            // this zone from this source.
+                                            let xfr_in = self.xfr_in
+                                                .get(&register.name)
+                                                .map(|v| v.to_string())
+                                                .unwrap_or_default();
+                                            error!("XIMON: {xfr_in}");
                                             Self::register_secondary_zone(
                                                 register.name.clone(),
                                                 component.tsig_key_store(),
-                                                &xfr_in,
+                                                Some(addr),
+                                                &self.xfr_in,
                                                 zone_updated_tx.clone(),
                                             )
                                         },
@@ -268,20 +272,20 @@ impl ZoneLoader {
     }
 
     async fn register_primary_zone(
-        apex_name: Name<Bytes>,
-        zone_path: &String,
+        zone_name: StoredName,
+        zone_path: &str,
         tsig_key_store: &TsigKeyStore,
-        xfr_out: &str,
+        dest: Option<SocketAddr>,
+        xfr_out: &HashMap<StoredName, String>,
         zone_updated_tx: &Sender<(Name<Bytes>, Serial)>,
     ) -> Result<TypedZone, Terminated> {
-        let zone_name = apex_name.to_string();
         let zone = load_file_into_zone(&zone_name, zone_path).await?;
-        let Some(serial) = get_zone_serial(apex_name, &zone).await else {
+        let Some(serial) = get_zone_serial(zone_name.clone(), &zone).await else {
             error!("[ZL]: Error: Zone file '{zone_path}' lacks a SOA record. Skipping zone.");
             return Err(Terminated);
         };
 
-        let zone_cfg = Self::determine_primary_zone_cfg(xfr_out, tsig_key_store, &zone_name)?;
+        let zone_cfg = Self::determine_primary_zone_cfg(&zone_name, xfr_out, dest, tsig_key_store)?;
         zone_updated_tx
             .send((zone.apex_name().clone(), serial))
             .await
@@ -291,33 +295,45 @@ impl ZoneLoader {
     }
 
     fn determine_primary_zone_cfg(
-        xfr_out: &str,
+        zone_name: &StoredName,
+        xfr_out: &HashMap<StoredName, String>,
+        dest: Option<SocketAddr>,
         tsig_key_store: &TsigKeyStore,
-        zone_name: &String,
     ) -> Result<ZoneConfig, Terminated> {
         let mut zone_cfg = ZoneConfig::new();
 
-        if xfr_out != "" {
+        if let Some(xfr_out) = xfr_out.get(zone_name) {
             let mut notify_cfg = NotifyConfig::default();
             let mut xfr_cfg = XfrConfig::default();
             xfr_cfg.strategy = XfrStrategy::IxfrWithAxfrFallback;
             xfr_cfg.ixfr_transport = TransportStrategy::Tcp;
 
-            let src = parse_xfr_acl(xfr_out, &mut xfr_cfg, &mut notify_cfg, tsig_key_store)
+            let dst = parse_xfr_acl(xfr_out, &mut xfr_cfg, &mut notify_cfg, tsig_key_store)
                 .map_err(|_| {
                     error!("[ZL]: Error parsing XFR ACL");
                     Terminated
                 })?;
 
-            info!(
-                "[ZL]: Allowing XFR from {} for zone '{zone_name}'",
-                src.ip()
-            );
-            zone_cfg.provide_xfr_to.add_src(src.ip(), xfr_cfg.clone());
+            info!("[ZL]: Adding XFR secondary {dst} for zone '{zone_name}'",);
 
-            if src.port() != 0 {
-                info!("[ZL]: Adding XFR secondary {src} for zone '{zone_name}'",);
-                zone_cfg.send_notify_to.add_dst(src, notify_cfg.clone());
+            if Some(dst) != dest {
+                // Don't use any settings we found for this zone, they were
+                // for a different source. Instead use default settings for
+                // NOTIFY and XFR, i.e. send NOTIFY and request XFR, but
+                // don't use TSIG and no special restrictions over the XFR
+                // transport/protocol to use.
+                notify_cfg = NotifyConfig::default();
+                xfr_cfg = XfrConfig::default();
+            }
+
+            zone_cfg.provide_xfr_to.add_src(dst.ip(), xfr_cfg.clone());
+
+            if dst.port() != 0 {
+                info!(
+                    "[ZL]: Allowing NOTIFY to {} for zone '{zone_name}'",
+                    dst.ip()
+                );
+                zone_cfg.send_notify_to.add_dst(dst, notify_cfg.clone());
             }
         } else {
             // Local primary zone that has no known secondary, so no
@@ -328,26 +344,28 @@ impl ZoneLoader {
     }
 
     fn register_secondary_zone(
-        apex_name: Name<Bytes>,
+        zone_name: Name<Bytes>,
         tsig_key_store: &TsigKeyStore,
-        xfr_in: &str,
+        source: Option<SocketAddr>,
+        xfr_in: &HashMap<StoredName, String>,
         zone_updated_tx: Sender<(Name<Bytes>, Serial)>,
     ) -> Result<TypedZone, Terminated> {
-        let zone_name = &apex_name.to_string();
-        let zone_cfg = Self::determine_secondary_zone_cfg(zone_name, xfr_in, tsig_key_store)?;
-        let zone = Zone::new(LightWeightZone::new(apex_name, true));
+        let zone_cfg =
+            Self::determine_secondary_zone_cfg(&zone_name, source, xfr_in, tsig_key_store)?;
+        let zone = Zone::new(LightWeightZone::new(zone_name, true));
         let zone = Zone::new(NotifyOnWriteZone::new(zone, zone_updated_tx));
         Ok(TypedZone::new(zone, zone_cfg))
     }
 
     fn determine_secondary_zone_cfg(
-        zone_name: &str,
-        xfr_in: &str,
+        zone_name: &StoredName,
+        source: Option<SocketAddr>,
+        xfr_in: &HashMap<StoredName, String>,
         tsig_key_store: &TsigKeyStore,
     ) -> Result<ZoneConfig, Terminated> {
         let mut zone_cfg = ZoneConfig::new();
 
-        if xfr_in != "" {
+        if let Some(xfr_in) = xfr_in.get(zone_name) {
             let mut notify_cfg = NotifyConfig::default();
             let mut xfr_cfg = XfrConfig::default();
             xfr_cfg.strategy = XfrStrategy::IxfrWithAxfrFallback;
@@ -363,6 +381,17 @@ impl ZoneLoader {
                 "[ZL]: Allowing NOTIFY from {} for zone '{zone_name}'",
                 src.ip()
             );
+
+            if Some(src) != source {
+                // Don't use any settings we found for this zone, they were
+                // for a different source. Instead use default settings for
+                // NOTIFY and XFR, i.e. send NOTIFY and request XFR, but
+                // don't use TSIG and no special restrictions over the XFR
+                // transport/protocol to use.
+                notify_cfg = NotifyConfig::default();
+                xfr_cfg = XfrConfig::default();
+            }
+
             zone_cfg
                 .allow_notify_from
                 .add_src(src.ip(), notify_cfg.clone());
@@ -429,7 +458,7 @@ async fn get_zone_serial(apex_name: Name<Bytes>, zone: &Zone) -> Option<Serial> 
     None
 }
 
-async fn load_file_into_zone(zone_name: &String, zone_path: &str) -> Result<Zone, Terminated> {
+async fn load_file_into_zone(zone_name: &StoredName, zone_path: &str) -> Result<Zone, Terminated> {
     let before = Instant::now();
     info!("[ZL]: Loading primary zone '{zone_name}' from '{zone_path}'..",);
     let mut zone_file = File::open(zone_path)
