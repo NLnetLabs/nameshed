@@ -67,10 +67,9 @@
 
 use domain::base::Serial;
 use domain::zonetree::StoredName;
-use std::{
-    fmt::{self, Debug},
-    net::IpAddr,
-};
+use std::fmt::{self, Debug};
+use std::net::IpAddr;
+use tokio::sync::mpsc;
 
 use crate::api::ZoneAdd;
 
@@ -133,6 +132,16 @@ pub struct Terminated;
 #[derive(Clone, Debug)]
 pub enum ApplicationCommand {
     Terminate,
+    HandleZoneReviewApi {
+        zone_name: StoredName,
+        zone_serial: Serial,
+        approval_token: String,
+        operation: String,
+        http_tx: mpsc::Sender<Result<(), ()>>,
+    },
+    HandleZoneReviewApiStatus {
+        http_tx: mpsc::Sender<String>,
+    },
     SeekApprovalForUnsignedZone {
         zone_name: StoredName,
         zone_serial: Serial,

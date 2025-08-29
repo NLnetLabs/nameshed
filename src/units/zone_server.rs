@@ -112,6 +112,9 @@ pub enum Source {
 
 #[derive(Debug)]
 pub struct ZoneServerUnit {
+    /// The relative path at which we should listen for HTTP query API requests
+    pub http_api_path: Arc<String>,
+
     /// Addresses and protocols to listen on.
     pub listen: Vec<ListenAddr>,
 
@@ -189,6 +192,7 @@ impl ZoneServerUnit {
 
         ZoneServer::new(
             component,
+            self.http_api_path,
             self.mode,
             self.source,
             self.hooks,
@@ -244,22 +248,25 @@ impl ZoneServerUnit {
 //------------ ZoneServer ----------------------------------------------------
 
 struct ZoneServer {
+    http_api_path: Arc<String>,
+    zone_review_api: Option<ZoneReviewApi>,
     component: Arc<RwLock<Component>>,
-    _mode: Mode,
+    mode: Mode,
     source: Source,
     hooks: Vec<String>,
-    _listen: Vec<ListenAddr>,
+    listen: Vec<ListenAddr>,
     #[allow(clippy::type_complexity)]
     pending_approvals: Arc<RwLock<HashMap<(Name<Bytes>, Serial), Vec<Uuid>>>>,
     #[allow(clippy::type_complexity)]
     last_approvals: Arc<RwLock<HashMap<(Name<Bytes>, Serial), Instant>>>,
-    _zones: XfrDataProvidingZonesWrapper,
+    zones: XfrDataProvidingZonesWrapper,
 }
 
 impl ZoneServer {
     #[allow(clippy::too_many_arguments)]
     fn new(
         component: Arc<RwLock<Component>>,
+        http_api_path: Arc<String>,
         mode: Mode,
         source: Source,
         hooks: Vec<String>,
@@ -267,24 +274,37 @@ impl ZoneServer {
         zones: XfrDataProvidingZonesWrapper,
     ) -> Self {
         Self {
+            zone_review_api: Default::default(),
+            http_api_path,
             component,
-            _mode: mode,
+            mode,
             source,
             hooks,
             pending_approvals: Default::default(),
             last_approvals: Default::default(),
-            _listen: listen,
-            _zones: zones,
+            listen,
+            zones,
         }
     }
 
     async fn run(
-        self,
+        mut self,
         unit_name: &str,
         update_tx: mpsc::UnboundedSender<Update>,
         mut cmd_rx: mpsc::UnboundedReceiver<ApplicationCommand>,
     ) -> Result<(), crate::comms::Terminated> {
         // let status_reporter = self.status_reporter.clone();
+
+        // Setup approval API endpoint
+        self.zone_review_api = Some(ZoneReviewApi::new(
+            update_tx.clone(),
+            self.pending_approvals.clone(),
+            self.last_approvals.clone(),
+            self.zones.clone(),
+            self.mode,
+            self.source,
+            self.listen.clone(),
+        ));
 
         let arc_self = Arc::new(self);
 
@@ -303,6 +323,45 @@ impl ZoneServer {
                         ApplicationCommand::Terminate => {
                             // arc_self.status_reporter.terminated();
                             return Err(Terminated);
+                        }
+
+                        ApplicationCommand::HandleZoneReviewApi {
+                            zone_name,
+                            zone_serial,
+                            approval_token,
+                            operation,
+                            http_tx,
+                        } => {
+                            http_tx
+                                .send(
+                                    arc_self
+                                        .zone_review_api
+                                        .as_ref()
+                                        .expect("This should have been setup on startup.")
+                                        .process_request(
+                                            zone_name.clone(),
+                                            zone_serial.clone(),
+                                            approval_token,
+                                            operation,
+                                        )
+                                    .await,
+                                )
+                                .await
+                                .expect("TODO: Should this always succeed?");
+                        }
+
+                        ApplicationCommand::HandleZoneReviewApiStatus { http_tx } => {
+                            http_tx
+                                .send(
+                                    arc_self
+                                        .zone_review_api
+                                        .as_ref()
+                                        .expect("This should have been setup on startup.")
+                                        .build_status_response()
+                                        .await,
+                                )
+                                .await
+                                .expect("TODO: Should this always succeed?");
                         }
 
                         ApplicationCommand::SeekApprovalForUnsignedZone {
@@ -362,6 +421,8 @@ impl ZoneServer {
                                 {
                                     Ok(_) => {
                                         info!("[{unit_name}]: Executed hook '{hook}' for {zone_type} zone '{zone_name}' at serial {zone_serial}");
+                                        info!("[{unit_name}]: Confirm with HTTP GET {}approve/{approval_token}?zone={zone_name}&serial={zone_serial}", arc_self.http_api_path);
+                                        info!("[{unit_name}]: Reject with HTTP GET {}reject/{approval_token}?zone={zone_name}&serial={zone_serial}", arc_self.http_api_path);
                                     }
                                     Err(err) => {
                                         error!(
@@ -555,4 +616,208 @@ fn zone_server_service(
     let builder = mk_builder_for_target();
     let additional = answer.to_message(request.message(), builder);
     Ok(CallResult::new(additional))
+}
+
+// TODO: Should we expire old pending approvals, e.g. a hook script failed and
+// they never got approved or rejected?
+impl ZoneReviewApi {
+    async fn process_request(
+        &self,
+        zone_name: Name<Bytes>,
+        zone_serial: Serial,
+        given_approval_token: &str,
+        operation: &str,
+    ) -> Result<(), ()> {
+        let mut status = Err(());
+        let mut remove_approvals = false;
+
+        // Are approvals pending for this serial of this zone?
+        if let Some(pending_approvals) = self
+            .pending_approvals
+            .write()
+            .await
+            .get_mut(&(zone_name.clone(), zone_serial))
+        {
+            // Is this a valid approval token?
+            if let Ok(given_uuid) = Uuid::from_str(given_approval_token) {
+                if let Some(idx) = pending_approvals
+                    .iter()
+                    .position(|&uuid| uuid == given_uuid)
+                {
+                    // For a rejection remove all pending approvals for the zone.
+                    // For an approval remove only the specified approval.
+                    match operation {
+                        "approve" => {
+                            status = Ok(());
+                            pending_approvals.remove(idx);
+
+                            if pending_approvals.is_empty() {
+                                let evt_zone_name = zone_name.clone();
+                                let (zone_type, event) = match self.source {
+                                    Source::UnsignedZones => (
+                                        "unsigned",
+                                        Update::UnsignedZoneApprovedEvent {
+                                            zone_name: evt_zone_name,
+                                            zone_serial,
+                                        },
+                                    ),
+                                    Source::SignedZones => (
+                                        "signed",
+                                        Update::SignedZoneApprovedEvent {
+                                            zone_name: evt_zone_name,
+                                            zone_serial,
+                                        },
+                                    ),
+                                    Source::PublishedZones => unreachable!(),
+                                };
+                                info!("Pending {zone_type} zone '{zone_name}' approved at serial {zone_serial}.");
+                                let approved_at = Instant::now();
+                                self.last_approvals
+                                    .write()
+                                    .await
+                                    .entry((zone_name.clone(), zone_serial))
+                                    .and_modify(|instant| *instant = approved_at)
+                                    .or_insert(approved_at);
+                                self.update_tx.send(event).unwrap();
+                                remove_approvals = true;
+                            }
+                        }
+                        "reject" => {
+                            info!("Pending zone '{zone_name}' rejected at serial {zone_serial}.");
+                            status = Ok(());
+                            remove_approvals = true;
+                        }
+                        _ => unreachable!(),
+                    }
+                } else {
+                    warn!("No pending approval found for zone name '{zone_name}' at serial {zone_serial} with approval token '{given_uuid}'.");
+                }
+            } else {
+                warn!("Invalid approval token '{given_approval_token}' in request.");
+            }
+        } else {
+            debug!("No pending approvals for zone name '{zone_name}' at serial {zone_serial}.");
+        }
+
+        if remove_approvals {
+            self.pending_approvals
+                .write()
+                .await
+                .remove(&(zone_name, zone_serial));
+        }
+
+        status
+    }
+}
+
+//------------ ZoneReviewApi -------------------------------------------------
+
+struct ZoneReviewApi {
+    update_tx: mpsc::UnboundedSender<Update>,
+    #[allow(clippy::type_complexity)]
+    pending_approvals: Arc<RwLock<HashMap<(Name<Bytes>, Serial), Vec<Uuid>>>>,
+    last_approvals: Arc<RwLock<HashMap<(Name<Bytes>, Serial), Instant>>>,
+    zones: XfrDataProvidingZonesWrapper,
+    mode: Mode,
+    source: Source,
+    listen: Vec<ListenAddr>,
+}
+
+impl ZoneReviewApi {
+    #[allow(clippy::type_complexity)]
+    fn new(
+        update_tx: mpsc::UnboundedSender<Update>,
+        pending_approvals: Arc<RwLock<HashMap<(Name<Bytes>, Serial), Vec<Uuid>>>>,
+        last_approvals: Arc<RwLock<HashMap<(Name<Bytes>, Serial), Instant>>>,
+        zones: XfrDataProvidingZonesWrapper,
+        mode: Mode,
+        source: Source,
+        listen: Vec<ListenAddr>,
+    ) -> Self {
+        Self {
+            update_tx,
+            pending_approvals,
+            last_approvals,
+            zones,
+            mode,
+            source,
+            listen,
+        }
+    }
+}
+
+impl ZoneReviewApi {
+    pub async fn build_status_response(&self) -> String {
+        let mut response_body = self.build_response_header().await;
+
+        self.build_status_response_body(&mut response_body).await;
+
+        self.build_response_footer(&mut response_body);
+
+        response_body
+    }
+
+    async fn build_response_header(&self) -> String {
+        let intro = match (self.mode, self.source) {
+            (Mode::Prepublish, Source::UnsignedZones) => {
+                "Pre-publication review server for unsigned zones"
+            }
+            (Mode::Prepublish, Source::SignedZones) => {
+                "Pre-publication review server for signed zones"
+            }
+            (Mode::Prepublish, Source::PublishedZones) => {
+                "Pre-publication review server for published zones"
+            }
+            (Mode::Publish, Source::UnsignedZones) => "Publication server for unsigned zones",
+            (Mode::Publish, Source::SignedZones) => "Publication server for signed zones",
+            (Mode::Publish, Source::PublishedZones) => "Publication server for published zones",
+        };
+
+        formatdoc! {
+            r#"
+            <!DOCTYPE html>
+            <html lang="en">
+                <head>
+                  <meta charset="UTF-8">
+                </head>
+                <body>
+                <pre>{intro}
+
+            "#,
+        }
+    }
+
+    async fn build_status_response_body(&self, response_body: &mut String) {
+        let num_zones = self.zones.zones.load().iter_zones().count();
+        response_body.push_str(&format!("Serving {num_zones} zones on:\n"));
+
+        for addr in &self.listen {
+            response_body.push_str(&format!("  - {addr}\n"));
+        }
+        response_body.push('\n');
+
+        for zone in self.zones.zones.load().iter_zones() {
+            response_body.push_str(&format!("zone:   {}\n", zone.apex_name()));
+            if self.mode == Mode::Prepublish {
+                for ((_zone_name, zone_serial), pending_approvals) in self
+                    .pending_approvals
+                    .read()
+                    .await
+                    .iter()
+                    .filter(|((zone_name, _), _)| zone_name == zone.apex_name())
+                {
+                    response_body.push_str(&format!(
+                        "        pending approvals for serial {zone_serial}: {}\n",
+                        pending_approvals.len()
+                    ));
+                }
+            }
+        }
+    }
+
+    fn build_response_footer(&self, response_body: &mut String) {
+        response_body.push_str("    </pre>\n");
+        response_body.push_str("  </body>\n");
+        response_body.push_str("</html>\n");
+    }
 }

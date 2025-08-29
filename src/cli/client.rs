@@ -4,8 +4,7 @@ use reqwest::{IntoUrl, Method, RequestBuilder};
 use url::Url;
 
 const HTTP_CLIENT_TIMEOUT: Duration = Duration::from_secs(120);
-static APP_USER_AGENT: &str =
-    concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"),);
+static APP_USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"),);
 
 pub struct NameshedApiClient {
     base_uri: Url,
