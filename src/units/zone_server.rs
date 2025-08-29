@@ -30,7 +30,7 @@ use domain::net::server::message::Request;
 use domain::net::server::middleware::cookies::CookiesMiddlewareSvc;
 use domain::net::server::middleware::edns::EdnsMiddlewareSvc;
 use domain::net::server::middleware::mandatory::MandatoryMiddlewareSvc;
-use domain::net::server::middleware::notify::{Notifiable, NotifyMiddlewareSvc};
+use domain::net::server::middleware::notify::{Notifiable, NotifyError, NotifyMiddlewareSvc};
 use domain::net::server::middleware::tsig::TsigMiddlewareSvc;
 use domain::net::server::middleware::xfr::XfrMiddlewareSvc;
 use domain::net::server::middleware::xfr::{XfrData, XfrDataProvider, XfrDataProviderError};
@@ -158,10 +158,16 @@ impl ZoneServerUnit {
             key_store: component.tsig_key_store().clone(),
         };
 
+        // Propagate NOTIFY messages if this is the publication server.
+        let notifier = LoaderNotifier {
+            enabled: self.source == Source::PublishedZones,
+            update_tx: self.update_tx.clone(),
+        };
+
         // let svc = ZoneServerService::new(zones.clone());
         let svc = service_fn(zone_server_service, zones.clone());
         let svc = XfrMiddlewareSvc::new(svc, zones.clone(), max_concurrency);
-        let svc = NotifyMiddlewareSvc::new(svc, zones.clone());
+        let svc = NotifyMiddlewareSvc::new(svc, notifier);
         let svc = TsigMiddlewareSvc::new(svc, component.tsig_key_store().clone());
         let svc = CookiesMiddlewareSvc::with_random_secret(svc);
         let svc = EdnsMiddlewareSvc::new(svc);
@@ -433,26 +439,6 @@ struct XfrDataProvidingZonesWrapper {
     key_store: TsigKeyStore,
 }
 
-impl Notifiable for XfrDataProvidingZonesWrapper {
-    fn notify_zone_changed(
-        &self,
-        _class: Class,
-        _apex_name: &Name<Bytes>,
-        _serial: Option<Serial>,
-        _source: IpAddr,
-    ) -> Pin<
-        Box<
-            dyn Future<Output = Result<(), domain::net::server::middleware::notify::NotifyError>>
-                + Sync
-                + Send
-                + '_,
-        >,
-    > {
-        // TODO: Should we check here if we have the zone?
-        Box::pin(ready(Ok(())))
-    }
-}
-
 impl XfrDataProvider<Option<<TsigKeyStore as KeyStore>::Key>> for XfrDataProvidingZonesWrapper {
     type Diff = EmptyZoneDiff;
 
@@ -496,6 +482,41 @@ impl KeyStore for XfrDataProvidingZonesWrapper {
 
     fn get_key<N: ToName>(&self, name: &N, algorithm: Algorithm) -> Option<Self::Key> {
         self.key_store.get_key(name, algorithm)
+    }
+}
+
+//----------- LoaderNotifier ---------------------------------------------------
+
+/// A forwarder of NOTIFY messages to the zone loader.
+#[derive(Clone, Debug)]
+pub struct LoaderNotifier {
+    /// Whether the forwarder is enabled.
+    enabled: bool,
+
+    /// A channel to propagate updates to Nameshed.
+    update_tx: mpsc::UnboundedSender<Update>,
+}
+
+impl Notifiable for LoaderNotifier {
+    // TODO: Get the SOA serial in the NOTIFY message.
+    fn notify_zone_changed(
+        &self,
+        class: Class,
+        apex_name: &Name<Bytes>,
+        serial: Option<Serial>,
+        source: IpAddr,
+    ) -> Pin<Box<dyn Future<Output = Result<(), NotifyError>> + Sync + Send + '_>> {
+        // Don't do anything if the notifier is disabled.
+        if self.enabled && class == Class::IN {
+            // Propagate a request for the zone refresh.
+            let _ = self.update_tx.send(Update::RefreshZone {
+                zone_name: apex_name.clone(),
+                source: Some(source),
+                serial,
+            });
+        }
+
+        Box::pin(std::future::ready(Ok(())))
     }
 }
 
