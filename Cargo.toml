@@ -116,11 +116,11 @@ assets = [
 		"usr/bin/",
 		"755",
 	],
-	[
-		"target/release/cascadec",
-		"usr/bin/",
-		"755",
-	],
+	# [
+	#     "target/release/cascadec",
+	#     "usr/bin/",
+	#     "755",
+	# ],
 	[
 		"README.md",
 		"usr/share/doc/cascade/",
