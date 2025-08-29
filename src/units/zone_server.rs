@@ -439,6 +439,7 @@ impl Notifiable for XfrDataProvidingZonesWrapper {
         &self,
         _class: Class,
         _apex_name: &Name<Bytes>,
+        _serial: Option<Serial>,
         _source: IpAddr,
     ) -> Pin<
         Box<
