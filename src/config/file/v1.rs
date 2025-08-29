@@ -16,6 +16,14 @@ use crate::config::{
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields, default)]
 pub struct Spec {
+    /// The directory storing policy files.
+    #[serde(default = "Spec::policy_dir_default")]
+    pub policy_dir: Box<Utf8Path>,
+
+    /// The directory storing per-zone state files.
+    #[serde(default = "Spec::zone_state_dir_default")]
+    pub zone_state_dir: Box<Utf8Path>,
+
     /// The file storing TSIG keys.
     #[serde(default = "Spec::tsig_store_path_default")]
     pub tsig_store_path: Box<Utf8Path>,
@@ -42,6 +50,8 @@ impl Spec {
     /// Build the internal configuration.
     pub fn build(self, config_file: Setting<Box<Utf8Path>>) -> Config {
         Config {
+            policy_dir: self.policy_dir,
+            zone_state_dir: self.zone_state_dir,
             tsig_store_path: self.tsig_store_path,
             daemon: self.daemon.build(config_file),
             loader: self.loader.build(),
@@ -57,6 +67,8 @@ impl Spec {
 impl Default for Spec {
     fn default() -> Self {
         Self {
+            policy_dir: Self::policy_dir_default(),
+            zone_state_dir: Self::zone_state_dir_default(),
             tsig_store_path: Self::tsig_store_path_default(),
             daemon: Default::default(),
             loader: Default::default(),
@@ -68,6 +80,16 @@ impl Default for Spec {
 }
 
 impl Spec {
+    /// The default value for `policy_dir`.
+    fn policy_dir_default() -> Box<Utf8Path> {
+        "/etc/nameshed/policies".into()
+    }
+
+    /// The default value for `zone_state_dir`.
+    fn zone_state_dir_default() -> Box<Utf8Path> {
+        "/var/db/nameshed/zone-state".into()
+    }
+
     /// The default value for `tsig_store_path`.
     fn tsig_store_path_default() -> Box<Utf8Path> {
         "/var/db/nameshed/tsig-keys".into()
