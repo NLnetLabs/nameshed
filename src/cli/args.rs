@@ -4,13 +4,13 @@ use clap::{command, Parser};
 
 use crate::config::LogLevel;
 
-use super::client::NameshedApiClient;
+use super::client::CascadeApiClient;
 use super::commands::Command;
 
 #[derive(Clone, Debug, Parser)]
 #[command(version, disable_help_subcommand = true)]
 pub struct Args {
-    /// The nameshed server instance to connect to
+    /// The cascade server instance to connect to
     #[arg(
         short = 's',
         long = "server",
@@ -29,7 +29,7 @@ pub struct Args {
 
 impl Args {
     pub async fn execute(self) -> Result<(), ()> {
-        let client = NameshedApiClient::new(format!("http://{}", self.server));
+        let client = CascadeApiClient::new(format!("http://{}", self.server));
         self.command.execute(client).await
     }
 }

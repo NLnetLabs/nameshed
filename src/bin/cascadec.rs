@@ -1,7 +1,7 @@
 use std::process::ExitCode;
 
 use clap::Parser;
-use nameshed::{
+use cascade::{
     cli::args::Args,
     config::{LogTarget, LoggingConfig, Setting, SettingSource},
     log::Logger,

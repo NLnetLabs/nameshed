@@ -1,5 +1,5 @@
 [package]
-name = "nameshed"
+name = "cascade"
 default-run = "cascade"
 description = "A batteries-included DNSSEC signing solution."
 version = "0.1.0"
@@ -7,12 +7,6 @@ edition = "2021"
 license = "BSD-3-Clause"
 exclude = [".github", ".gitignore"]
 readme = "README.md"
-
-[[bin]]
-name = "cascade"
-test = false
-bench = false
-path = "src/main.rs"
 
 [dependencies]
 arc-swap       = "1.7.0"

@@ -1,4 +1,4 @@
-//! Logging from Nameshed.
+//! Logging from Cascade.
 
 use std::io::Write;
 use std::net::Ipv4Addr;
@@ -10,7 +10,7 @@ use crate::config::{LogLevel, LogTarget, LoggingConfig};
 
 //----------- Logger -----------------------------------------------------------
 
-/// The state of the Nameshed logger.
+/// The state of the Cascade logger.
 pub struct Logger {
     /// The inner state of the logger.
     inner: RwLock<Option<Inner>>,
@@ -20,7 +20,7 @@ pub struct Logger {
 }
 
 impl Logger {
-    /// Launch the Nameshed logger.
+    /// Launch the Cascade logger.
     ///
     /// ## Panics
     ///

@@ -34,9 +34,9 @@ impl EnvSpec {
         }
 
         let config_path =
-            var("NAMESHED_CONFIG_PATH")?.map(|path| Utf8PathBuf::from(path).into_boxed_path());
+            var("CASCADE_CONFIG_PATH")?.map(|path| Utf8PathBuf::from(path).into_boxed_path());
 
-        let log_level = var("NAMESHED_LOG_LEVEL")?
+        let log_level = var("CASCADE_LOG_LEVEL")?
             .map(|value| match &*value {
                 "trace" => Ok(LogLevel::Trace),
                 "debug" => Ok(LogLevel::Debug),
@@ -50,9 +50,9 @@ impl EnvSpec {
             })
             .transpose()?;
 
-        let log = var("NAMESHED_LOG")?.map(LogTargetSpec::parse).transpose()?;
+        let log = var("CASCADE_LOG")?.map(LogTargetSpec::parse).transpose()?;
 
-        let log_trace_targets = var("NAMESHED_LOG_TRACE_TARGETS")?
+        let log_trace_targets = var("CASCADE_LOG_TRACE_TARGETS")?
             .map(|value| value.split(",").map(|s| s.into()).collect())
             .unwrap_or_default();
 
@@ -162,13 +162,13 @@ impl fmt::Display for EnvError {
             EnvError::InvalidLogLevel { value } => {
                 write!(
                     f,
-                    "'$NAMESHED_LOG_LEVEL' ({value:?}) is not a valid log level"
+                    "'$CASCADE_LOG_LEVEL' ({value:?}) is not a valid log level"
                 )
             }
             EnvError::InvalidLogTarget { value } => {
                 write!(
                     f,
-                    "'$NAMESHED_LOG' ({value:?}) is not a valid logging target [possible values: 'stdout', 'stderr', 'file:<PATH>', 'syslog']"
+                    "'$CASCADE_LOG' ({value:?}) is not a valid logging target [possible values: 'stdout', 'stderr', 'file:<PATH>', 'syslog']"
                 )
             }
         }

@@ -6,13 +6,13 @@ use url::Url;
 const HTTP_CLIENT_TIMEOUT: Duration = Duration::from_secs(120);
 static APP_USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"),);
 
-pub struct NameshedApiClient {
+pub struct CascadeApiClient {
     base_uri: Url,
 }
 
-impl NameshedApiClient {
+impl CascadeApiClient {
     pub fn new(base_uri: impl IntoUrl) -> Self {
-        NameshedApiClient {
+        CascadeApiClient {
             base_uri: base_uri.into_url().unwrap(),
         }
     }

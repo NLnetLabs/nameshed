@@ -17,7 +17,7 @@ use crate::config::{
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields, default)]
 pub struct Spec {
-    /// Configuring the Nameshed daemon.
+    /// Configuring the Cascade daemon.
     pub daemon: DaemonSpec,
 
     /// Configuring how zones are loaded.
@@ -50,7 +50,7 @@ impl Spec {
 
 //----------- DaemonSpec -------------------------------------------------------
 
-/// Configuring the Nameshed daemon.
+/// Configuring the Cascade daemon.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields, default)]
 pub struct DaemonSpec {
@@ -60,7 +60,7 @@ pub struct DaemonSpec {
     /// The target to log messages to.
     pub log_target: Option<LogTargetSpec>,
 
-    /// Whether Nameshed should fork on startup.
+    /// Whether Cascade should fork on startup.
     pub daemonize: Option<bool>,
 
     /// The path to a PID file to maintain.
@@ -97,7 +97,7 @@ impl DaemonSpec {
                 })
                 .unwrap_or(Setting {
                     source: SettingSource::Default,
-                    value: LogTarget::File("/var/log/nameshed.log".into()),
+                    value: LogTarget::File("/var/log/cascade.log".into()),
                 }),
             trace_targets: Default::default(),
         };
@@ -140,10 +140,10 @@ pub enum LogLevelSpec {
     /// Something does not appear to be correct.
     Warning,
 
-    /// Something went wrong (but Nameshed can recover).
+    /// Something went wrong (but Cascade can recover).
     Error,
 
-    /// Something went wrong and Nameshed can't function at all.
+    /// Something went wrong and Cascade can't function at all.
     Critical,
 }
 
