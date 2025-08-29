@@ -427,8 +427,8 @@ impl Manager {
 
         let mut kmip_server_conn_settings = HashMap::new();
 
-        let hsm_relay_host = std::env::var("NAMESHED_HSM_RELAY_HOST").ok();
-        let hsm_relay_port = std::env::var("NAMESHED_HSM_RELAY_PORT")
+        let hsm_relay_host = std::env::var("CASCADE_HSM_RELAY_HOST").ok();
+        let hsm_relay_port = std::env::var("CASCADE_HSM_RELAY_PORT")
             .ok()
             .and_then(|v| v.parse::<u16>().ok());
 
@@ -440,8 +440,8 @@ impl Manager {
                         server_addr,
                         server_port,
                         server_insecure: true,
-                        server_username: std::env::var("NAMESHED_HSM_RELAY_USERNAME").ok(),
-                        server_password: std::env::var("NAMESHED_HSM_RELAY_PASSWORD").ok(),
+                        server_username: std::env::var("CASCADE_HSM_RELAY_USERNAME").ok(),
+                        server_password: std::env::var("CASCADE_HSM_RELAY_PASSWORD").ok(),
                         ..Default::default()
                     },
                 );

@@ -28,7 +28,7 @@ impl FileSpec {
         Ok(toml::from_str(&text)?)
     }
 
-    /// Build the Nameshed configuration.
+    /// Build the Cascade configuration.
     pub fn build(self, config_file: Setting<Box<Utf8Path>>) -> Config {
         match self {
             Self::V1(spec) => spec.build(config_file),
@@ -38,7 +38,7 @@ impl FileSpec {
 
 //----------- FileError --------------------------------------------------------
 
-/// An error in processing Nameshed's configuration file.
+/// An error in processing Cascade's configuration file.
 #[derive(Clone, Debug)]
 pub enum FileError {
     /// The file could not be loaded.

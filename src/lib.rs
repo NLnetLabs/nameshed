@@ -1,4 +1,4 @@
-//! Nameshed
+//! Cascade
 
 pub mod api;
 pub mod cli;

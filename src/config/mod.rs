@@ -1,6 +1,6 @@
-//! Configuring Nameshed.
+//! Configuring Cascade.
 //!
-//! As per convention, Nameshed is configured from three sources (from least to
+//! As per convention, Cascade is configured from three sources (from least to
 //! most specific): configuration files, environment variables, and command-line
 //! arguments.  This module defines and collects together these sources.
 
@@ -19,7 +19,7 @@ pub mod file;
 
 //----------- Config -----------------------------------------------------------
 
-/// Configuration for Nameshed.
+/// Configuration for Cascade.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {
     /// Daemon-related configuration.
@@ -66,7 +66,7 @@ impl Config {
             }))
             .unwrap_or(Setting {
                 source: SettingSource::Default,
-                value: "/etc/nameshed/config.toml".into(),
+                value: "/etc/cascade/config.toml".into(),
             });
 
         // Load and parse the configuration file.
@@ -94,7 +94,7 @@ impl Config {
 
 //----------- DaemonConfig -----------------------------------------------------
 
-/// Daemon-related configuration for Nameshed.
+/// Daemon-related configuration for Cascade.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DaemonConfig {
     /// Logging configuration.
@@ -103,7 +103,7 @@ pub struct DaemonConfig {
     /// The location of the configuration file.
     pub config_file: Setting<Box<Utf8Path>>,
 
-    /// Whether Nameshed should fork on startup.
+    /// Whether Cascade should fork on startup.
     pub daemonize: Setting<bool>,
 
     /// The path to a PID file to maintain.
@@ -118,7 +118,7 @@ pub struct DaemonConfig {
 
 //----------- LogConfig --------------------------------------------------------
 
-/// Logging configuration for Nameshed.
+/// Logging configuration for Cascade.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LoggingConfig {
     /// The minimum severity of messages to log.
@@ -243,10 +243,10 @@ pub enum LogLevel {
     /// Something does not appear to be correct.
     Warning,
 
-    /// Something is wrong (but Nameshed can recover).
+    /// Something is wrong (but Cascade can recover).
     Error,
 
-    /// Something is wrong and Nameshed can't function at all.
+    /// Something is wrong and Cascade can't function at all.
     Critical,
 }
 
@@ -362,7 +362,7 @@ pub enum SettingSource {
 
 //----------- ConfigError ------------------------------------------------------
 
-/// An error in configuring Nameshed.
+/// An error in configuring Cascade.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConfigError {
     /// An error occurred regarding environment variables.

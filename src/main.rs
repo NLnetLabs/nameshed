@@ -1,13 +1,13 @@
 use clap::{crate_authors, crate_version};
-use nameshed::{config::Config, manager::Manager};
+use cascade::{config::Config, manager::Manager};
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
     // Initialize the logger in fallback mode.
-    let logger = nameshed::log::Logger::launch();
+    let logger = cascade::log::Logger::launch();
 
     // Set up the command-line interface.
-    let cmd = clap::Command::new("nameshed")
+    let cmd = clap::Command::new("cascade")
         .version(crate_version!())
         .author(crate_authors!())
         .next_line_help(true)
@@ -30,7 +30,7 @@ fn main() -> ExitCode {
     let config = match Config::process(&matches) {
         Ok(config) => config,
         Err(error) => {
-            eprintln!("Nameshed couldn't be configured: {error}");
+            eprintln!("Cascade couldn't be configured: {error}");
             return ExitCode::FAILURE;
         }
     };
@@ -80,7 +80,7 @@ fn main() -> ExitCode {
             }
         };
 
-        // Shut down Nameshed.
+        // Shut down Cascade.
         manager.terminate().await;
         result
     })

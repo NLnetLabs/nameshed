@@ -554,7 +554,7 @@ pub struct LoaderNotifier {
     /// Whether the forwarder is enabled.
     enabled: bool,
 
-    /// A channel to propagate updates to Nameshed.
+    /// A channel to propagate updates to Cascade.
     update_tx: mpsc::UnboundedSender<Update>,
 }
 

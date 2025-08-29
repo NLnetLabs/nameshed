@@ -1,17 +1,17 @@
-# Nameshed
+# Cascade
 
-**Nameshed will offer a flexible DNSSEC signing pipeline.** 
+**Cascade will offer a flexible DNSSEC signing pipeline.** 
 
 **A proof of concept (PoC) is scheduled to be available before October 2025,
 followed by a production grade release in Q4 2025. Do NOT use the 
 current codebase in production.**
 
 If you have questions, suggestions or feature requests, don't hesitate to
-[reach out](mailto:nameshed@nlnetlabs.nl)!
+[reach out](mailto:cascade@nlnetlabs.nl)!
 
 ## Pipeline Design
 
-![nameshed-pipeline 001](https://github.com/user-attachments/assets/0d9c599c-5362-4ee6-96bc-dc54de9c8c0f)
+![cascade-pipeline 001](https://github.com/user-attachments/assets/0d9c599c-5362-4ee6-96bc-dc54de9c8c0f)
 
 ## Architecture
 
@@ -26,7 +26,7 @@ component to its downstream (in the graph) components, and with indirect
 (message queue) based sending of commands out of graph order from any
 component to any other.
 
-The `nameshed.conf` is correspondingly modified to define the following
+The `cascade.conf` is correspondingly modified to define the following
 components:
 
   - ZL: "Zone Loader": An instance of `ZoneLoader` responsible for receiving

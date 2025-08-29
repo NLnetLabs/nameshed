@@ -1,0 +1,18 @@
+#!/bin/sh -e
+
+USER_ID="cascade"
+
+create_user() {
+    if id ${USER_ID} > /dev/null 2>&1; then return; fi
+	# `--home /nonexistent` required by
+	# https://www.debian.org/doc/debian-policy/ch-opersys.html#non-existent-home-directories
+    adduser --system --home /nonexistent --group ${USER_ID}
+}
+
+case "$1" in
+configure)
+    create_user
+    ;;
+esac
+
+#DEBHELPER#
