@@ -1,0 +1,16 @@
+#!/bin/sh -e
+
+USER_ID="cascade"
+
+create_user() {
+    if id ${USER_ID} > /dev/null 2>&1; then return; fi
+    adduser --system --group ${USER_ID}
+}
+
+case "$1" in
+configure)
+    create_user
+    ;;
+esac
+
+#DEBHELPER#

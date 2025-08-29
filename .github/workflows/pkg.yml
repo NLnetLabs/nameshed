@@ -10,4 +10,11 @@ on:
   # you to manually invoke this workflow on an arbitrary branch as needed.
   workflow_dispatch:
 
-# No jobs yet, see branch 'packaging'.
+jobs:
+  package:
+    uses: NLnetLabs/ploutos/.github/workflows/pkg-rust.yml@v8
+    with:
+      package_build_rules: pkg/rules/packages-to-build.yml
+      package_test_scripts_path: pkg/test-scripts/test-<package>.sh
+
+      rpm_scriptlets_path: pkg/rpm/scriptlets.toml

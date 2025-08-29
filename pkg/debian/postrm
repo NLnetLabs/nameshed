@@ -1,0 +1,16 @@
+#!/bin/sh -e
+
+CONFIG_FILE_PATH="/etc/cascade/cascade.conf"
+
+case "$1" in
+purge)
+    # Per https://www.debian.org/doc/debian-policy/ch-files.html#behavior
+    # "configuration files must be preserved when the package is removed, and
+    #  only deleted when the package is purged."
+    if [ -e ${CONFIG_FILE_PATH} ]; then
+        rm ${CONFIG_FILE_PATH}
+    fi
+    ;;
+esac
+
+#DEBHELPER#

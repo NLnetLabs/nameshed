@@ -1,0 +1,35 @@
+# This matrix definition is used as both the package_build_rules and the package_test_rules Ploutos packaging
+# workflow inputs.
+---
+pkg:
+  - 'cascade'
+image:
+  - "debian:trixie" # debian/13
+  - 'almalinux:10'
+target:
+  - 'x86_64'
+test-image:
+  # Set 'test-image' to the empty string for all matrix permutations so that the default ('image') will be used
+  # to launch an LXC container to test the created packages in. Why explicitly set what is already the default?
+  # If this isn't present, later entries in the include set below will overwrite earlier entries that differ
+  # only by their 'test-image' value. If however 'test-image' is present in the original matrix by defining it
+  # here, then 'included' entries will no longer overwrite each other because they alter a key that is present
+  # in the original matrix. This is just how GitHub Actions matrix include rules work.
+  - ""
+include:
+  - image: 'almalinux:10'
+    systemd_service_unit_file: pkg/common/cascade.service
+
+# 'mode' is not used by the package building workflow job, but is used by the package testing workflow job.
+# Ploutos will not include this key when using this matrix definition to generate package building matrix
+# permutations but will use it when generating package testing permutations.
+test-mode:   
+  - 'fresh-install'
+# - 'upgrade-from-published'
+
+# # Disable upgrade testing on Ubuntu Noble as we haven't published any packages for
+# # those O/S versions yet.
+# test-exclude:
+#   - pkg: 'cascade'
+#     image: 'ubuntu:noble'
+#     mode: 'upgrade-from-published'
