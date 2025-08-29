@@ -145,7 +145,7 @@ maintainer = "NLnet Labs <cascade@nlnetlabs.nl>"
 license-file = ["LICENSE", "0"]
 # TODO: come up with a description (also for the git repo)
 extended-description = "A batteries-included DNSSEC signing solution."
-depends = "$auto, passwd, dnst, cascade-hsm-relay, libssl-dev"
+depends = "$auto, passwd, dnst, cascade-hsm-relay"
 section = "net"
 priority = "optional"
 maintainer-scripts = "pkg/debian"
@@ -169,4 +169,3 @@ assets = [
 shadow-utils = "*"
 dnst = "*"
 cascade-hsm-relay = "*"
-openssl-devel = "*"
