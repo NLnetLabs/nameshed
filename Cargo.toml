@@ -1,6 +1,7 @@
 [package]
 name = "cascade"
 default-run = "cascade"
+description = "A batteries-included DNSSEC signing solution."
 version = "0.1.0"
 edition = "2021"
 license = "BSD-3-Clause"
