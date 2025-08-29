@@ -450,7 +450,6 @@ impl Manager {
         }
 
         let zone_name = std::env::var("ZL_IN_ZONE").unwrap_or("example.com.".into());
-        let zone_file = std::env::var("ZL_IN_ZONE_FILE").unwrap_or("".into());
         let xfr_in = std::env::var("ZL_XFR_IN").unwrap_or("127.0.0.1:8055 KEY sec1-key".into());
         let xfr_out = std::env::var("PS_XFR_OUT").unwrap_or("127.0.0.1:8055 KEY sec1-key".into());
         let tsig_key_name = std::env::var("ZL_TSIG_KEY_NAME").unwrap_or("sec1-key".into());
@@ -465,7 +464,7 @@ impl Manager {
                         "tcp:127.0.0.1:8054".parse().unwrap(),
                         "udp:127.0.0.1:8054".parse().unwrap(),
                     ],
-                    zones: Arc::new(HashMap::from([(zone_name.clone(), zone_file)])),
+                    zones: Default::default(),
                     xfr_in: Arc::new(HashMap::from([(zone_name.clone(), xfr_in)])),
                     xfr_out: Arc::new(HashMap::from([(zone_name.clone(), xfr_out.clone())])),
                     tsig_keys: HashMap::from([(tsig_key_name, tsig_key)]),
@@ -480,7 +479,7 @@ impl Manager {
                         "tcp:127.0.0.1:8056".parse().unwrap(),
                         "udp:127.0.0.1:8056".parse().unwrap(),
                     ],
-                    xfr_out: HashMap::from([(zone_name, xfr_out)]),
+                    xfr_out: HashMap::from([(zone_name.clone(), xfr_out)]),
                     // Temporarily disable hooks as the required HTTP functionality has been removed pending replacement.
                     hooks: vec![], // vec![String::from("/tmp/approve_or_deny.sh")],
                     mode: zone_server::Mode::Prepublish,
@@ -522,7 +521,7 @@ impl Manager {
                         "udp:127.0.0.1:8057".parse().unwrap(),
                     ],
                     xfr_out: HashMap::from([(
-                        "example.com".into(),
+                        zone_name.clone(),
                         "127.0.0.1:8055 KEY sec1-key".into(),
                     )]),
                     // Temporarily disable hooks as the required HTTP functionality has been removed pending replacement.
@@ -540,7 +539,7 @@ impl Manager {
                         "tcp:127.0.0.1:8058".parse().unwrap(),
                         "udp:127.0.0.1:8058".parse().unwrap(),
                     ],
-                    xfr_out: HashMap::from([("example.com".into(), "127.0.0.1:8055".into())]),
+                    xfr_out: HashMap::from([(zone_name.into(), "127.0.0.1:8055".into())]),
                     hooks: vec![],
                     mode: zone_server::Mode::Publish,
                     source: zone_server::Source::PublishedZones,
