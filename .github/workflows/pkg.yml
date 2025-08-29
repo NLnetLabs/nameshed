@@ -17,4 +17,6 @@ jobs:
       package_build_rules: pkg/rules/packages-to-build.yml
       package_test_scripts_path: pkg/test-scripts/test-<package>.sh
 
+      deb_extra_build_packages: libssl-dev
+      rpm_extra_build_packages: make openssl-devel
       rpm_scriptlets_path: pkg/rpm/scriptlets.toml
