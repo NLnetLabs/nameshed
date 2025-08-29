@@ -21,11 +21,8 @@ domain         = { git = "https://github.com/NLnetLabs/domain", branch = "patche
     "unstable-zonetree",
     "kmip",
 ] }
-fern           = "0.6.0"
 futures        = "0.3.17"
 futures-util   = "0.3"
-log            = "0.4"
-log-reroute    = "0.1.5"
 octseq         = { version = "0.5.2", default-features = false }
 parking_lot    = "0.11.2"
 tokio          = { version = "1.40", features = ["fs", "io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "sync", "test-util", "time", "tracing"] }
@@ -51,7 +48,6 @@ assert-json-diff   = "2.0"
 async-trait        = "0.1"
 atomic_enum        = "0.2.0"
 crossbeam-utils    = "0.8"
-env_logger         = "0.10"
 flate2             = "*"
 hashbrown          = "0.14"
 layout-rs          = { version = "0.1" }
@@ -67,6 +63,26 @@ uuid               = { version = "1.4", features = ["v4", "fast-rng"] }
 indoc              = "2.0.5"
 rayon = "1.10.0"
 
+# 'log' is a very popular logging crate, and is the primary means for Nameshed
+# to indicate what it's doing at any time.
+[dependencies.log]
+version = "0.4"
+
+# Nameshed contains many performance-sensitive hashmaps and is not expected to
+# be accessible to attackers.  'std's default hasher, which is slow but secure
+# against HashDoS attacks, is not appropriate.  A performant, cryptographically
+# insecure hash function is needed.
+#
+# - 'foldhash' is a fast, insecure, general-purpose hash function.
+#
+#   TODO: Who maintains it, and how well?
+#
+# - 'rustc-hash' is the hash function used by 'rustc'.  It trades hash quality
+#   for performance, as best suites 'rustc'.
+#
+#   TODO: Who maintains it, and how well?
+[dependencies.foldhash]
+version = "0.1.5"
 
 # Nameshed sometimes requires filesystem paths to be encoded within UTF-8 texts.
 # To conveniently resolve the conversion between the OS filesystem encoding and
@@ -79,7 +95,7 @@ features = ["serde1"]
 
 [target.'cfg(unix)'.dependencies]
 nix         = "0.22.0"
-syslog      = "6.1"
+syslog      = "7.0"
 
 [features]
 default = []
