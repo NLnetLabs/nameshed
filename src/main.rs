@@ -97,7 +97,17 @@ fn main() -> ExitCode {
         }
     }
 
-    // TODO: Load the TSIG store file.
+    // Load the TSIG store file.
+    match state.tsig_store.load(&state.config) {
+        Ok(()) => log::debug!("Loaded the TSIG store"),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            log::debug!("No TSIG store found; will create one");
+        }
+        Err(err) => {
+            log::error!("Failed to load the TSIG store: {err}");
+            return ExitCode::FAILURE;
+        }
+    }
 
     // TODO: daemonbase
     logger.apply(

@@ -22,11 +22,43 @@ pub struct Spec {
 impl Spec {
     /// Parse from this specification.
     pub fn parse(self, store: &mut TsigStore) {
-        store.map.clear();
-        for (name, key) in self.map {
-            let key = key.parse(&name);
-            store.map.insert(name, Arc::new(key));
+        // Write the loaded keys into a new hashmap, so keys that no longer
+        // exist can be detected easily.
+        let mut new_keys = foldhash::HashMap::default();
+
+        // Traveres all the loaded keys.
+        for (name, spec) in self.map {
+            // Check for an existing key of this name.
+            let key = if let Some(mut key) = store.map.remove(&name) {
+                spec.parse_into(&mut key);
+                key
+            } else {
+                log::info!("Loaded new TSIG key '{name}'");
+                spec.parse(&name)
+            };
+
+            // Record the new key.
+            let prev = new_keys.insert(name, key);
+            assert!(prev.is_none(), "there is at most one key per name");
         }
+
+        // Traverse keys that were no longer present.
+        for (name, key) in store.map.drain() {
+            // If any zones are using this key, keep it.
+            if !key.zones.is_empty() {
+                log::error!("The TSIG key '{name}' has been removed, but some zones are still using it; Cascade will preserve its internal copy");
+                let prev = new_keys.insert(name, key);
+                assert!(
+                    prev.is_none(),
+                    "'new_keys' and 'store.map' are disjoint sets"
+                );
+            } else {
+                log::info!("Forgetting now-removed TSIG key '{name}'");
+            }
+        }
+
+        // Update the set of keys.
+        store.map = new_keys;
     }
 
     /// Build into this specification.
@@ -62,9 +94,21 @@ impl KeySpec {
         // TODO: Support custom min-mac-len and signing-len values?
         match tsig::Key::new(self.alg.parse(), &self.data, name.clone(), None, None) {
             Ok(key) => TsigKey {
-                inner: key,
+                inner: Arc::new(key),
                 material: self.data,
+                zones: Default::default(),
             },
+            Err(tsig::NewKeyError::BadMinMacLen) => unreachable!(),
+            Err(tsig::NewKeyError::BadSigningLen) => unreachable!(),
+        }
+    }
+
+    /// Merge an existing key with this specification.
+    pub fn parse_into(self, dest: &mut TsigKey) {
+        // TODO: Support custom min-mac-len and signing-len values?
+        let name = dest.inner.name().clone();
+        match tsig::Key::new(self.alg.parse(), &self.data, name, None, None) {
+            Ok(key) => dest.inner = Arc::new(key),
             Err(tsig::NewKeyError::BadMinMacLen) => unreachable!(),
             Err(tsig::NewKeyError::BadSigningLen) => unreachable!(),
         }

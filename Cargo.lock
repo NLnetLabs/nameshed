@@ -347,6 +347,7 @@ dependencies = [
  "prometheus-parse",
  "rayon",
  "reqwest",
+ "ring 0.17.14",
  "rustls-pemfile 1.0.4",
  "serde",
  "serde_json",
