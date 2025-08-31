@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::policy::{
     KeyManagerPolicy, LoaderPolicy, Nsec3OptOutPolicy, PolicyVersion, ReviewPolicy, ServerPolicy,
-    SignerDenialPolicy, SignerPolicy,
+    SignerDenialPolicy, SignerPolicy, SignerSerialPolicy,
 };
 
 //----------- Spec -------------------------------------------------------------
@@ -109,6 +109,9 @@ impl KeyManagerSpec {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields, default)]
 pub struct SignerSpec {
+    /// The serial number generation policy.
+    pub serial_policy: SignerSerialPolicySpec,
+
     /// The offset for record signature inceptions, in seconds.
     pub sig_inception_offset: u64,
 
@@ -132,6 +135,7 @@ impl SignerSpec {
     /// Parse from this specification.
     pub fn parse(self) -> SignerPolicy {
         SignerPolicy {
+            serial_policy: self.serial_policy.parse(),
             sig_inception_offset: Duration::from_secs(self.sig_inception_offset),
             sig_validity_time: Duration::from_secs(self.sig_validity_time),
             denial: self.denial.parse(),
@@ -142,10 +146,57 @@ impl SignerSpec {
     /// Build into this specification.
     pub fn build(policy: &SignerPolicy) -> Self {
         Self {
+            serial_policy: SignerSerialPolicySpec::build(policy.serial_policy),
             sig_inception_offset: policy.sig_inception_offset.as_secs(),
             sig_validity_time: policy.sig_validity_time.as_secs(),
             denial: SignerDenialSpec::build(&policy.denial),
             review: ReviewSpec::build(&policy.review),
+        }
+    }
+}
+
+//----------- SignerSerialPolicySpec -------------------------------------------
+
+/// Policy for generating serial numbers.
+#[derive(Copy, Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub enum SignerSerialPolicySpec {
+    /// Use the same serial number as the unsigned zone.
+    Keep,
+
+    /// Increment the serial number on every change.
+    #[default]
+    Counter,
+
+    /// Use the current Unix time, in seconds.
+    ///
+    /// New versions of the zone cannot be generated in the same second.
+    UnixTime,
+
+    /// Set the serial number to `<YYYY><MM><DD><xx>`.
+    DateCounter,
+}
+
+//--- Conversion
+
+impl SignerSerialPolicySpec {
+    /// Parse from this specification.
+    pub fn parse(self) -> SignerSerialPolicy {
+        match self {
+            Self::Keep => SignerSerialPolicy::Keep,
+            Self::Counter => SignerSerialPolicy::Counter,
+            Self::UnixTime => SignerSerialPolicy::UnixTime,
+            Self::DateCounter => SignerSerialPolicy::DateCounter,
+        }
+    }
+
+    /// Build into this specification.
+    pub fn build(policy: SignerSerialPolicy) -> Self {
+        match policy {
+            SignerSerialPolicy::Keep => Self::Keep,
+            SignerSerialPolicy::Counter => Self::Counter,
+            SignerSerialPolicy::UnixTime => Self::UnixTime,
+            SignerSerialPolicy::DateCounter => Self::DateCounter,
         }
     }
 }

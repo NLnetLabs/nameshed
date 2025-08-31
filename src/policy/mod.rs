@@ -161,6 +161,12 @@ pub struct KeyManagerPolicy {}
 /// Policy for signing zones.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SignerPolicy {
+    /// The serial number generation policy.
+    ///
+    /// This is used to generate new SOA serial numbers, inserted into zones
+    /// being (re)signed.
+    pub serial_policy: SignerSerialPolicy,
+
     /// The offset for record signature inceptions.
     ///
     /// When DNS records are signed, the `RRSIG` signature records will record
@@ -180,7 +186,36 @@ pub struct SignerPolicy {
     //
     // TODO:
     // - Signing policy (disabled, pass-through?, enabled)
-    // - Serial number policy
+    // - Support keeping unsigned vs. signed zone serials distinct
+}
+
+//----------- SignerSerialPolicy -----------------------------------------------
+
+/// Policy for generating serial numbers.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum SignerSerialPolicy {
+    /// Use the same serial number as the unsigned zone.
+    ///
+    /// The zone cannot be resigned, not without a change in the underlying
+    /// unsigned contents.
+    Keep,
+
+    /// Increment the serial number on every change.
+    Counter,
+
+    /// Use the current Unix time, in seconds.
+    ///
+    /// New versions of the zone cannot be generated in the same second.
+    UnixTime,
+
+    /// Set the serial number to `<YYYY><MM><DD><xx>`.
+    ///
+    /// The serial number, when formatted in decimal, contains the calendar
+    /// date (in the UTC timezone).  The `<xx>` component is a simple counter;
+    /// at most 100 versions of the zone can be used per day.
+    //
+    // TODO: How to handle "emergency" situations where the zone will expire?
+    DateCounter,
 }
 
 //----------- SignerDenialPolicy -----------------------------------------------
