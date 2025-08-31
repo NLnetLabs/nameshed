@@ -107,6 +107,20 @@ impl CentralCommand {
     async fn direct_update(&self, event: Update) {
         info!("[CC]: Event received: {event:?}");
         let (msg, target, cmd) = match event {
+            Update::RefreshZone {
+                zone_name,
+                source,
+                serial,
+            } => (
+                "Instructing zone loader to refresh the zone",
+                "ZL",
+                ApplicationCommand::RefreshZone {
+                    zone_name,
+                    source,
+                    serial,
+                },
+            ),
+
             Update::UnsignedZoneUpdatedEvent {
                 zone_name,
                 zone_serial,

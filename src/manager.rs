@@ -11,6 +11,7 @@ use tokio::sync::mpsc::{self, Receiver, Sender};
 use crate::common::file_io::TheFileIo;
 use crate::common::tsig::TsigKeyStore;
 use crate::comms::ApplicationCommand;
+use crate::log::Logger;
 use crate::metrics;
 use crate::targets::central_command::{self, CentralCommandTarget};
 use crate::targets::Target;
@@ -132,6 +133,9 @@ pub struct Manager {
     /// Commands for the zone loader.
     loader_tx: Option<mpsc::UnboundedSender<ApplicationCommand>>,
 
+    /// The logger.
+    _logger: &'static Logger,
+
     /// Commands for the review server.
     review_tx: Option<mpsc::UnboundedSender<ApplicationCommand>>,
 
@@ -172,15 +176,9 @@ pub struct Manager {
     app_cmd_rx: Arc<tokio::sync::Mutex<Receiver<(String, ApplicationCommand)>>>,
 }
 
-impl Default for Manager {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Manager {
     /// Creates a new manager.
-    pub fn new() -> Self {
+    pub fn new(logger: &'static Logger) -> Self {
         let (app_cmd_tx, app_cmd_rx) = tokio::sync::mpsc::channel(10);
 
         let tsig_key_store = Default::default();
@@ -191,6 +189,7 @@ impl Manager {
         #[allow(clippy::let_and_return, clippy::default_constructed_unit_structs)]
         let manager = Manager {
             loader_tx: None,
+            _logger: logger,
             review_tx: None,
             key_manager_tx: None,
             signer_tx: None,
@@ -464,10 +463,6 @@ impl Manager {
             (
                 String::from("ZL"),
                 Unit::ZoneLoader(ZoneLoader {
-                    listen: vec![
-                        "tcp:127.0.0.1:8054".parse().unwrap(),
-                        "udp:127.0.0.1:8054".parse().unwrap(),
-                    ],
                     zones: Default::default(),
                     xfr_in: Arc::new(HashMap::from([(zone_name.clone(), xfr_in)])),
                     xfr_out: Arc::new(HashMap::from([(zone_name.clone(), xfr_out.clone())])),
@@ -484,12 +479,12 @@ impl Manager {
                         "udp:127.0.0.1:8056".parse().unwrap(),
                     ],
                     xfr_out: HashMap::from([(zone_name.clone(), xfr_out)]),
-                    // Temporarily disable hooks as the required HTTP functionality has been removed pending replacement.
-                    hooks: vec![], // vec![String::from("/tmp/approve_or_deny.sh")],
+                    hooks: vec![String::from("/tmp/approve_or_deny.sh")],
                     mode: zone_server::Mode::Prepublish,
                     source: zone_server::Source::UnsignedZones,
                     update_tx: update_tx.clone(),
                     cmd_rx: rs_rx,
+                    http_api_path: Arc::new(String::from("/_unit/rs/")),
                 }),
             ),
             (
@@ -520,6 +515,7 @@ impl Manager {
             (
                 String::from("RS2"),
                 Unit::ZoneServer(ZoneServerUnit {
+                    http_api_path: Arc::new(String::from("/_unit/rs2/")),
                     listen: vec![
                         "tcp:127.0.0.1:8057".parse().unwrap(),
                         "udp:127.0.0.1:8057".parse().unwrap(),
@@ -528,8 +524,7 @@ impl Manager {
                         zone_name.clone(),
                         "127.0.0.1:8055 KEY sec1-key".into(),
                     )]),
-                    // Temporarily disable hooks as the required HTTP functionality has been removed pending replacement.
-                    hooks: vec![], // vec![String::from("/tmp/approve_or_deny_signed.sh")],
+                    hooks: vec![String::from("/tmp/approve_or_deny_signed.sh")],
                     mode: zone_server::Mode::Prepublish,
                     source: zone_server::Source::SignedZones,
                     update_tx: update_tx.clone(),
@@ -539,6 +534,7 @@ impl Manager {
             (
                 String::from("PS"),
                 Unit::ZoneServer(ZoneServerUnit {
+                    http_api_path: Arc::new(String::from("/_unit/ps/")),
                     listen: vec![
                         "tcp:127.0.0.1:8058".parse().unwrap(),
                         "udp:127.0.0.1:8058".parse().unwrap(),

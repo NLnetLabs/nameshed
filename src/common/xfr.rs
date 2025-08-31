@@ -5,7 +5,6 @@ use domain::tsig::KeyName;
 use log::error;
 
 use crate::common::tsig::TsigKeyStore;
-use crate::log::ExitError;
 use crate::zonemaintenance::types::{NotifyConfig, XfrConfig};
 
 pub fn parse_xfr_acl(
@@ -13,7 +12,7 @@ pub fn parse_xfr_acl(
     xfr_cfg: &mut XfrConfig,
     notify_cfg: &mut NotifyConfig,
     key_store: &TsigKeyStore,
-) -> Result<SocketAddr, ExitError> {
+) -> Result<SocketAddr, ()> {
     let parts: Vec<String> = xfr_in.split(" KEY ").map(ToString::to_string).collect();
     let (addr, key_name) = match parts.len() {
         1 => (&parts[0], None),
@@ -22,13 +21,13 @@ pub fn parse_xfr_acl(
             error!(
                 "Invalid XFR ACL specification: Should be <addr>[:<port>][ KEY <TSIG key name>]"
             );
-            return Err(ExitError);
+            return Err(());
         }
     };
     let addr = SocketAddr::from_str(addr)
         .or(IpAddr::from_str(addr).map(|ip| SocketAddr::new(ip, 0)))
         .inspect_err(|err| error!("Error: Invalid XFR ACL address '{addr}': {err}"))
-        .map_err(|_| ExitError)?;
+        .map_err(|_| ())?;
 
     xfr_cfg.tsig_key = None;
     notify_cfg.tsig_key = None;
@@ -36,7 +35,7 @@ pub fn parse_xfr_acl(
     if let Some(key_name) = key_name {
         let encoded_key_name = KeyName::from_str(key_name)
             .inspect_err(|err| error!("Error: Invalid TSIG key name '{key_name}': {err}"))
-            .map_err(|_| ExitError)?;
+            .map_err(|_| ())?;
         if let Some(key) = key_store.get_key_by_name(&encoded_key_name) {
             xfr_cfg.tsig_key = Some((encoded_key_name.clone(), key.algorithm()));
             notify_cfg.tsig_key = Some((encoded_key_name, key.algorithm()));

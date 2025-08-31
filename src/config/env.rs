@@ -4,7 +4,7 @@ use std::fmt;
 
 use camino::{Utf8Path, Utf8PathBuf};
 
-use super::{Config, LogLevel, LogTarget, SettingSource};
+use super::{Config, LogLevel, LogTarget, Setting, SettingSource};
 
 //----------- EnvSpec ----------------------------------------------------------
 
@@ -19,6 +19,9 @@ pub struct EnvSpec {
 
     /// The target of log messages.
     pub log_target: Option<LogTargetSpec>,
+
+    /// A set of targets to trace.
+    pub log_trace_targets: foldhash::HashSet<Box<str>>,
 }
 
 impl EnvSpec {
@@ -49,10 +52,15 @@ impl EnvSpec {
 
         let log = var("NAMESHED_LOG")?.map(LogTargetSpec::parse).transpose()?;
 
+        let log_trace_targets = var("NAMESHED_LOG_TRACE_TARGETS")?
+            .map(|value| value.split(",").map(|s| s.into()).collect())
+            .unwrap_or_default();
+
         Ok(Self {
             config: config_path,
             log_level,
             log_target: log,
+            log_trace_targets,
         })
     }
 
@@ -60,10 +68,17 @@ impl EnvSpec {
     pub fn merge(self, config: &mut Config) {
         let daemon = &mut config.daemon;
         let source = SettingSource::Env;
-        daemon.log_level.merge_value(self.log_level, source);
+        daemon.logging.level.merge_value(self.log_level, source);
         daemon
-            .log_target
+            .logging
+            .target
             .merge_value(self.log_target.map(|t| t.build()), source);
+        for value in self.log_trace_targets {
+            daemon
+                .logging
+                .trace_targets
+                .insert(Setting { source, value });
+        }
         daemon.config_file.merge_value(self.config, source);
     }
 }
@@ -87,7 +102,11 @@ pub enum LogTargetSpec {
 impl LogTargetSpec {
     /// Parse this value from an owned string.
     pub fn parse(s: String) -> Result<Self, EnvError> {
-        if let Some(s) = s.strip_prefix("file:") {
+        if s == "stdout" {
+            Ok(Self::File("/dev/stdout".into()))
+        } else if s == "stderr" {
+            Ok(Self::File("/dev/stderr".into()))
+        } else if let Some(s) = s.strip_prefix("file:") {
             let path = <&Utf8Path>::from(s);
             Ok(Self::File(path.into()))
         } else if s == "syslog" {
@@ -149,7 +168,7 @@ impl fmt::Display for EnvError {
             EnvError::InvalidLogTarget { value } => {
                 write!(
                     f,
-                    "'$NAMESHED_LOG' ({value:?}) is not a valid logging target"
+                    "'$NAMESHED_LOG' ({value:?}) is not a valid logging target [possible values: 'stdout', 'stderr', 'file:<PATH>', 'syslog']"
                 )
             }
         }

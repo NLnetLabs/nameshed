@@ -1,10 +1,10 @@
 use clap::{crate_authors, crate_version};
-use nameshed::{config::Config, log::LogConfig, manager::Manager};
+use nameshed::{config::Config, manager::Manager};
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    // TODO: Clean up
-    LogConfig::init_logging().unwrap();
+    // Initialize the logger in fallback mode.
+    let logger = nameshed::log::Logger::launch();
 
     // Set up the command-line interface.
     let cmd = clap::Command::new("nameshed")
@@ -27,7 +27,7 @@ fn main() -> ExitCode {
     // explicitly requests it.
 
     // Construct the configuration.
-    let _config = match Config::process(&matches) {
+    let config = match Config::process(&matches) {
         Ok(config) => config,
         Err(error) => {
             eprintln!("Nameshed couldn't be configured: {error}");
@@ -40,6 +40,7 @@ fn main() -> ExitCode {
     }
 
     // TODO: daemonbase
+    logger.apply(logger.prepare(&config.daemon.logging).unwrap().unwrap());
 
     // Set up an async runtime.
     let runtime = match tokio::runtime::Builder::new_multi_thread()
@@ -57,8 +58,7 @@ fn main() -> ExitCode {
     runtime.block_on(async {
         // TODO: Clean up.
 
-        LogConfig::default().switch_logging(true).unwrap();
-        let mut manager = Manager::new();
+        let mut manager = Manager::new(logger);
         manager.spawn();
 
         // Let the manager run and handle external events.

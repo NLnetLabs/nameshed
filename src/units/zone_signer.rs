@@ -101,7 +101,6 @@ use crate::common::tsig::{parse_key_strings, TsigKeyStore};
 use crate::common::xfr::parse_xfr_acl;
 use crate::comms::ApplicationCommand;
 use crate::comms::{GraphStatus, Terminated};
-use crate::log::ExitError;
 use crate::manager::Component;
 use crate::metrics::{self, util::append_per_router_metric, Metric, MetricType, MetricUnit};
 use crate::payload::Update;

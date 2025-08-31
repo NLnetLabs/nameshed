@@ -5,7 +5,6 @@ use log::error;
 
 use crate::api::{ServerStatusResult, ZoneStatusResult};
 use crate::cli::client::NameshedApiClient;
-use crate::log::ExitError;
 
 #[derive(Clone, Debug, clap::Args)]
 pub struct Status {
@@ -30,10 +29,7 @@ pub enum StatusCommand {
 //   - maybe have it both on server level status command (so here) and in the zone command?
 
 impl Status {
-    pub async fn execute(
-        self,
-        client: NameshedApiClient,
-    ) -> Result<(), ExitError> {
+    pub async fn execute(self, client: NameshedApiClient) -> Result<(), ()> {
         match self.command {
             Some(StatusCommand::Zone { name }) => {
                 // TODO: move to function that can be called by the general
@@ -46,7 +42,6 @@ impl Status {
                     .await
                     .map_err(|e| {
                         error!("HTTP request failed: {e}");
-                        ExitError
                     })?;
 
                 println!("Success: Sent zone reload command for {}", name)
@@ -60,7 +55,6 @@ impl Status {
                     .await
                     .map_err(|e| {
                         error!("HTTP request failed: {e}");
-                        ExitError
                     })?;
 
                 println!("Server status: {:?}", response)

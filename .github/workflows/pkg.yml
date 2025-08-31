@@ -1,0 +1,13 @@
+name: Packaging
+
+on:
+  push:
+    tags:
+      - v*
+
+  # Triggering on PRs and arbitrary branch pushes is not enabled because most of the time only the CI build should be
+  # triggered, not the packaging build. In cases where you want to test changes to this workflow this trigger enables
+  # you to manually invoke this workflow on an arbitrary branch as needed.
+  workflow_dispatch:
+
+# No jobs yet, see branch 'packaging'.

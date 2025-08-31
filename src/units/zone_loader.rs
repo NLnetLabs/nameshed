@@ -29,7 +29,7 @@ use domain::net::server::message::Request;
 use domain::net::server::middleware::cookies::CookiesMiddlewareSvc;
 use domain::net::server::middleware::edns::EdnsMiddlewareSvc;
 use domain::net::server::middleware::mandatory::MandatoryMiddlewareSvc;
-use domain::net::server::middleware::notify::NotifyMiddlewareSvc;
+use domain::net::server::middleware::notify::{Notifiable, NotifyMiddlewareSvc};
 use domain::net::server::middleware::tsig::TsigMiddlewareSvc;
 use domain::net::server::middleware::xfr::XfrMiddlewareSvc;
 use domain::net::server::service::{CallResult, Service, ServiceError, ServiceResult};
@@ -71,7 +71,6 @@ use crate::common::net::{
 use crate::common::tsig::{parse_key_strings, TsigKeyStore};
 use crate::common::xfr::parse_xfr_acl;
 use crate::comms::{ApplicationCommand, GraphStatus, Terminated};
-use crate::log::ExitError;
 use crate::manager::Component;
 use crate::metrics::{self, util::append_per_router_metric, Metric, MetricType, MetricUnit};
 use crate::payload::Update;
@@ -86,9 +85,6 @@ use crate::zonemaintenance::types::{
 
 #[derive(Debug)]
 pub struct ZoneLoader {
-    /// Addresses and protocols to listen on.
-    pub listen: Vec<ListenAddr>,
-
     /// The zone names and (if primary) corresponding zone file paths to load.
     pub zones: Arc<HashMap<StoredName, String>>,
 
@@ -157,26 +153,6 @@ impl ZoneLoader {
             }
         }
 
-        // Define a server to handle NOTIFY messages and notify the
-        // ZoneMaintainer on receipt, thereby triggering it to fetch the
-        // latest version of the updated zone.
-        let svc = service_fn(my_noop_service, ());
-        let svc = NotifyMiddlewareSvc::new(svc, zone_maintainer.clone());
-        let svc = CookiesMiddlewareSvc::with_random_secret(svc);
-        let svc = EdnsMiddlewareSvc::new(svc);
-        let svc = MandatoryMiddlewareSvc::new(svc);
-        let svc = Arc::new(svc);
-
-        for addr in self.listen.iter().cloned() {
-            info!("[ZL]: Binding on {addr:?}");
-            let svc = svc.clone();
-            tokio::spawn(async move {
-                if let Err(err) = Self::server(addr, svc).await {
-                    error!("[ZL]: {err}");
-                }
-            });
-        }
-
         let zone_maintainer_clone = zone_maintainer.clone();
         tokio::spawn(async move { zone_maintainer_clone.run().await });
 
@@ -201,19 +177,18 @@ impl ZoneLoader {
                 }
 
                 cmd = self.cmd_rx.recv() => {
-                    match cmd {
-                        Some(cmd) => {
-                            info!(
-                                "[ZL] Received command: {cmd:?}",
-                            );
+                    info!(
+                        "[ZL] Received command: {cmd:?}",
+                    );
 
-                            match cmd {
-                                ApplicationCommand::Terminate => {
-                                    // arc_self.status_reporter.terminated();
-                                    return Err(Terminated);
-                                }
-                                ApplicationCommand::RegisterZone { register } => {
-                                    let res = match register.source {
+                    match cmd {
+                        Some(ApplicationCommand::Terminate) | None => {
+                            // arc_self.status_reporter.terminated();
+                            return Err(Terminated);
+                        }
+
+                        Some(ApplicationCommand::RegisterZone { register }) => {
+                            let res = match register.source {
                                         ZoneSource::Zonefile { path /* Lacks XFR out settings */ } => {
                                             Self::register_primary_zone(
                                                 register.name.clone(),
@@ -236,28 +211,37 @@ impl ZoneLoader {
                                                 zone_updated_tx.clone(),
                                             )
                                         },
-                                    };
+                            };
 
-                                    match res {
-                                        Err(_) => {
-                                            error!("[ZL]: Error: Failed to register zone '{}'", register.name);
-                                        }
+                            match res {
+                                Err(_) => {
+                                    error!("[ZL]: Error: Failed to register zone '{}'", register.name);
+                                }
 
-                                        Ok(zone) => {
-                                            if let Err(err) = zone_maintainer.insert_zone(zone).await {
-                                                error!("[ZL]: Error: Failed to insert zone '{}': {err}", register.name);
-                                            }
-                                        }
+                                Ok(zone) => {
+                                    if let Err(err) = zone_maintainer.insert_zone(zone).await {
+                                        error!("[ZL]: Error: Failed to insert zone '{}': {err}", register.name);
                                     }
                                 }
-                                _ => unreachable!(),
                             }
                         }
 
-                        None => {
-                            // arc_self.status_reporter.terminated();
-                            return Err(Terminated);
+                        Some(ApplicationCommand::RefreshZone {
+                            zone_name,
+                            serial,
+                            source,
+                        }) => {
+                            if let Some(source) = source {
+                                let _ = zone_maintainer.notify_zone_changed(Class::IN, &zone_name, serial, source).await;
+                            } else {
+                                // TODO: Should we check the serial number here?
+                                let _ = serial;
+
+                                zone_maintainer.force_zone_refresh(&zone_name, Class::IN).await;
+                            }
                         }
+
+                        Some(_) => {}
                     }
                 }
             }
@@ -397,45 +381,6 @@ impl ZoneLoader {
 
         Ok(zone_cfg)
     }
-
-    async fn server<Svc>(addr: ListenAddr, svc: Svc) -> Result<(), std::io::Error>
-    where
-        Svc: Service<Vec<u8>, ()> + Clone,
-    {
-        let buf = VecBufSource;
-        match addr {
-            ListenAddr::Udp(addr) => {
-                let sock = UdpSocket::bind(addr).await?;
-                let config = dgram::Config::new();
-                let srv = DgramServer::with_config(sock, buf, svc, config);
-                let srv = Arc::new(srv);
-                srv.run().await;
-            }
-            ListenAddr::Tcp(addr) => {
-                let sock = tokio::net::TcpListener::bind(addr).await?;
-                let mut conn_config = ConnectionConfig::new();
-                conn_config.set_max_queued_responses(10000);
-                let mut config = stream::Config::new();
-                config.set_connection_config(conn_config);
-                let srv = StreamServer::with_config(sock, buf, svc, config);
-                let srv = Arc::new(srv);
-                srv.run().await;
-            } // #[cfg(feature = "tls")]
-              // ListenAddr::Tls(addr, config) => {
-              //     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
-              //     let sock = TcpListener::bind(addr).await?;
-              //     let sock = tls::RustlsTcpListener::new(sock, acceptor);
-              //     let mut conn_config = ConnectionConfig::new();
-              //     conn_config.set_max_queued_responses(10000);
-              //     let mut config = stream::Config::new();
-              //     config.set_connection_config(conn_config);
-              //     let srv = StreamServer::with_config(sock, buf, svc, config);
-              //     let srv = Arc::new(srv);
-              //     srv.run().await;
-              // }
-        }
-        Ok(())
-    }
 }
 
 async fn get_zone_serial(apex_name: Name<Bytes>, zone: &Zone) -> Option<Serial> {
@@ -486,10 +431,6 @@ async fn load_file_into_zone(zone_name: &StoredName, zone_path: &str) -> Result<
         before.elapsed().as_secs()
     );
     Ok(zone)
-}
-
-fn my_noop_service(_request: Request<Vec<u8>, ()>, _meta: ()) -> ServiceResult<Vec<u8>> {
-    Err(ServiceError::Refused)
 }
 
 //------------- NotifyOnWriteZone --------------------------------------------
