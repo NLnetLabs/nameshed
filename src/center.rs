@@ -57,6 +57,8 @@ impl Center {
     pub fn save(&self) {
         let state_path;
         let state_spec;
+        let tsig_path;
+        let tsig_spec;
         let zone_state_dir;
         let zone_states: foldhash::HashMap<_, _>;
 
@@ -64,8 +66,11 @@ impl Center {
         {
             let state = self.state.lock().unwrap();
 
-            state_spec = crate::state::Spec::build(&state);
             state_path = state.config.daemon.state_file.value().clone();
+            state_spec = crate::state::Spec::build(&state);
+
+            tsig_path = state.config.tsig_store_path.clone();
+            tsig_spec = crate::tsig::file::Spec::build(&state.tsig_store);
 
             zone_state_dir = state.config.zone_state_dir.clone();
             zone_states = state
@@ -85,6 +90,14 @@ impl Center {
             Ok(()) => log::debug!("Saved global state"),
             Err(err) => {
                 log::error!("Could not save global state to '{state_path}': {err}");
+            }
+        }
+
+        // Save the TSIG store file.
+        match tsig_spec.save(&tsig_path) {
+            Ok(()) => log::debug!("Saved the TSIG store"),
+            Err(err) => {
+                log::error!("Could not save the TSIG store: {err}");
             }
         }
 

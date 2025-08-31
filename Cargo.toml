@@ -72,6 +72,11 @@ uuid               = { version = "1.4", features = ["v4", "fast-rng"] }
 indoc              = "2.0.5"
 rayon = "1.10.0"
 
+# 'ring' is used by 'domain' for various cryptographic operations.  There have
+# been issues regarding its maintenance and a different solution will be needed
+# eventually.
+ring = "0.17.0"
+
 # 'tempfile' is used to generate temporary files as part of atomic file writes.
 tempfile = "3.21.0"
 
