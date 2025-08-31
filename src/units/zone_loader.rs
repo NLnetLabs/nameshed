@@ -131,8 +131,6 @@ impl ZoneLoader {
         // Load primary zones.
         // Create secondary zones.
         for (zone_name, zone_path) in self.zones.iter() {
-            error!("[ZL]: Error: Zone name '{zone_name}' is invalid. Skipping zone.");
-
             let zone = if !zone_path.is_empty() {
                 Self::register_primary_zone(
                     zone_name.clone(),
