@@ -189,28 +189,28 @@ impl ZoneLoader {
 
                         Some(ApplicationCommand::RegisterZone { register }) => {
                             let res = match register.source {
-                                        ZoneSource::Zonefile { path /* Lacks XFR out settings */ } => {
-                                            Self::register_primary_zone(
-                                                register.name.clone(),
-                                                &path.to_string(),
-                                                component.tsig_key_store(),
-                                                None,
-                                                &self.xfr_out,
-                                                &zone_updated_tx,
-                                              ).await
-                                        }
-                                        ZoneSource::Server { addr /* Lacks TSIG key name */ } => {
-                                            // Use any existing XFR inbound
-                                            // ACL that has been defined for
-                                            // this zone from this source.
-                                            Self::register_secondary_zone(
-                                                register.name.clone(),
-                                                component.tsig_key_store(),
-                                                Some(addr),
-                                                &self.xfr_in,
-                                                zone_updated_tx.clone(),
-                                            )
-                                        },
+                                ZoneSource::Zonefile { path /* Lacks XFR out settings */ } => {
+                                    Self::register_primary_zone(
+                                        register.name.clone(),
+                                        &path.to_string(),
+                                        component.tsig_key_store(),
+                                        None,
+                                        &self.xfr_out,
+                                        &zone_updated_tx,
+                                      ).await
+                                }
+                                ZoneSource::Server { addr /* Lacks TSIG key name */ } => {
+                                    // Use any existing XFR inbound ACL that
+                                    // has been defined for this zone from
+                                    // this source.
+                                    Self::register_secondary_zone(
+                                        register.name.clone(),
+                                        component.tsig_key_store(),
+                                        Some(addr),
+                                        &self.xfr_in,
+                                        zone_updated_tx.clone(),
+                                    )
+                                },
                             };
 
                             match res {
