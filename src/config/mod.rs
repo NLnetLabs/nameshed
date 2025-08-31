@@ -88,6 +88,25 @@ impl Config {
         // Return the prepared configuration.
         Ok(this)
     }
+
+    /// Fill Cascade's configuration.
+    ///
+    /// This should be called if a global state file is not available.  It will
+    /// load the configuration file and integrate it into `self`.
+    pub fn fill(&mut self) -> Result<(), ConfigError> {
+        let path = self.daemon.config_file.value();
+        let spec = match file::Spec::load(path) {
+            Ok(spec) => spec,
+            Err(error) => {
+                return Err(ConfigError::File {
+                    path: path.clone(),
+                    error,
+                });
+            }
+        };
+        spec.parse_into(self);
+        Ok(())
+    }
 }
 
 //----------- DaemonConfig -----------------------------------------------------

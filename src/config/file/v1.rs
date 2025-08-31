@@ -7,7 +7,7 @@ use serde::Deserialize;
 
 use crate::config::{
     Config, DaemonConfig, GroupId, KeyManagerConfig, LoaderConfig, LogLevel, LogTarget,
-    LoggingConfig, ReviewConfig, ServerConfig, Setting, SignerConfig, SocketConfig, UserId,
+    ReviewConfig, ServerConfig, SignerConfig, SocketConfig, UserId,
 };
 
 //----------- Spec -------------------------------------------------------------
@@ -47,18 +47,16 @@ pub struct Spec {
 //--- Conversion
 
 impl Spec {
-    /// Build the internal configuration.
-    pub fn build(self, config_file: Setting<Box<Utf8Path>>) -> Config {
-        Config {
-            policy_dir: self.policy_dir,
-            zone_state_dir: self.zone_state_dir,
-            tsig_store_path: self.tsig_store_path,
-            daemon: self.daemon.build(config_file),
-            loader: self.loader.build(),
-            signer: self.signer.build(),
-            key_manager: self.key_manager.build(),
-            server: self.server.build(),
-        }
+    /// Parse from this specification.
+    pub fn parse_into(self, config: &mut Config) {
+        config.policy_dir = self.policy_dir;
+        config.zone_state_dir = self.zone_state_dir;
+        config.tsig_store_path = self.tsig_store_path;
+        self.daemon.parse_into(&mut config.daemon);
+        self.loader.parse_into(&mut config.loader);
+        self.signer.parse_into(&mut config.signer);
+        self.key_manager.parse_into(&mut config.key_manager);
+        self.server.parse_into(&mut config.server);
     }
 }
 
@@ -124,37 +122,14 @@ pub struct DaemonSpec {
 //--- Conversion
 
 impl DaemonSpec {
-    /// Build the internal configuration.
-    pub fn build(self, config_file: Setting<Box<Utf8Path>>) -> DaemonConfig {
-        let logging = LoggingConfig {
-            level: Setting {
-                default: LogLevel::Info,
-                file: self.log_level.map(|v| v.build()),
-                env: None,
-                args: None,
-            },
-            target: Setting {
-                default: LogTarget::File("/var/log/cascade.log".into()),
-                file: self.log_target.map(|v| v.build()),
-                env: None,
-                args: None,
-            },
-            trace_targets: Default::default(),
-        };
-
-        DaemonConfig {
-            logging,
-            config_file,
-            daemonize: Setting {
-                default: false,
-                file: self.daemonize,
-                env: None,
-                args: None,
-            },
-            pid_file: self.pid_file,
-            chroot: self.chroot,
-            identity: self.identity.map(|i| i.build()),
-        }
+    /// Parse from this specification.
+    pub fn parse_into(self, config: &mut DaemonConfig) {
+        config.logging.level.file = self.log_level.map(|v| v.parse());
+        config.logging.target.file = self.log_target.map(|v| v.parse());
+        config.daemonize.file = self.daemonize;
+        config.pid_file = self.pid_file;
+        config.chroot = self.chroot;
+        config.identity = self.identity.map(|v| v.parse());
     }
 }
 
@@ -186,8 +161,8 @@ pub enum LogLevelSpec {
 //--- Conversion
 
 impl LogLevelSpec {
-    /// Build the internal configuration.
-    pub fn build(self) -> LogLevel {
+    /// Parse from this specification.
+    pub fn parse(self) -> LogLevel {
         match self {
             Self::Trace => LogLevel::Trace,
             Self::Debug => LogLevel::Debug,
@@ -220,8 +195,8 @@ pub enum LogTargetSpec {
 //--- Conversion
 
 impl LogTargetSpec {
-    /// Build the internal configuration.
-    pub fn build(self) -> LogTarget {
+    /// Parse from this specification.
+    pub fn parse(self) -> LogTarget {
         match self {
             Self::File { path } => LogTarget::File(path),
             Self::Syslog => LogTarget::Syslog,
@@ -270,9 +245,9 @@ impl<'de> Deserialize<'de> for IdentitySpec {
 //--- Conversion
 
 impl IdentitySpec {
-    /// Build the internal configuration.
-    pub fn build(self) -> (UserId, GroupId) {
-        (self.user.build(), self.group.build())
+    /// Parse from this specification.
+    pub fn parse(self) -> (UserId, GroupId) {
+        (self.user.parse(), self.group.parse())
     }
 }
 
@@ -309,8 +284,8 @@ impl FromStr for UserIdSpec {
 //--- Conversion
 
 impl UserIdSpec {
-    /// Build the internal configuration.
-    pub fn build(self) -> UserId {
+    /// Parse from this specification.
+    pub fn parse(self) -> UserId {
         match self {
             Self::Numeric(id) => UserId::Numeric(id),
             Self::Named(id) => UserId::Named(id),
@@ -351,8 +326,8 @@ impl FromStr for GroupIdSpec {
 //--- Conversion
 
 impl GroupIdSpec {
-    /// Build the internal configuration.
-    pub fn build(self) -> GroupId {
+    /// Parse from this specification.
+    pub fn parse(self) -> GroupId {
         match self {
             Self::Numeric(id) => GroupId::Numeric(id),
             Self::Named(id) => GroupId::Named(id),
@@ -376,16 +351,13 @@ pub struct LoaderSpec {
 //--- Conversion
 
 impl LoaderSpec {
-    /// Build the internal configuration.
-    pub fn build(self) -> LoaderConfig {
-        LoaderConfig {
-            notif_listeners: self
-                .notif_listeners
-                .into_iter()
-                .map(|nl| nl.build())
-                .collect(),
-            review: self.review.build(),
-        }
+    /// Parse from this specification.
+    pub fn parse_into(self, config: &mut LoaderConfig) {
+        config.notif_listeners.clear();
+        config
+            .notif_listeners
+            .extend(self.notif_listeners.into_iter().map(|v| v.parse()));
+        self.review.parse_into(&mut config.review);
     }
 }
 
@@ -402,11 +374,9 @@ pub struct SignerSpec {
 //--- Conversion
 
 impl SignerSpec {
-    /// Build the internal configuration.
-    pub fn build(self) -> SignerConfig {
-        SignerConfig {
-            review: self.review.build(),
-        }
+    /// Parse from this specification.
+    pub fn parse_into(self, config: &mut SignerConfig) {
+        self.review.parse_into(&mut config.review);
     }
 }
 
@@ -423,11 +393,12 @@ pub struct ReviewSpec {
 //--- Conversion
 
 impl ReviewSpec {
-    /// Build the internal configuration.
-    pub fn build(self) -> ReviewConfig {
-        ReviewConfig {
-            servers: self.servers.into_iter().map(|s| s.build()).collect(),
-        }
+    /// Parse from this specification.
+    pub fn parse_into(self, config: &mut ReviewConfig) {
+        config.servers.clear();
+        config
+            .servers
+            .extend(self.servers.into_iter().map(|v| v.parse()));
     }
 }
 
@@ -441,9 +412,9 @@ pub struct KeyManagerSpec {}
 //--- Conversion
 
 impl KeyManagerSpec {
-    /// Build the internal configuration.
-    pub fn build(self) -> KeyManagerConfig {
-        KeyManagerConfig {}
+    /// Parse from this specification.
+    pub fn parse_into(self, config: &mut KeyManagerConfig) {
+        let KeyManagerConfig {} = *config;
     }
 }
 
@@ -460,11 +431,12 @@ pub struct ServerSpec {
 //--- Conversion
 
 impl ServerSpec {
-    /// Build the internal configuration.
-    pub fn build(self) -> ServerConfig {
-        ServerConfig {
-            servers: self.servers.into_iter().map(|s| s.build()).collect(),
-        }
+    /// Parse from this specification.
+    pub fn parse_into(self, config: &mut ServerConfig) {
+        config.servers.clear();
+        config
+            .servers
+            .extend(self.servers.into_iter().map(|v| v.parse()));
     }
 }
 
@@ -568,18 +540,18 @@ impl<'de> Deserialize<'de> for SimpleSocketSpec {
 //--- Conversion
 
 impl SocketSpec {
-    /// Build the internal configuration.
-    pub fn build(self) -> SocketConfig {
+    /// Parse from this specification.
+    pub fn parse(self) -> SocketConfig {
         match self {
-            SocketSpec::Simple(spec) => spec.build(),
-            SocketSpec::Complex(spec) => spec.build(),
+            SocketSpec::Simple(spec) => spec.parse(),
+            SocketSpec::Complex(spec) => spec.parse(),
         }
     }
 }
 
 impl SimpleSocketSpec {
-    /// Build the internal configuration.
-    pub fn build(self) -> SocketConfig {
+    /// Parse from this specification.
+    pub fn parse(self) -> SocketConfig {
         match self {
             Self::UDP { addr } => SocketConfig::UDP { addr },
             Self::TCP { addr } => SocketConfig::TCP { addr },
@@ -589,8 +561,8 @@ impl SimpleSocketSpec {
 }
 
 impl ComplexSocketSpec {
-    /// Build the internal configuration.
-    pub fn build(self) -> SocketConfig {
+    /// Parse from this specification.
+    pub fn parse(self) -> SocketConfig {
         match self {
             Self::UDP { addr } => SocketConfig::UDP { addr },
             Self::TCP { addr } => SocketConfig::TCP { addr },
