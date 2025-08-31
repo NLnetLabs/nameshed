@@ -230,11 +230,6 @@ impl ZoneLoader {
                                             // Use any existing XFR inbound
                                             // ACL that has been defined for
                                             // this zone from this source.
-                                            let xfr_in = self.xfr_in
-                                                .get(&register.name)
-                                                .map(|v| v.to_string())
-                                                .unwrap_or_default();
-                                            error!("XIMON: {xfr_in}");
                                             Self::register_secondary_zone(
                                                 register.name.clone(),
                                                 component.tsig_key_store(),
