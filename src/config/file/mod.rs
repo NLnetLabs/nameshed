@@ -5,34 +5,36 @@ use std::{fmt, sync::Arc};
 use camino::Utf8Path;
 use serde::Deserialize;
 
-use super::{Config, Setting};
+use super::Config;
 
 pub mod v1;
 
-//----------- FileSpec ---------------------------------------------------------
+//----------- Spec -------------------------------------------------------------
 
 /// A configuration file.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "kebab-case", tag = "version")]
-pub enum FileSpec {
+pub enum Spec {
     /// The version 1 format.
     V1(v1::Spec),
 }
 
-//--- Processing
+impl Spec {
+    /// Parse from this configuration.
+    pub fn parse_into(self, config: &mut Config) {
+        match self {
+            Self::V1(spec) => spec.parse_into(config),
+        }
+    }
+}
 
-impl FileSpec {
+//--- Loading / Saving
+
+impl Spec {
     /// Load the configuration file.
     pub fn load(path: &Utf8Path) -> Result<Self, FileError> {
         let text = std::fs::read_to_string(path)?;
         Ok(toml::from_str(&text)?)
-    }
-
-    /// Build the Cascade configuration.
-    pub fn build(self, config_file: Setting<Box<Utf8Path>>) -> Config {
-        match self {
-            Self::V1(spec) => spec.build(config_file),
-        }
     }
 }
 
