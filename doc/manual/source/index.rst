@@ -1,9 +1,25 @@
 Cascade
 =======
 
-A friendly DNSSEC signing solution: sensible defaults, controllability,
-observability and flexibility. The project is written in Rust, a programming
+A friendly DNSSEC signing solution written in Rust, a programming
 language designed for performance and memory safety.
+
+Flexibility
+   Run Cascade the way that you want: from a package or a Docker image,
+   on-premise or in the cloud, with keys on disk or an HSM of your
+   choice.
+
+Sensible defaults
+   Get started easily with default settings based on industry 
+   best practices. 
+
+Controllability
+   Cascade hives you tight control over the DNSSEC signing process and
+   and offers validation hooks at each stage of the process. 
+
+Observability
+   With Cascade you cut out the guesswork. You will know what the
+   pipeline is doing and why, and what you can expect to happen next.
 
 Open-source with professional support services
    NLnet Labs offers `professional support and consultancy services
