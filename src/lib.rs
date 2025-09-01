@@ -1,5 +1,7 @@
 //! Nameshed
 
+pub mod api;
+pub mod cli;
 mod common;
 mod comms;
 pub mod config;

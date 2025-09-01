@@ -68,6 +68,10 @@
 use domain::base::Serial;
 use domain::zonetree::StoredName;
 use std::fmt::{self, Debug};
+use std::net::IpAddr;
+use tokio::sync::mpsc;
+
+use crate::api::ZoneAdd;
 
 //------------ GraphMetrics --------------------------------------------------
 pub trait GraphStatus: Send + Sync {
@@ -128,10 +132,40 @@ pub struct Terminated;
 #[derive(Clone, Debug)]
 pub enum ApplicationCommand {
     Terminate,
+    HandleZoneReviewApi {
+        zone_name: StoredName,
+        zone_serial: Serial,
+        approval_token: String,
+        operation: String,
+        http_tx: mpsc::Sender<Result<(), ()>>,
+    },
+    HandleZoneReviewApiStatus {
+        http_tx: mpsc::Sender<String>,
+    },
     SeekApprovalForUnsignedZone {
         zone_name: StoredName,
         zone_serial: Serial,
     },
+
+    /// Refresh a zone.
+    ///
+    /// The zone loader will initiate a refresh for the zone, and query the
+    /// zone's source to look for a newer version of the zone.  This command
+    /// can be used in response to a user request or a NOTIFY message.
+    RefreshZone {
+        /// The name of the zone to refresh.
+        zone_name: StoredName,
+
+        /// The source address of the NOTIFY message.
+        source: Option<IpAddr>,
+
+        /// The expected new SOA serial for the zone.
+        ///
+        /// If this is set, and the zone's SOA serial is greater than or equal
+        /// to this value, the refresh can be ignored.
+        serial: Option<Serial>,
+    },
+
     SignZone {
         zone_name: StoredName,
         zone_serial: Option<Serial>,
@@ -143,5 +177,8 @@ pub enum ApplicationCommand {
     PublishSignedZone {
         zone_name: StoredName,
         zone_serial: Serial,
+    },
+    RegisterZone {
+        register: ZoneAdd,
     },
 }
