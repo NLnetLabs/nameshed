@@ -149,7 +149,7 @@ license-file = ["LICENSE", "0"]
 # TODO: come up with a description (also for the git repo)
 extended-description = "A batteries-included DNSSEC signing solution."
 depends = "$auto, adduser, dnst"
-recommends = "cascade-hsm-relay"
+recommends = "kmip2pkcs11"
 section = "net"
 priority = "optional"
 maintainer-scripts = "pkg/debian"
@@ -175,4 +175,4 @@ shadow-utils = "*"
 dnst = "*"
 
 [package.metadata.generate-rpm.recommends]
-cascade-hsm-relay = "*"
+kmip2pkcs11 = "*"
