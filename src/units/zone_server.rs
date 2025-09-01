@@ -492,7 +492,8 @@ impl ZoneServer {
                                     let mut xfr_cfg = XfrConfig::default();
                                     let mut notify_cfg = NotifyConfig::default();
                                     let key_store = component.tsig_key_store();
-                                    let sock_addr = parse_xfr_acl(xfr_out, &mut xfr_cfg, &mut notify_cfg, key_store).unwrap();
+                                    if let Ok(sock_addr) = parse_xfr_acl(xfr_out, &mut xfr_cfg, &mut notify_cfg, key_store)
+                                        .inspect_err(|err| error!("Cannot check if NOTIFY should be sent for zone '{zone_name}': Failed to parse XFR ACL '{xfr_out}': {err}")) {
 
                                     // Is NOTIFY permitted to the specified
                                     // destination? To send a NOTIFY we need
@@ -506,6 +507,7 @@ impl ZoneServer {
                                         let mut zone_info = ZoneInfo::default();
                                         zone_info.config.send_notify_to.add_dst(sock_addr, notify_cfg);
                                         ZoneMaintainer::send_notify_to_addrs(zone_name.clone(), [sock_addr].iter(), maintainer_config, &zone_info).await;
+                                    }
                                     }
                                 }
                             }
