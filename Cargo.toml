@@ -1,7 +1,7 @@
 [package]
 name = "cascade"
 default-run = "cascaded"
-description = "batteries-included DNSSEC signing solution."
+description = "friendly DNSSEC signing solution: sensible defaults, controllability, observability and flexibility"
 version = "0.1.0"
 edition = "2021"
 license = "BSD-3-Clause"
@@ -147,7 +147,10 @@ name = "cascade"
 maintainer = "NLnet Labs <cascade@nlnetlabs.nl>"
 license-file = ["LICENSE", "0"]
 # TODO: come up with a description (also for the git repo)
-extended-description = "A batteries-included DNSSEC signing solution."
+extended-description = """\
+Cascade is a friendly DNSSEC signing solution, offering sensible defaults,
+controllability, observability and flexibility.
+"""
 depends = "$auto, adduser, dnst"
 recommends = "kmip2pkcs11"
 section = "net"
