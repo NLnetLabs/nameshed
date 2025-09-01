@@ -503,7 +503,7 @@ impl Manager {
                     treat_single_keys_as_csks: true,
                     max_concurrent_operations: 1,
                     max_concurrent_rrsig_generation_tasks: 32,
-                    use_lightweight_zone_tree: true,
+                    use_lightweight_zone_tree: false,
                     denial_config: TomlDenialConfig::default(), //Nsec3(NonEmpty::new(TomlNsec3Config::default())),
                     rrsig_inception_offset_secs: 60 * 90,
                     rrsig_expiration_offset_secs: 60 * 60 * 24 * 14,
