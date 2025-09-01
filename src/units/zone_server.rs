@@ -306,8 +306,6 @@ impl ZoneServer {
             self.listen.clone(),
         ));
 
-        let arc_self = Arc::new(self);
-
         // status_reporter.listener_listening(&listen_addr.to_string());
 
         loop {
@@ -318,173 +316,230 @@ impl ZoneServer {
                         return Err(Terminated);
                     };
 
-                    info!("[{unit_name}] Received command: {cmd:?}",);
-                    match &cmd {
-                        ApplicationCommand::Terminate => {
-                            // arc_self.status_reporter.terminated();
-                            return Err(Terminated);
-                        }
-
-                        ApplicationCommand::HandleZoneReviewApi {
-                            zone_name,
-                            zone_serial,
-                            approval_token,
-                            operation,
-                            http_tx,
-                        } => {
-                            http_tx
-                                .send(
-                                    arc_self
-                                        .zone_review_api
-                                        .as_ref()
-                                        .expect("This should have been setup on startup.")
-                                        .process_request(
-                                            zone_name.clone(),
-                                            zone_serial.clone(),
-                                            approval_token,
-                                            operation,
-                                        )
-                                    .await,
-                                )
-                                .await
-                                .expect("TODO: Should this always succeed?");
-                        }
-
-                        ApplicationCommand::HandleZoneReviewApiStatus { http_tx } => {
-                            http_tx
-                                .send(
-                                    arc_self
-                                        .zone_review_api
-                                        .as_ref()
-                                        .expect("This should have been setup on startup.")
-                                        .build_status_response()
-                                        .await,
-                                )
-                                .await
-                                .expect("TODO: Should this always succeed?");
-                        }
-
-                        ApplicationCommand::SeekApprovalForUnsignedZone {
-                            zone_name,
-                            zone_serial,
-                        }
-                        | ApplicationCommand::SeekApprovalForSignedZone {
-                            zone_name,
-                            zone_serial,
-                        } => {
-                            let zone_type = match cmd {
-                                ApplicationCommand::SeekApprovalForUnsignedZone {
-                                    ..
-                                } => "unsigned",
-                                ApplicationCommand::SeekApprovalForSignedZone {
-                                    ..
-                                } => "signed",
-                                _ => unreachable!(),
-                            };
-
-                            // Only if not already approved...
-                            if arc_self.last_approvals.read().await.contains_key(&(zone_name.clone(), *zone_serial)) {
-                                trace!("Skipping approval request for already approved {zone_type} zone '{zone_name}' at serial {zone_serial}.");
-                                continue;
-                            }
-
-                            if arc_self.hooks.is_empty() {
-                                // Approve immediately.
-                                match arc_self.source {
-                                    Source::UnsignedZones => {
-                                        update_tx.send(Update::UnsignedZoneApprovedEvent { zone_name: zone_name.clone(), zone_serial: *zone_serial }).unwrap();
-                                    }
-                                    Source::SignedZones => {
-                                        update_tx.send(Update::SignedZoneApprovedEvent { zone_name: zone_name.clone(), zone_serial: *zone_serial }).unwrap();
-                                    }
-                                    Source::PublishedZones => unreachable!(),
-                                }
-                            }
-
-                            info!("[{unit_name}]: Seeking approval for {zone_type} zone '{zone_name}' at serial {zone_serial}.");
-                            for hook in &arc_self.hooks {
-                                let approval_token = Uuid::new_v4();
-                                info!("[{unit_name}]: Generated approval token '{approval_token}' for {zone_type} zone '{zone_name}' at serial {zone_serial}.");
-
-                                arc_self.pending_approvals
-                                    .write()
-                                    .await
-                                    .entry((zone_name.clone(), *zone_serial))
-                                    .and_modify(|e| e.push(approval_token))
-                                    .or_insert(vec![approval_token]);
-
-                                match Command::new(hook)
-                                    .arg(format!("{zone_name}"))
-                                    .arg(format!("{zone_serial}"))
-                                    .arg(format!("{approval_token}"))
-                                    .spawn()
-                                {
-                                    Ok(_) => {
-                                        info!("[{unit_name}]: Executed hook '{hook}' for {zone_type} zone '{zone_name}' at serial {zone_serial}");
-                                        info!("[{unit_name}]: Confirm with HTTP GET {}approve/{approval_token}?zone={zone_name}&serial={zone_serial}", arc_self.http_api_path);
-                                        info!("[{unit_name}]: Reject with HTTP GET {}reject/{approval_token}?zone={zone_name}&serial={zone_serial}", arc_self.http_api_path);
-                                    }
-                                    Err(err) => {
-                                        error!(
-                                            "[{unit_name}]: Failed to execute hook '{hook}' for {zone_type} zone '{zone_name}' at serial {zone_serial}: {err}",
-                                        );
-                                        arc_self.pending_approvals
-                                            .write()
-                                            .await
-                                            .remove(&(zone_name.clone(), *zone_serial));
-                                    }
-                                }
-                            }
-                        }
-
-                        ApplicationCommand::PublishSignedZone {
-                            zone_name,
-                            zone_serial,
-                        } => {
-                            info!(
-                                "[{unit_name}]: Publishing signed zone '{zone_name}' at serial {zone_serial}."
-                            );
-                            // Move the zone from the signed collection to the published collection.
-                            // TODO: Bump the zone serial?
-                            let component = arc_self.component.write().await;
-                            let signed_zones = component.signed_zones().load();
-                            if let Some(zone) = signed_zones.get_zone(zone_name, Class::IN)
-                            {
-                                let published_zones = component.published_zones().load();
-
-                                // Create a deep copy of the set of
-                                // published zones. We will add the
-                                // new zone to that copied set and
-                                // then replace the original set with
-                                // the new set.
-                                info!("[{unit_name}]: Adding '{zone_name}' to the set of published zones.");
-                                let mut new_published_zones =
-                                    Arc::unwrap_or_clone(published_zones.clone());
-                                let _ = new_published_zones
-                                    .remove_zone(zone.apex_name(), zone.class());
-                                new_published_zones.insert_zone(zone.clone()).unwrap();
-                                component
-                                    .published_zones()
-                                    .store(Arc::new(new_published_zones));
-
-                                // Create a deep copy of the set of
-                                // signed zones. We will remove the
-                                // zone from the copied set and then
-                                // replace the original set with the
-                                // new set.
-                                info!("[{unit_name}]: Removing '{zone_name}' from the set of signed zones.");
-                                let mut new_signed_zones =
-                                    Arc::unwrap_or_clone(signed_zones.clone());
-                                new_signed_zones.remove_zone(zone_name, Class::IN).unwrap();
-                                component.signed_zones().store(Arc::new(new_signed_zones));
-                            }
-                        }
-
-                        _ => { /* Not for us */ }
-                    }
+                    self.handle_command(cmd, unit_name, update_tx.clone()).await?;
                 }
             }
         }
+    }
+
+    async fn handle_command(
+        &self,
+        cmd: ApplicationCommand,
+        unit_name: &str,
+        update_tx: mpsc::UnboundedSender<Update>,
+    ) -> Result<(), Terminated> {
+        info!("[{unit_name}] Received command: {cmd:?}",);
+        match cmd {
+            ApplicationCommand::Terminate => {
+                // arc_self.status_reporter.terminated();
+                return Err(Terminated);
+            }
+
+            ApplicationCommand::HandleZoneReviewApi {
+                zone_name,
+                zone_serial,
+                approval_token,
+                operation,
+                http_tx,
+            } => {
+                self.on_zone_review_api_cmd(
+                    zone_name,
+                    zone_serial,
+                    &approval_token,
+                    &operation,
+                    http_tx,
+                )
+                .await;
+            }
+
+            ApplicationCommand::HandleZoneReviewApiStatus { http_tx } => {
+                self.on_zone_review_api_status_cmd(http_tx).await;
+            }
+
+            ApplicationCommand::SeekApprovalForUnsignedZone { .. }
+            | ApplicationCommand::SeekApprovalForSignedZone { .. } => {
+                self.on_seek_approval_for_zone_cmd(cmd, unit_name, update_tx)
+                    .await;
+            }
+
+            ApplicationCommand::PublishSignedZone {
+                zone_name,
+                zone_serial,
+            } => {
+                self.on_publish_signed_zone_cmd(unit_name, zone_name, zone_serial)
+                    .await;
+            }
+
+            _ => { /* Not for us */ }
+        }
+
+        Ok(())
+    }
+
+    async fn on_publish_signed_zone_cmd(
+        &self,
+        unit_name: &str,
+        zone_name: Name<Bytes>,
+        zone_serial: Serial,
+    ) {
+        info!("[{unit_name}]: Publishing signed zone '{zone_name}' at serial {zone_serial}.");
+        // Move the zone from the signed collection to the published collection.
+        // TODO: Bump the zone serial?
+        let component = self.component.write().await;
+        let signed_zones = component.signed_zones().load();
+        if let Some(zone) = signed_zones.get_zone(&zone_name, Class::IN) {
+            let published_zones = component.published_zones().load();
+
+            // Create a deep copy of the set of
+            // published zones. We will add the
+            // new zone to that copied set and
+            // then replace the original set with
+            // the new set.
+            info!("[{unit_name}]: Adding '{zone_name}' to the set of published zones.");
+            let mut new_published_zones = Arc::unwrap_or_clone(published_zones.clone());
+            let _ = new_published_zones.remove_zone(zone.apex_name(), zone.class());
+            new_published_zones.insert_zone(zone.clone()).unwrap();
+            component
+                .published_zones()
+                .store(Arc::new(new_published_zones));
+
+            // Create a deep copy of the set of
+            // signed zones. We will remove the
+            // zone from the copied set and then
+            // replace the original set with the
+            // new set.
+            info!("[{unit_name}]: Removing '{zone_name}' from the set of signed zones.");
+            let mut new_signed_zones = Arc::unwrap_or_clone(signed_zones.clone());
+            new_signed_zones.remove_zone(&zone_name, Class::IN).unwrap();
+            component.signed_zones().store(Arc::new(new_signed_zones));
+        }
+    }
+
+    async fn on_seek_approval_for_zone_cmd(
+        &self,
+        cmd: ApplicationCommand,
+        unit_name: &str,
+        update_tx: mpsc::UnboundedSender<Update>,
+    ) -> Option<Result<(), Terminated>> {
+        let (zone_name, zone_serial, zone_type) = match cmd {
+            ApplicationCommand::SeekApprovalForUnsignedZone {
+                zone_name,
+                zone_serial,
+            } => (zone_name, zone_serial, "unsigned"),
+            ApplicationCommand::SeekApprovalForSignedZone {
+                zone_name,
+                zone_serial,
+            } => (zone_name, zone_serial, "signed"),
+            _ => unreachable!(),
+        };
+
+        if self
+            .last_approvals
+            .read()
+            .await
+            .contains_key(&(zone_name.clone(), zone_serial))
+        {
+            trace!("Skipping approval request for already approved {zone_type} zone '{zone_name}' at serial {zone_serial}.");
+            return Some(Ok(()));
+        }
+        if self.hooks.is_empty() {
+            // Approve immediately.
+            match self.source {
+                Source::UnsignedZones => {
+                    update_tx
+                        .send(Update::UnsignedZoneApprovedEvent {
+                            zone_name: zone_name.clone(),
+                            zone_serial,
+                        })
+                        .unwrap();
+                }
+                Source::SignedZones => {
+                    update_tx
+                        .send(Update::SignedZoneApprovedEvent {
+                            zone_name: zone_name.clone(),
+                            zone_serial,
+                        })
+                        .unwrap();
+                }
+                Source::PublishedZones => unreachable!(),
+            }
+        }
+        info!("[{unit_name}]: Seeking approval for {zone_type} zone '{zone_name}' at serial {zone_serial}.");
+
+        // Only if not already approved...
+
+        for hook in &self.hooks {
+            let approval_token = Uuid::new_v4();
+            info!("[{unit_name}]: Generated approval token '{approval_token}' for {zone_type} zone '{zone_name}' at serial {zone_serial}.");
+
+            self.pending_approvals
+                .write()
+                .await
+                .entry((zone_name.clone(), zone_serial))
+                .and_modify(|e| e.push(approval_token))
+                .or_insert(vec![approval_token]);
+
+            match Command::new(hook)
+                .arg(format!("{zone_name}"))
+                .arg(format!("{zone_serial}"))
+                .arg(format!("{approval_token}"))
+                .spawn()
+            {
+                Ok(_) => {
+                    info!("[{unit_name}]: Executed hook '{hook}' for {zone_type} zone '{zone_name}' at serial {zone_serial}");
+                    info!("[{unit_name}]: Confirm with HTTP GET {}approve/{approval_token}?zone={zone_name}&serial={zone_serial}", self.http_api_path);
+                    info!("[{unit_name}]: Reject with HTTP GET {}reject/{approval_token}?zone={zone_name}&serial={zone_serial}", self.http_api_path);
+                }
+                Err(err) => {
+                    error!(
+                                    "[{unit_name}]: Failed to execute hook '{hook}' for {zone_type} zone '{zone_name}' at serial {zone_serial}: {err}",
+                                );
+                    self.pending_approvals
+                        .write()
+                        .await
+                        .remove(&(zone_name.clone(), zone_serial));
+                }
+            }
+        }
+        None
+    }
+
+    async fn on_zone_review_api_status_cmd(&self, http_tx: Sender<String>) {
+        http_tx
+            .send(
+                self.zone_review_api
+                    .as_ref()
+                    .expect("This should have been setup on startup.")
+                    .build_status_response()
+                    .await,
+            )
+            .await
+            .expect("TODO: Should this always succeed?");
+    }
+
+    async fn on_zone_review_api_cmd(
+        &self,
+        zone_name: Name<Bytes>,
+        zone_serial: Serial,
+        approval_token: &str,
+        operation: &str,
+        http_tx: Sender<Result<(), ()>>,
+    ) {
+        http_tx
+            .send(
+                self.zone_review_api
+                    .as_ref()
+                    .expect("This should have been setup on startup.")
+                    .process_request(
+                        zone_name.clone(),
+                        zone_serial.clone(),
+                        approval_token,
+                        operation,
+                    )
+                    .await,
+            )
+            .await
+            .expect("TODO: Should this always succeed?");
     }
 }
 

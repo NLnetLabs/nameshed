@@ -279,8 +279,8 @@ where
             tokio::select! {
                 biased;
 
-                msg = event_rx.recv() => {
-                    let Some(event) = msg else {
+                event = event_rx.recv() => {
+                    let Some(event) = event else {
                         // The channel has been closed, i.e. the
                         // ZoneMaintainer instance has been dropped. Stop
                         // performing background activiities for this
@@ -288,181 +288,11 @@ where
                         break;
                     };
 
-                    match event {
-                        Event::ZoneChanged(msg) => {
-                            trace!("Notify message received: {msg:?}");
-                            let zones = self.zones();
-                            let time_tracking = time_tracking.clone();
-                            let event_tx = self.event_tx.clone();
-                            let pending_zones = self.pending_zones.clone();
-                            let config = self.config.clone();
-                            tokio::spawn(
-                                Self::handle_notify(
-                                    zones, pending_zones, msg, time_tracking, event_tx, config,
-                                )
-                            );
-                        }
-
-                        Event::ZoneAdded(zone_id) => {
-                            // https://datatracker.ietf.org/doc/html/rfc1034#section-4.3.5
-                            // 4.3.5. Zone maintenance and transfers
-                            //   ..
-                            //   "Whenever a new zone is loaded in a secondary, the secondary
-                            //    waits REFRESH seconds before checking with the primary for a
-                            //    new serial."
-
-                            let mut pending_zones = self.pending_zones.write().await;
-                            if let Some(zone) = pending_zones.get(&zone_id) {
-                                if let Ok(soa_refresh) = Self::track_zone_freshness(zone, time_tracking.clone()).await {
-                                    // If the zone already has a SOA REFRESH
-                                    // it is not empty and we can make it
-                                    // active immediately.
-                                    if soa_refresh.is_some() {
-                                        trace!("Removing zone '{}' from the pending set as it has a SOA REFRESH", zone_id.name);
-                                        let zone = pending_zones.remove(&zone_id).unwrap();
-                                        self.insert_active_zone(zone).await.unwrap();
-                                    }
-                                    Self::refresh_zone_at(
-                                        ZoneRefreshCause::SoaRefreshTimerAfterZoneAdded,
-                                        zone_id,
-                                        soa_refresh,
-                                        &mut refresh_timers);
-                                }
-                            }
-                        }
-
-                        // TODO
-                        // Event::ZoneRemoved(_key) => {
-                        // }
-
-                        Event::ZoneRefreshRequested { zone_id, at, cause } => {
-                            Self::refresh_zone_at(cause, zone_id, at, &mut refresh_timers);
-                        }
-
-                        Event::ZoneStatusRequested { zone_id, tx } => {
-                            let details = if self.pending_zones.read().await.contains_key(&zone_id) {
-                                if let Some(zone_refresh_info) = time_tracking.read().await.get(&zone_id) {
-                                    ZoneReportDetails::PendingSecondary(*zone_refresh_info)
-                                } else {
-                                    ZoneReportDetails::PendingSecondary(Default::default())
-                                }
-                            } else if let Some(zone_refresh_info) = time_tracking.read().await.get(&zone_id) {
-                                ZoneReportDetails::Secondary(*zone_refresh_info)
-                            } else {
-                                ZoneReportDetails::Primary
-                            };
-
-                            let timers = refresh_timers
-                                .iter()
-                                .filter_map(|timer| {
-                                    if timer.refresh_instant.zone_id == zone_id {
-                                        Some(timer.refresh_instant.clone())
-                                    } else {
-                                        None
-                                    }
-                                })
-                                .collect();
-
-                            let zones = self.zones();
-                            if let Some(zone) = self.pending_zones.read().await.get(&zone_id).or_else(|| zones.get_zone(&zone_id.name, zone_id.class)) {
-                                let cat_zone: &MaintainedZone = zone.into();
-
-                                let zone_info = cat_zone.info().clone();
-
-                                let report = ZoneReport::new(zone_id, details, timers, zone_info);
-
-                                if let Err(_err) = tx.send(report) {
-                                    // TODO
-                                }
-                            } else {
-                                warn!("Zone '{}' not found for zone status request.", zone_id.name);
-                            };
-                        }
-                    }
+                    self.on_event(event, time_tracking.clone(), &mut refresh_timers).await;
                 }
 
                 Some(timer_info) = refresh_timers.next() => {
-                    // https://datatracker.ietf.org/doc/html/rfc1034#section-4.3.5
-                    // 4.3.5. Zone maintenance and transfers
-                    //   ..
-                    //   "To detect changes, secondaries just check the SERIAL
-                    //    field of the SOA for the zone."
-                    //   ..
-                    //   "The periodic polling of the secondary servers is
-                    //    controlled by parameters in the SOA RR for the zone,
-                    //    which set the minimum acceptable polling intervals.
-                    //    The parameters are called REFRESH, RETRY, and
-                    //    EXPIRE.  Whenever a new zone is loaded in a
-                    //    secondary, the secondary waits REFRESH seconds
-                    //    before checking with the primary for a new serial."
-                    trace!("REFRESH timer fired: {timer_info:?}");
-
-                    let time_tracking = time_tracking.clone();
-                    let pending_zones = self.pending_zones.clone();
-                    let event_tx = self.event_tx.clone();
-                    let config = self.config.clone();
-                    let zones = self.zones();
-
-                    tokio::spawn(async move {
-                        // Are we actively managing refreshing of this zone?
-                        let known = {
-                            time_tracking.read().await.contains_key(&timer_info.zone_id)
-                        };
-                        // let mut tt = time_tracking.write().await;
-                        // if let Some(zone_refresh_info) = tt.get_mut(&timer_info.zone_id) {
-                        if known {
-                            // Do we have the zone that is being updated?
-                            let r_pending_zones = pending_zones.read().await;
-                            let zone_id = timer_info.zone_id.clone();
-
-                            let (is_pending_zone, zone) = {
-                                // Is the zone pending?
-                                if let Some(zone) = r_pending_zones.get(&zone_id) {
-                                    (true, zone)
-                                } else {
-                                    let Some(zone) = zones.get_zone(&zone_id.name, zone_id.class) else {
-                                        // The zone no longer exists, ignore.
-                                        return;
-                                    };
-                                    (false, zone)
-                                }
-                            };
-
-                            // Make sure it's still a secondary and hasn't been
-                            // deleted and re-added as a primary.
-                            let cat_zone: &MaintainedZone = zone.into();
-
-                            if cat_zone.info().config.is_secondary() {
-                                // If successful this will commit changes to the
-                                // zone causing a notify event message to be sent
-                                // which will be handled above.
-                                match Self::refresh_zone_and_update_state(
-                                        timer_info.cause,
-                                        zone,
-                                        None,
-                                        time_tracking,
-                                        event_tx.clone(),
-                                        config,
-                                    )
-                                    .await
-                                {
-                                    Ok(()) => {
-                                        if is_pending_zone {
-                                            // Trigger migration of the zone from the pending set to the active set.
-                                            trace!("Removing zone '{}' from the pending set as it was successfully refreshed", zone_id.name);
-                                            event_tx.send(Event::ZoneAdded(zone_id)).await.unwrap();
-                                        }
-                                    }
-
-                                    Err(_) => {
-                                        // TODO
-                                    }
-                                }
-                            } else {
-                                // TODO
-                            }
-                        }
-                    });
+                    self.on_refresh_timer(time_tracking.clone(), timer_info).await;
                 }
             }
         }
@@ -517,6 +347,231 @@ where
         self.update_lodaded_arc();
 
         Ok(())
+    }
+
+    async fn on_event(
+        &self,
+        event: Event,
+        time_tracking: Arc<RwLock<HashMap<ZoneId, ZoneRefreshState>>>,
+        refresh_timers: &mut FuturesUnordered<ZoneRefreshTimer>,
+    ) {
+        match event {
+            Event::ZoneChanged(msg) => {
+                self.on_zone_changed(msg, time_tracking.clone());
+            }
+
+            Event::ZoneAdded(zone_id) => {
+                self.on_zone_added(zone_id, time_tracking.clone(), refresh_timers)
+                    .await;
+            }
+
+            // TODO
+            // Event::ZoneRemoved(_key) => {
+            // }
+            Event::ZoneRefreshRequested { zone_id, at, cause } => {
+                Self::refresh_zone_at(cause, zone_id, at, refresh_timers);
+            }
+
+            Event::ZoneStatusRequested { zone_id, tx } => {
+                self.on_zone_status_requested(zone_id, time_tracking.clone(), refresh_timers, tx)
+                    .await;
+            }
+        }
+    }
+
+    fn on_zone_changed(
+        &self,
+        msg: ZoneChangedMsg,
+        time_tracking: Arc<RwLock<HashMap<ZoneId, ZoneRefreshState>>>,
+    ) {
+        trace!("Notify message received: {msg:?}");
+        let zones = self.zones();
+        let event_tx = self.event_tx.clone();
+        let pending_zones = self.pending_zones.clone();
+        let config = self.config.clone();
+        tokio::spawn(Self::handle_notify(
+            zones,
+            pending_zones,
+            msg,
+            time_tracking,
+            event_tx,
+            config,
+        ));
+    }
+
+    async fn on_zone_added(
+        &self,
+        zone_id: ZoneId,
+        time_tracking: Arc<RwLock<HashMap<ZoneId, ZoneRefreshState>>>,
+        refresh_timers: &mut FuturesUnordered<ZoneRefreshTimer>,
+    ) {
+        // https://datatracker.ietf.org/doc/html/rfc1034#section-4.3.5
+        // 4.3.5. Zone maintenance and transfers
+        //   ..
+        //   "Whenever a new zone is loaded in a secondary, the secondary
+        //    waits REFRESH seconds before checking with the primary for a
+        //    new serial."
+
+        let mut pending_zones = self.pending_zones.write().await;
+        if let Some(zone) = pending_zones.get(&zone_id) {
+            if let Ok(soa_refresh) = Self::track_zone_freshness(zone, time_tracking.clone()).await {
+                // If the zone already has a SOA REFRESH
+                // it is not empty and we can make it
+                // active immediately.
+                if soa_refresh.is_some() {
+                    trace!(
+                        "Removing zone '{}' from the pending set as it has a SOA REFRESH",
+                        zone_id.name
+                    );
+                    let zone = pending_zones.remove(&zone_id).unwrap();
+                    self.insert_active_zone(zone).await.unwrap();
+                }
+                Self::refresh_zone_at(
+                    ZoneRefreshCause::SoaRefreshTimerAfterZoneAdded,
+                    zone_id,
+                    soa_refresh,
+                    refresh_timers,
+                );
+            }
+        }
+    }
+
+    async fn on_zone_status_requested(
+        &self,
+        zone_id: ZoneId,
+        time_tracking: Arc<RwLock<HashMap<ZoneId, ZoneRefreshState>>>,
+        refresh_timers: &mut FuturesUnordered<ZoneRefreshTimer>,
+        tx: tokio::sync::oneshot::Sender<ZoneReport>,
+    ) {
+        let details = if self.pending_zones.read().await.contains_key(&zone_id) {
+            if let Some(zone_refresh_info) = time_tracking.read().await.get(&zone_id) {
+                ZoneReportDetails::PendingSecondary(*zone_refresh_info)
+            } else {
+                ZoneReportDetails::PendingSecondary(Default::default())
+            }
+        } else if let Some(zone_refresh_info) = time_tracking.read().await.get(&zone_id) {
+            ZoneReportDetails::Secondary(*zone_refresh_info)
+        } else {
+            ZoneReportDetails::Primary
+        };
+
+        let timers = refresh_timers
+            .iter()
+            .filter_map(|timer| {
+                if timer.refresh_instant.zone_id == zone_id {
+                    Some(timer.refresh_instant.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let zones = self.zones();
+        if let Some(zone) = self
+            .pending_zones
+            .read()
+            .await
+            .get(&zone_id)
+            .or_else(|| zones.get_zone(&zone_id.name, zone_id.class))
+        {
+            let cat_zone: &MaintainedZone = zone.into();
+
+            let zone_info = cat_zone.info().clone();
+
+            let report = ZoneReport::new(zone_id, details, timers, zone_info);
+
+            if let Err(_err) = tx.send(report) {
+                // TODO
+            }
+        } else {
+            warn!("Zone '{}' not found for zone status request.", zone_id.name);
+        };
+    }
+
+    async fn on_refresh_timer(
+        &self,
+        time_tracking: Arc<RwLock<HashMap<ZoneId, ZoneRefreshState>>>,
+        timer_info: ZoneRefreshInstant,
+    ) {
+        // https://datatracker.ietf.org/doc/html/rfc1034#section-4.3.5
+        // 4.3.5. Zone maintenance and transfers
+        //   ..
+        //   "To detect changes, secondaries just check the SERIAL
+        //    field of the SOA for the zone."
+        //   ..
+        //   "The periodic polling of the secondary servers is
+        //    controlled by parameters in the SOA RR for the zone,
+        //    which set the minimum acceptable polling intervals.
+        //    The parameters are called REFRESH, RETRY, and
+        //    EXPIRE.  Whenever a new zone is loaded in a
+        //    secondary, the secondary waits REFRESH seconds
+        //    before checking with the primary for a new serial."
+        trace!("REFRESH timer fired: {timer_info:?}");
+
+        let time_tracking = time_tracking.clone();
+        let pending_zones = self.pending_zones.clone();
+        let event_tx = self.event_tx.clone();
+        let config = self.config.clone();
+        let zones = self.zones();
+
+        tokio::spawn(async move {
+            // Are we actively managing refreshing of this zone?
+            let known = { time_tracking.read().await.contains_key(&timer_info.zone_id) };
+            // let mut tt = time_tracking.write().await;
+            // if let Some(zone_refresh_info) = tt.get_mut(&timer_info.zone_id) {
+            if known {
+                // Do we have the zone that is being updated?
+                let r_pending_zones = pending_zones.read().await;
+                let zone_id = timer_info.zone_id.clone();
+
+                let (is_pending_zone, zone) = {
+                    // Is the zone pending?
+                    if let Some(zone) = r_pending_zones.get(&zone_id) {
+                        (true, zone)
+                    } else {
+                        let Some(zone) = zones.get_zone(&zone_id.name, zone_id.class) else {
+                            // The zone no longer exists, ignore.
+                            return;
+                        };
+                        (false, zone)
+                    }
+                };
+
+                // Make sure it's still a secondary and hasn't been
+                // deleted and re-added as a primary.
+                let cat_zone: &MaintainedZone = zone.into();
+
+                if cat_zone.info().config.is_secondary() {
+                    // If successful this will commit changes to the
+                    // zone causing a notify event message to be sent
+                    // which will be handled above.
+                    match Self::refresh_zone_and_update_state(
+                        timer_info.cause,
+                        zone,
+                        None,
+                        time_tracking,
+                        event_tx.clone(),
+                        config,
+                    )
+                    .await
+                    {
+                        Ok(()) => {
+                            if is_pending_zone {
+                                // Trigger migration of the zone from the pending set to the active set.
+                                trace!("Removing zone '{}' from the pending set as it was successfully refreshed", zone_id.name);
+                                event_tx.send(Event::ZoneAdded(zone_id)).await.unwrap();
+                            }
+                        }
+
+                        Err(_) => {
+                            // TODO
+                        }
+                    }
+                } else {
+                    // TODO
+                }
+            }
+        });
     }
 
     async fn insert_active_zone(&self, zone: Zone) -> Result<(), ZoneTreeModificationError> {
