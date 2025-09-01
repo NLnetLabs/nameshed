@@ -1,11 +1,11 @@
 use std::process::ExitCode;
 
-use clap::Parser;
-use nameshed::{
+use cascade::{
     cli::args::Args,
     config::{LogTarget, LoggingConfig, Setting, SettingSource},
     log::Logger,
 };
+use clap::Parser;
 
 #[tokio::main]
 async fn main() -> ExitCode {

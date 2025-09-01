@@ -22,7 +22,7 @@ pub struct ArgsSpec {
     /// The target of log messages.
     pub log_target: Option<LogTargetSpec>,
 
-    /// Whether Nameshed should fork on startup.
+    /// Whether Cascade should fork on startup.
     pub daemonize: bool,
 }
 
@@ -54,7 +54,7 @@ impl ArgsSpec {
                 .short('d')
                 .long("daemonize")
                 .action(clap::ArgAction::SetTrue)
-                .help("Whether Nameshed should fork on startup"),
+                .help("Whether Cascade should fork on startup"),
         ])
     }
 

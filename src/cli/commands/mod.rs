@@ -1,10 +1,10 @@
-//! The commands of _nameshedc_.
+//! The commands of _cascade_.
 
 pub mod policy;
 pub mod status;
 pub mod zone;
 
-use super::client::NameshedApiClient;
+use super::client::CascadeApiClient;
 
 #[derive(Clone, Debug, clap::Subcommand)]
 pub enum Command {
@@ -40,7 +40,7 @@ pub enum Command {
 }
 
 impl Command {
-    pub async fn execute(self, client: NameshedApiClient) -> Result<(), ()> {
+    pub async fn execute(self, client: CascadeApiClient) -> Result<(), ()> {
         match self {
             Self::Zone(zone) => zone.execute(client).await,
             Self::Status(status) => status.execute(client).await,

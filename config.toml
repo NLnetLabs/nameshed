@@ -1,13 +1,13 @@
-# Configuring Nameshed
-# ====================
+# Configuring Cascade
+# ===================
 
 # The configuration file version.
 # - 'v1': This format.
 version = "v1"
 
-# Configuring the Nameshed daemon.
+# Configuring the Cascade daemon.
 #
-# This controls Nameshed's behaviour as a daemon, i.e. how it interacts with the
+# This controls Cascade's behaviour as a daemon, i.e. how it interacts with the
 # external system.
 [daemon]
 #
@@ -19,8 +19,8 @@ version = "v1"
 # - 'debug': Something occurred that may be relevant to debugging.
 # - 'info': Things are proceeding as expected.
 # - 'warning': Something does not appear to be correct.
-# - 'error': Something went wrong (but Nameshed can recover).
-# - 'critical': Something went wrong and Nameshed can't function at all.
+# - 'error': Something went wrong (but Cascade can recover).
+# - 'critical': Something went wrong and Cascade can't function at all.
 log-level = "info"
 #
 # The location the daemon writes logs to.
@@ -32,29 +32,29 @@ log-target = { type = "file", path = "/dev/stdout" }
 #
 # The path to a PID file to maintain.
 #
-# If specified, Nameshed will maintain a PID file at this location; it will be a
+# If specified, Cascade will maintain a PID file at this location; it will be a
 # simple plain-text file containing the PID number of the daemon process.
-#pid-file = "/var/run/nameshed.pid"
+#pid-file = "/var/run/cascade.pid"
 #
 # A directory to chroot into after startup.
 #
-# Nameshed will chroot into the specified directory after initialization.  Note
-# that this will fail if Nameshed is started without administrator privileges.
+# Cascade will chroot into the specified directory after initialization.  Note
+# that this will fail if Cascade is started without administrator privileges.
 # 
-# TODO: How will this affect the paths Nameshed interacts with?  What if files
+# TODO: How will this affect the paths Cascade interacts with?  What if files
 # aren't within the chroot - do we just fail?  Or do we interpret all paths here
 # relative to the chroot?
-#chroot = "/var/run/nameshed"
+#chroot = "/var/run/cascade"
 #
 # An identity (user and group) to assume after startup.
 #
-# Nameshed will assume the specified identity after initialization.  Note that
-# this will fail if Nameshed is started without administrator privileges.
+# Cascade will assume the specified identity after initialization.  Note that
+# this will fail if Cascade is started without administrator privileges.
 #
 # The identity can be specified as '<user>:<group>' or just '<user>'; in the
 # latter case, the identically named/numbered group will be used.  Both the user
 # and group can be specified as a numeric ID or a name.
-#identity = "nameshed:nameshed"
+#identity = "cascade:cascade"
 
 # Configuring how zones are loaded.
 [loader]
@@ -100,7 +100,7 @@ servers = ["127.0.0.1:8052"] # TODO: Pick a good default port.
 # Where to serve published zones.
 # 
 # A DNS server will be bound to these addresses, and will serve the contents of
-# all published zones.  This is the final output from Nameshed.
+# all published zones.  This is the final output from Cascade.
 #
 # Unless explicitly specified (e.g. 'udp://localhost:0000'), each address will
 # be served over UDP and TCP.  At least one address must be specified.

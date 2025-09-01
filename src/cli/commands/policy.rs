@@ -3,7 +3,7 @@ use log::error;
 
 use crate::{
     api::{PolicyListResult, PolicyReloadResult},
-    cli::client::NameshedApiClient,
+    cli::client::CascadeApiClient,
 };
 
 #[derive(Clone, Debug, clap::Args)]
@@ -27,7 +27,7 @@ pub enum PolicyCommand {
 }
 
 impl Policy {
-    pub async fn execute(self, client: NameshedApiClient) -> Result<(), ()> {
+    pub async fn execute(self, client: CascadeApiClient) -> Result<(), ()> {
         match self.command {
             PolicyCommand::List => {
                 let res: PolicyListResult = client

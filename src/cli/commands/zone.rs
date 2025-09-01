@@ -7,7 +7,7 @@ use log::error;
 use crate::api::{
     ZoneAdd, ZoneAddResult, ZoneSource, ZoneStage, ZoneStatusResult, ZonesListResult,
 };
-use crate::cli::client::NameshedApiClient;
+use crate::cli::client::CascadeApiClient;
 
 #[derive(Clone, Debug, clap::Args)]
 pub struct Zone {
@@ -59,7 +59,7 @@ pub enum ZoneCommand {
 // - reload zone (i.e. from file)
 
 impl Zone {
-    pub async fn execute(self, client: NameshedApiClient) -> Result<(), ()> {
+    pub async fn execute(self, client: CascadeApiClient) -> Result<(), ()> {
         match self.command {
             ZoneCommand::Add { name, source } => {
                 let res: ZoneAddResult = client
