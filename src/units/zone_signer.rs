@@ -958,7 +958,12 @@ fn collect_zone(zone: Zone) -> Vec<StoredRecord> {
             // zone rather than signing an unsigned zone)
             if matches!(
                 rrset.rtype(),
-                Rtype::DNSKEY | Rtype::RRSIG | Rtype::NSEC | Rtype::NSEC3
+                Rtype::DNSKEY
+                    | Rtype::RRSIG
+                    | Rtype::NSEC
+                    | Rtype::NSEC3
+                    | Rtype::CDS
+                    | Rtype::CDNSKEY
             ) {
                 return;
             }
