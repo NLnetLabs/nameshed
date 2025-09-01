@@ -105,9 +105,8 @@ syslog      = "7.0"
 default = []
 tls = ["tokio-rustls", "rustls-pemfile"]
 
-# TODO: Do we want this?
-# [profile.release]
-# panic = "abort"
+[profile.release]
+panic = "abort"
 
 [package.metadata.deb]
 assets = [
@@ -145,7 +144,7 @@ maintainer = "NLnet Labs <cascade@nlnetlabs.nl>"
 license-file = ["LICENSE", "0"]
 # TODO: come up with a description (also for the git repo)
 extended-description = "A batteries-included DNSSEC signing solution."
-depends = "$auto, adduser, dnst, nameshed-hsm-relay"
+depends = "$auto, adduser, dnst, cascade-hsm-relay"
 section = "net"
 priority = "optional"
 maintainer-scripts = "pkg/debian"
@@ -169,4 +168,4 @@ assets = [
 [package.metadata.generate-rpm.requires]
 shadow-utils = "*"
 dnst = "*"
-nameshed-hsm-relay = "*"
+cascade-hsm-relay = "*"
