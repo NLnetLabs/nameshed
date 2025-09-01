@@ -1,5 +1,5 @@
-use clap::{crate_authors, crate_version};
 use cascade::{config::Config, manager::Manager};
+use clap::{crate_authors, crate_version};
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
