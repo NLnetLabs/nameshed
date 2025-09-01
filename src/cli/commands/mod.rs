@@ -1,4 +1,4 @@
-//! The commands of _cascadec_.
+//! The commands of _cascade_.
 
 pub mod policy;
 pub mod status;
