@@ -119,7 +119,7 @@ pub struct ZoneServerUnit {
     pub listen: Vec<ListenAddr>,
 
     /// XFR out per zone: Allow XFR to, and when with a port also send NOTIFY to.
-    pub xfr_out: HashMap<String, String>,
+    pub xfr_out: HashMap<StoredName, String>,
 
     pub hooks: Vec<String>,
 
@@ -260,7 +260,7 @@ struct ZoneServer {
     pending_approvals: Arc<RwLock<HashMap<(Name<Bytes>, Serial), Vec<Uuid>>>>,
     #[allow(clippy::type_complexity)]
     last_approvals: Arc<RwLock<HashMap<(Name<Bytes>, Serial), Instant>>>,
-    xfr_out: HashMap<String, String>,
+    xfr_out: HashMap<StoredName, String>,
     zones: XfrDataProvidingZonesWrapper,
 }
 
@@ -273,7 +273,7 @@ impl ZoneServer {
         source: Source,
         hooks: Vec<String>,
         listen: Vec<ListenAddr>,
-        xfr_out: HashMap<String, String>,
+        xfr_out: HashMap<StoredName, String>,
         zones: XfrDataProvidingZonesWrapper,
     ) -> Self {
         Self {
@@ -483,7 +483,7 @@ impl ZoneServer {
                                 component.signed_zones().store(Arc::new(new_signed_zones));
 
                                 // Send NOTIFY if configured to do so.
-                                if let Some(xfr_out) = arc_self.xfr_out.get(&zone_name.to_string()) {
+                                if let Some(xfr_out) = arc_self.xfr_out.get(zone_name) {
                                     info!("[{unit_name}]: XFR out configuration found, checking for NOTIFY support.");
                                     // The XFR out configuration is a zone
                                     // name to string mapping, with the string
