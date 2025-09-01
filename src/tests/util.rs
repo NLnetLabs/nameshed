@@ -2,21 +2,9 @@
 pub(crate) mod internal {
     use std::sync::Arc;
 
-    use env_logger::Env;
-
     use crate::metrics::{self, OutputFormat, Target};
 
-    pub const MOCK_ROUTER_ID: &str = "mock-router";
-
-    /// Tries to enable logging. Intended for use in tests.
-    ///
-    /// Accepts a log level name as a string, e.g. "trace".
-    #[allow(dead_code)]
-    pub(crate) fn enable_logging(log_level: &str) {
-        let _ = env_logger::Builder::from_env(Env::default().default_filter_or(log_level))
-            .is_test(true)
-            .try_init();
-    }
+    pub const _MOCK_ROUTER_ID: &str = "mock-router";
 
     pub(crate) fn get_testable_metrics_snapshot(
         metrics: &Arc<impl metrics::Source + ?Sized>,

@@ -241,9 +241,7 @@ where
 
             let zone_config = &cat_zone.info().config;
 
-            // TODO: This shouldn't check is_primary() but rather
-            // if it has notify targets.
-            if zone_config.is_primary() {
+            if !zone_config.send_notify_to.is_empty() {
                 // https://datatracker.ietf.org/doc/html/rfc1996#autoid-4
                 // 4. Details and Examples
                 //   "4.1. Retaining query state information across host
@@ -572,7 +570,6 @@ where
         rx.await.map_err(|_| ZoneMaintainerError::UnknownZone)
     }
 
-    #[allow(dead_code)]
     pub async fn force_zone_refresh(&self, apex_name: &StoredName, class: Class) {
         self.event_tx
             .send(Event::ZoneRefreshRequested {
@@ -1376,7 +1373,7 @@ where
             let zone_id = ZoneId::from(zone);
             {
                 let mut tt = time_tracking.write().await;
-                let Some(zone_refresh_info) = tt.get_mut(&zone_id) else {
+                let Some(_zone_refresh_info) = tt.get_mut(&zone_id) else {
                     return Err(ZoneMaintainerError::InternalError(
                         "Cannot find time tracking data for zone",
                     ));
@@ -1976,6 +1973,7 @@ where
         &self,
         class: Class,
         apex_name: &StoredName,
+        serial: Option<Serial>,
         source: IpAddr,
     ) -> Pin<Box<dyn Future<Output = Result<(), NotifyError>> + Sync + Send + '_>> {
         let apex_name = apex_name.clone();
@@ -1984,7 +1982,34 @@ where
                 return Err(NotifyError::Other);
             }
 
-            if self.zones().get_zone(&apex_name, class).is_none() {
+            if let Some(zone) = self.zones().get_zone(&apex_name, class) {
+                // https://www.rfc-editor.org/rfc/rfc1996#section-3
+                //   "3.7. A NOTIFY request has QDCOUNT>0, ANCOUNT>=0, AUCOUNT>=0,
+                //   ADCOUNT>=0.  If ANCOUNT>0, then the answer section
+                //   represents an unsecure hint at the new RRset for this
+                //   <QNAME,QCLASS,QTYPE>.  A slave receiving such a hint is free
+                //   to treat equivilence of this answer section with its local
+                //   data as a "no further work needs to be done" indication.  If
+                //   ANCOUNT=0, or ANCOUNT>0 and the answer section differs from
+                //   the slave's local data, then the slave should query its known
+                //   masters to retrieve the new data."
+                if let Some(serial) = serial {
+                    let answer = zone.read().query(zone.apex_name().clone(), Rtype::SOA)
+                         .inspect_err(|_| warn!("[ZM]: Unable to read SOA for zone '{apex_name}' when checking if notify serial hint is newer: Out of zone error"))
+                         .map_err(|_| NotifyError::Other)?;
+                    if let AnswerContent::Data(rrset) = answer.content() {
+                        if let ZoneRecordData::Soa(soa) = rrset.first().unwrap().data() {
+                            if soa.serial() > serial {
+                                debug!(
+                                    "[ZM]: Ignoring outdated serial ({serial} < {}) received for zone '{apex_name}' from {source}",
+                                    soa.serial()
+                                );
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+            } else {
                 let zone_id = ZoneId::new(apex_name.clone(), class);
                 if !self.pending_zones.read().await.contains_key(&zone_id) {
                     return Err(NotifyError::NotAuthForZone);
@@ -2035,10 +2060,8 @@ where
             self.event_tx
                 .send(Event::ZoneChanged(msg))
                 .await
-                .map_err(|err| {
-                    error!("Internal error: {err}");
-                    NotifyError::Other
-                })?;
+                .inspect_err(|err| warn!("[ZM]: Unable to send zone changed event for zone '{apex_name}' due to a zone changed notification: {err}"))
+                .map_err(|_| NotifyError::Other)?;
 
             Ok(())
         })
@@ -2747,6 +2770,7 @@ impl ConnectionFactory for DefaultConnFactory {
 pub trait ZoneLookup {
     fn zones(&self) -> Arc<ZoneTree>;
 
+    #[allow(dead_code)]
     fn get_zone(&self, apex_name: &impl ToName, class: Class) -> Result<Option<Zone>, ZoneError>;
 
     fn find_zone(&self, qname: &impl ToName, class: Class) -> Result<Option<Zone>, ZoneError>;

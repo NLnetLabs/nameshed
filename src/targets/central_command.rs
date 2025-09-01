@@ -14,7 +14,7 @@ use crate::payload::Update;
 #[derive(Debug)]
 pub struct CentralCommandTarget {
     /// A receiver for updates.
-    pub update_rx: mpsc::Receiver<Update>,
+    pub update_rx: mpsc::UnboundedReceiver<Update>,
 
     pub config: Config,
 }
@@ -23,7 +23,7 @@ impl CentralCommandTarget {
     pub async fn run(
         self,
         component: Component,
-        cmd: mpsc::Receiver<TargetCommand>,
+        cmd: mpsc::UnboundedReceiver<TargetCommand>,
     ) -> Result<(), Terminated> {
         CentralCommand::new(self.config, component)
             .run(cmd, self.update_rx)
@@ -33,6 +33,7 @@ impl CentralCommandTarget {
 
 pub(super) struct CentralCommand {
     component: Component,
+    #[allow(dead_code)]
     config: Arc<ArcSwap<Config>>,
 }
 
@@ -47,10 +48,10 @@ impl CentralCommand {
 
     pub async fn run(
         mut self,
-        cmd_rx: mpsc::Receiver<TargetCommand>,
-        update_rx: mpsc::Receiver<Update>,
+        cmd_rx: mpsc::UnboundedReceiver<TargetCommand>,
+        update_rx: mpsc::UnboundedReceiver<Update>,
     ) -> Result<(), Terminated> {
-        let component = &mut self.component;
+        let _component = &mut self.component;
 
         let arc_self = Arc::new(self);
 
@@ -59,8 +60,8 @@ impl CentralCommand {
 
     pub async fn do_run(
         self: &Arc<Self>,
-        mut cmd_rx: mpsc::Receiver<TargetCommand>,
-        mut update_rx: mpsc::Receiver<Update>,
+        mut cmd_rx: mpsc::UnboundedReceiver<TargetCommand>,
+        mut update_rx: mpsc::UnboundedReceiver<Update>,
     ) -> Result<(), Terminated> {
         loop {
             if let Err(Terminated) = self.process_events(&mut cmd_rx, &mut update_rx).await {
@@ -72,8 +73,8 @@ impl CentralCommand {
 
     pub async fn process_events(
         self: &Arc<Self>,
-        cmd_rx: &mut mpsc::Receiver<TargetCommand>,
-        update_rx: &mut mpsc::Receiver<Update>,
+        cmd_rx: &mut mpsc::UnboundedReceiver<TargetCommand>,
+        update_rx: &mut mpsc::UnboundedReceiver<Update>,
     ) -> Result<(), Terminated> {
         loop {
             tokio::select! {
@@ -83,7 +84,7 @@ impl CentralCommand {
                 // If nothing happened above, check for new internal Rotonda
                 // target commands to handle.
                 cmd = cmd_rx.recv() => {
-                    if let Some(cmd) = &cmd {
+                    if let Some(_cmd) = &cmd {
                         // self.status_reporter.command_received(cmd);
                     }
 
@@ -106,6 +107,20 @@ impl CentralCommand {
     async fn direct_update(&self, event: Update) {
         info!("[CC]: Event received: {event:?}");
         let (msg, target, cmd) = match event {
+            Update::RefreshZone {
+                zone_name,
+                source,
+                serial,
+            } => (
+                "Instructing zone loader to refresh the zone",
+                "ZL",
+                ApplicationCommand::RefreshZone {
+                    zone_name,
+                    source,
+                    serial,
+                },
+            ),
+
             Update::UnsignedZoneUpdatedEvent {
                 zone_name,
                 zone_serial,
