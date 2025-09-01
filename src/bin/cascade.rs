@@ -2,7 +2,7 @@ use std::process::ExitCode;
 
 use cascade::{
     cli::args::Args,
-    config::{LogTarget, LoggingConfig, Setting, SettingSource},
+    config::{LogTarget, LoggingConfig, Setting},
     log::Logger,
 };
 use clap::Parser;
@@ -14,15 +14,8 @@ async fn main() -> ExitCode {
     let args = Args::parse();
 
     let log_config = LoggingConfig {
-        // TODO: Use the right sources
-        level: Setting {
-            source: SettingSource::Args,
-            value: args.log_level,
-        },
-        target: Setting {
-            source: SettingSource::Default,
-            value: LogTarget::File("/dev/stdout".into()),
-        },
+        level: Setting::new(args.log_level),
+        target: Setting::new(LogTarget::File("/dev/stdout".into())),
         trace_targets: Default::default(),
     };
     if let Some(change) = logger.prepare(&log_config).unwrap() {

@@ -9,8 +9,11 @@ pub mod log;
 pub mod manager;
 pub mod metrics;
 mod payload;
+pub mod policy;
 mod targets;
+pub mod tsig;
 mod units;
+pub mod zone;
 mod zonemaintenance;
 
 #[cfg(test)]

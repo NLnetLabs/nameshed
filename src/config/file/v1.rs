@@ -7,16 +7,27 @@ use serde::Deserialize;
 
 use crate::config::{
     Config, DaemonConfig, GroupId, KeyManagerConfig, LoaderConfig, LogLevel, LogTarget,
-    LoggingConfig, ReviewConfig, ServerConfig, Setting, SettingSource, SignerConfig, SocketConfig,
-    UserId,
+    LoggingConfig, ReviewConfig, ServerConfig, Setting, SignerConfig, SocketConfig, UserId,
 };
 
 //----------- Spec -------------------------------------------------------------
 
 /// A configuration file.
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields, default)]
 pub struct Spec {
+    /// The directory storing policy files.
+    #[serde(default = "Spec::policy_dir_default")]
+    pub policy_dir: Box<Utf8Path>,
+
+    /// The directory storing per-zone state files.
+    #[serde(default = "Spec::zone_state_dir_default")]
+    pub zone_state_dir: Box<Utf8Path>,
+
+    /// The file storing TSIG keys.
+    #[serde(default = "Spec::tsig_store_path_default")]
+    pub tsig_store_path: Box<Utf8Path>,
+
     /// Configuring the Cascade daemon.
     pub daemon: DaemonSpec,
 
@@ -39,12 +50,49 @@ impl Spec {
     /// Build the internal configuration.
     pub fn build(self, config_file: Setting<Box<Utf8Path>>) -> Config {
         Config {
+            policy_dir: self.policy_dir,
+            zone_state_dir: self.zone_state_dir,
+            tsig_store_path: self.tsig_store_path,
             daemon: self.daemon.build(config_file),
             loader: self.loader.build(),
             signer: self.signer.build(),
             key_manager: self.key_manager.build(),
             server: self.server.build(),
         }
+    }
+}
+
+//--- Defaults
+
+impl Default for Spec {
+    fn default() -> Self {
+        Self {
+            policy_dir: Self::policy_dir_default(),
+            zone_state_dir: Self::zone_state_dir_default(),
+            tsig_store_path: Self::tsig_store_path_default(),
+            daemon: Default::default(),
+            loader: Default::default(),
+            signer: Default::default(),
+            key_manager: Default::default(),
+            server: Default::default(),
+        }
+    }
+}
+
+impl Spec {
+    /// The default value for `policy_dir`.
+    fn policy_dir_default() -> Box<Utf8Path> {
+        "/etc/cascade/policies".into()
+    }
+
+    /// The default value for `zone_state_dir`.
+    fn zone_state_dir_default() -> Box<Utf8Path> {
+        "/var/db/cascade/zone-state".into()
+    }
+
+    /// The default value for `tsig_store_path`.
+    fn tsig_store_path_default() -> Box<Utf8Path> {
+        "/var/db/cascade/tsig-keys".into()
     }
 }
 
@@ -79,42 +127,30 @@ impl DaemonSpec {
     /// Build the internal configuration.
     pub fn build(self, config_file: Setting<Box<Utf8Path>>) -> DaemonConfig {
         let logging = LoggingConfig {
-            level: self
-                .log_level
-                .map(|log_level| Setting {
-                    source: SettingSource::File,
-                    value: log_level.build(),
-                })
-                .unwrap_or(Setting {
-                    source: SettingSource::Default,
-                    value: LogLevel::Info,
-                }),
-            target: self
-                .log_target
-                .map(|log_target| Setting {
-                    source: SettingSource::File,
-                    value: log_target.build(),
-                })
-                .unwrap_or(Setting {
-                    source: SettingSource::Default,
-                    value: LogTarget::File("/var/log/cascade.log".into()),
-                }),
+            level: Setting {
+                default: LogLevel::Info,
+                file: self.log_level.map(|v| v.build()),
+                env: None,
+                args: None,
+            },
+            target: Setting {
+                default: LogTarget::File("/var/log/cascade.log".into()),
+                file: self.log_target.map(|v| v.build()),
+                env: None,
+                args: None,
+            },
             trace_targets: Default::default(),
         };
 
         DaemonConfig {
             logging,
             config_file,
-            daemonize: self
-                .daemonize
-                .map(|daemonize| Setting {
-                    source: SettingSource::File,
-                    value: daemonize,
-                })
-                .unwrap_or(Setting {
-                    source: SettingSource::Default,
-                    value: false,
-                }),
+            daemonize: Setting {
+                default: false,
+                file: self.daemonize,
+                env: None,
+                args: None,
+            },
             pid_file: self.pid_file,
             chroot: self.chroot,
             identity: self.identity.map(|i| i.build()),
@@ -246,7 +282,7 @@ impl IdentitySpec {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum UserIdSpec {
     /// A numeric ID.
-    Numeric(nix::unistd::Uid),
+    Numeric(u32),
 
     /// A user name.
     Named(Box<str>),
@@ -258,8 +294,8 @@ impl FromStr for UserIdSpec {
     type Err = ParseIdentityError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.parse::<nix::libc::uid_t>() {
-            Ok(id) => Ok(Self::Numeric(nix::unistd::Uid::from_raw(id))),
+        match s.parse::<u32>() {
+            Ok(id) => Ok(Self::Numeric(id)),
 
             Err(error) if *error.kind() == IntErrorKind::PosOverflow => {
                 Err(ParseIdentityError::NumericOverflow { value: s.into() })
@@ -288,7 +324,7 @@ impl UserIdSpec {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GroupIdSpec {
     /// A numeric ID.
-    Numeric(nix::unistd::Gid),
+    Numeric(u32),
 
     /// A group name.
     Named(Box<str>),
@@ -300,8 +336,8 @@ impl FromStr for GroupIdSpec {
     type Err = ParseIdentityError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.parse::<nix::libc::gid_t>() {
-            Ok(id) => Ok(Self::Numeric(nix::unistd::Gid::from_raw(id))),
+        match s.parse::<u32>() {
+            Ok(id) => Ok(Self::Numeric(id)),
 
             Err(error) if *error.kind() == IntErrorKind::PosOverflow => {
                 Err(ParseIdentityError::NumericOverflow { value: s.into() })

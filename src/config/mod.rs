@@ -5,7 +5,6 @@
 //! arguments.  This module defines and collects together these sources.
 
 use std::{
-    borrow::{Borrow, BorrowMut},
     fmt,
     hash::{Hash, Hasher},
     net::SocketAddr,
@@ -22,6 +21,15 @@ pub mod file;
 /// Configuration for Cascade.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {
+    /// The directory storing policy files.
+    pub policy_dir: Box<Utf8Path>,
+
+    /// The directory storing zone state files.
+    pub zone_state_dir: Box<Utf8Path>,
+
+    /// The file storing TSIG keys.
+    pub tsig_store_path: Box<Utf8Path>,
+
     /// Daemon-related configuration.
     pub daemon: DaemonConfig,
 
@@ -38,7 +46,24 @@ pub struct Config {
     pub server: ServerConfig,
 }
 
-//--- Processing
+//--- Defaults
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            policy_dir: "/etc/cascade/policies".into(),
+            zone_state_dir: "/var/db/cascade/zone-state".into(),
+            tsig_store_path: "/var/db/cascade/tsig-keys".into(),
+            daemon: Default::default(),
+            loader: Default::default(),
+            signer: Default::default(),
+            key_manager: Default::default(),
+            server: Default::default(),
+        }
+    }
+}
+
+//--- Initialization
 
 impl Config {
     /// Set up a [`clap::Command`] with config-related arguments.
@@ -46,44 +71,17 @@ impl Config {
         args::ArgsSpec::setup(cmd)
     }
 
-    /// Process all configuration sources.
-    pub fn process(cli_matches: &clap::ArgMatches) -> Result<Self, ConfigError> {
+    /// Initialize Cascade's configuration.
+    ///
+    /// The configuration file is not read here; it should only be read on
+    /// explicit user request or if a global state file is not available.
+    pub fn init(cli_matches: &clap::ArgMatches) -> Result<Self, ConfigError> {
         // Process environment variables and command-line arguments.
-        let mut env = env::EnvSpec::process()?;
-        let mut args = args::ArgsSpec::process(cli_matches);
+        let env = env::EnvSpec::process()?;
+        let args = args::ArgsSpec::process(cli_matches);
 
-        // Determine the location of the configuration file.
-        let config_file = args
-            .config
-            .take()
-            .map(|path| Setting {
-                source: SettingSource::Args,
-                value: path,
-            })
-            .or(env.config.take().map(|path| Setting {
-                source: SettingSource::Env,
-                value: path,
-            }))
-            .unwrap_or(Setting {
-                source: SettingSource::Default,
-                value: "/etc/cascade/config.toml".into(),
-            });
-
-        // Load and parse the configuration file.
-        let file = match file::FileSpec::load(&config_file.value) {
-            Ok(file) => file,
-            Err(error) => {
-                return Err(ConfigError::File {
-                    path: config_file.value,
-                    error,
-                })
-            }
-        };
-
-        // Build the configuration.
-        let mut this = file.build(config_file);
-
-        // Include data from environment variables and command-line arguments.
+        // Combine their data with the default state.
+        let mut this = Self::default();
         args.merge(&mut this);
         env.merge(&mut this);
 
@@ -116,7 +114,20 @@ pub struct DaemonConfig {
     pub identity: Option<(UserId, GroupId)>,
 }
 
-//----------- LogConfig --------------------------------------------------------
+impl Default for DaemonConfig {
+    fn default() -> Self {
+        Self {
+            logging: LoggingConfig::default(),
+            config_file: Setting::new("/etc/cascade/config.toml".into()),
+            daemonize: Setting::new(false),
+            pid_file: None,
+            chroot: None,
+            identity: None,
+        }
+    }
+}
+
+//----------- LoggingConfig ----------------------------------------------------
 
 /// Logging configuration for Cascade.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -128,7 +139,17 @@ pub struct LoggingConfig {
     pub target: Setting<LogTarget>,
 
     /// Targets to log trace messages for.
-    pub trace_targets: foldhash::HashSet<Setting<Box<str>>>,
+    pub trace_targets: Setting<foldhash::HashSet<Box<str>>>,
+}
+
+impl Default for LoggingConfig {
+    fn default() -> Self {
+        Self {
+            level: Setting::new(LogLevel::Info),
+            target: Setting::new(LogTarget::File("/dev/stdout".into())),
+            trace_targets: Setting::new(Default::default()),
+        }
+    }
 }
 
 //----------- UserId -----------------------------------------------------------
@@ -137,7 +158,7 @@ pub struct LoggingConfig {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum UserId {
     /// A numeric ID.
-    Numeric(nix::unistd::Uid),
+    Numeric(u32),
 
     /// A user name.
     Named(Box<str>),
@@ -149,7 +170,7 @@ pub enum UserId {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GroupId {
     /// A numeric ID.
-    Numeric(nix::unistd::Gid),
+    Numeric(u32),
 
     /// A group name.
     Named(Box<str>),
@@ -158,7 +179,7 @@ pub enum GroupId {
 //----------- LoaderConfig -----------------------------------------------------
 
 /// Configuration for the zone loader.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LoaderConfig {
     /// Where to listen for zone update notifications.
     pub notif_listeners: Vec<SocketConfig>,
@@ -170,7 +191,7 @@ pub struct LoaderConfig {
 //----------- SignerConfig -----------------------------------------------------
 
 /// Configuration for the zone signer.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SignerConfig {
     /// Configuration for reviewing signed zones.
     pub review: ReviewConfig,
@@ -179,7 +200,7 @@ pub struct SignerConfig {
 //----------- ReviewConfig -----------------------------------------------------
 
 /// Configuration for reviewing zones.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ReviewConfig {
     /// Where to serve zones for review.
     pub servers: Vec<SocketConfig>,
@@ -188,13 +209,13 @@ pub struct ReviewConfig {
 //----------- KeyManagerConfig -------------------------------------------------
 
 /// Configuration for the key manager.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct KeyManagerConfig {}
 
 //----------- ServerConfig -----------------------------------------------------
 
 /// Configuration for the zone server.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ServerConfig {
     /// Where to serve zones.
     pub servers: Vec<SocketConfig>,
@@ -287,46 +308,62 @@ pub enum LogTarget {
 //----------- Setting ----------------------------------------------------------
 
 /// A configured setting.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy)]
 pub struct Setting<T> {
-    /// The source of the value.
-    pub source: SettingSource,
+    /// The default for the value.
+    pub default: T,
 
-    /// The underlying value.
-    pub value: T,
+    /// The setting in the configuration file, if any.
+    pub file: Option<T>,
+
+    /// The setting from environment variables, if any.
+    pub env: Option<T>,
+
+    /// The setting from command-line arguments, if any.
+    pub args: Option<T>,
 }
 
 impl<T> Setting<T> {
-    /// Merge two [`Setting`]s, keeping the highest-priority value.
-    pub fn merge(&mut self, other: Self) {
-        if self.source < other.source {
-            self.value = other.value;
+    /// Construct a new [`Setting`].
+    pub const fn new(default: T) -> Self {
+        Self {
+            default,
+            file: None,
+            env: None,
+            args: None,
         }
     }
 
-    /// Merge a [`Setting`] with a value from a fixed source.
-    pub fn merge_value(&mut self, value: Option<T>, source: SettingSource) {
-        if let Some(value) = value {
-            self.merge(Setting { source, value });
+    /// The current value.
+    pub const fn value(&self) -> &T {
+        match self {
+            Self {
+                args: Some(value), ..
+            }
+            | Self {
+                env: Some(value), ..
+            }
+            | Self {
+                file: Some(value), ..
+            }
+            | Self { default: value, .. } => value,
         }
     }
-}
 
-impl<T> Borrow<T> for Setting<T> {
-    fn borrow(&self) -> &T {
-        &self.value
-    }
-}
-
-impl<T> BorrowMut<T> for Setting<T> {
-    fn borrow_mut(&mut self) -> &mut T {
-        &mut self.value
+    /// The source of the current value.
+    pub const fn setting(&self) -> SettingSource {
+        match self {
+            Self { args: Some(_), .. } => SettingSource::Args,
+            Self { env: Some(_), .. } => SettingSource::Env,
+            Self { file: Some(_), .. } => SettingSource::File,
+            Self { default: _, .. } => SettingSource::Default,
+        }
     }
 }
 
 impl<T: PartialEq> PartialEq for Setting<T> {
     fn eq(&self, other: &Self) -> bool {
-        self.value == other.value
+        self.value() == other.value()
     }
 }
 
@@ -334,7 +371,7 @@ impl<T: Eq> Eq for Setting<T> {}
 
 impl<T: Hash> Hash for Setting<T> {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.value.hash(state)
+        self.value().hash(state)
     }
 }
 
