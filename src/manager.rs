@@ -4,6 +4,7 @@ use arc_swap::ArcSwap;
 use log::{debug, info};
 use std::collections::HashMap;
 use std::fmt::Display;
+use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 
@@ -20,7 +21,7 @@ use crate::units::zone_loader::ZoneLoader;
 use crate::units::zone_server::{self, ZoneServerUnit};
 use crate::units::zone_signer::{KmipServerConnectionSettings, TomlDenialConfig, ZoneSignerUnit};
 use crate::units::Unit;
-use domain::zonetree::ZoneTree;
+use domain::zonetree::{StoredName, ZoneTree};
 
 //------------ Component -----------------------------------------------------
 
@@ -448,44 +449,10 @@ impl Manager {
             }
         }
 
-        let client_cert_path = std::env::var("PYKMIP_CLIENT_CERT_PATH").ok();
-        let client_key_path = std::env::var("PYKMIP_CLIENT_KEY_PATH").ok();
-
-        if client_cert_path.is_some() && client_key_path.is_some() {
-            kmip_server_conn_settings.insert(
-                "pykmip".to_string(),
-                KmipServerConnectionSettings {
-                    server_addr: "127.0.0.1".into(),
-                    server_port: 5696,
-                    server_insecure: true,
-                    client_cert_path: Some(
-                        "/home/ximon/docker_data/pykmip/pykmip-data/selfsigned.crt".into(),
-                    ),
-                    client_key_path: Some(
-                        "/home/ximon/docker_data/pykmip/pykmip-data/selfsigned.key".into(),
-                    ),
-                    ..Default::default()
-                },
-            );
-        }
-
-        let server_username = std::env::var("FORTANIX_USER").ok();
-        let server_password = std::env::var("FORTANIX_PASS").ok();
-        if server_username.is_some() && server_password.is_some() {
-            kmip_server_conn_settings.insert(
-                "fortanix".to_string(),
-                KmipServerConnectionSettings {
-                    server_addr: "eu.smartkey.io".into(),
-                    server_insecure: true,
-                    server_username,
-                    server_password,
-                    ..Default::default()
-                },
-            );
-        }
-
-        let zone_name = std::env::var("ZL_IN_ZONE").unwrap_or("example.com.".into());
-        let zone_file = std::env::var("ZL_IN_ZONE_FILE").unwrap_or("".into());
+        let zone_name = StoredName::from_str(
+            &std::env::var("ZL_IN_ZONE").unwrap_or("example.com.".to_string()),
+        )
+        .unwrap();
         let xfr_in = std::env::var("ZL_XFR_IN").unwrap_or("127.0.0.1:8055 KEY sec1-key".into());
         let xfr_out = std::env::var("PS_XFR_OUT").unwrap_or("127.0.0.1:8055 KEY sec1-key".into());
         let tsig_key_name = std::env::var("ZL_TSIG_KEY_NAME").unwrap_or("sec1-key".into());
@@ -496,7 +463,7 @@ impl Manager {
             (
                 String::from("ZL"),
                 Unit::ZoneLoader(ZoneLoader {
-                    zones: Arc::new(HashMap::from([(zone_name.clone(), zone_file)])),
+                    zones: Default::default(),
                     xfr_in: Arc::new(HashMap::from([(zone_name.clone(), xfr_in)])),
                     xfr_out: Arc::new(HashMap::from([(zone_name.clone(), xfr_out.clone())])),
                     tsig_keys: HashMap::from([(tsig_key_name, tsig_key)]),
@@ -511,7 +478,7 @@ impl Manager {
                         "tcp:127.0.0.1:8056".parse().unwrap(),
                         "udp:127.0.0.1:8056".parse().unwrap(),
                     ],
-                    xfr_out: HashMap::from([(zone_name, xfr_out)]),
+                    xfr_out: HashMap::from([(zone_name.clone(), xfr_out)]),
                     hooks: vec![String::from("/tmp/approve_or_deny.sh")],
                     mode: zone_server::Mode::Prepublish,
                     source: zone_server::Source::UnsignedZones,
@@ -554,7 +521,7 @@ impl Manager {
                         "udp:127.0.0.1:8057".parse().unwrap(),
                     ],
                     xfr_out: HashMap::from([(
-                        "example.com".into(),
+                        zone_name.clone(),
                         "127.0.0.1:8055 KEY sec1-key".into(),
                     )]),
                     hooks: vec![String::from("/tmp/approve_or_deny_signed.sh")],
@@ -572,7 +539,7 @@ impl Manager {
                         "tcp:127.0.0.1:8058".parse().unwrap(),
                         "udp:127.0.0.1:8058".parse().unwrap(),
                     ],
-                    xfr_out: HashMap::from([("example.com".into(), "127.0.0.1:8055".into())]),
+                    xfr_out: HashMap::from([(zone_name.into(), "127.0.0.1:8055".into())]),
                     hooks: vec![],
                     mode: zone_server::Mode::Publish,
                     source: zone_server::Source::PublishedZones,

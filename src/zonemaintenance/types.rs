@@ -147,7 +147,6 @@ impl<T: Clone + Debug + Default> SrcDstConfig<T> {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub enum XfrStrategy {
     /// Do not support XFR at all.
-    #[default]
     None,
 
     /// Support only AXFR.
@@ -160,6 +159,7 @@ pub enum XfrStrategy {
     ///
     /// If IXFR cannot be provided due to missing required incremental
     /// difference data, fallback to full AXFR instead.
+    #[default]
     IxfrWithAxfrFallback,
 }
 

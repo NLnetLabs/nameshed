@@ -119,7 +119,7 @@ pub struct ZoneServerUnit {
     pub listen: Vec<ListenAddr>,
 
     /// XFR out per zone: Allow XFR to, and when with a port also send NOTIFY to.
-    pub xfr_out: HashMap<String, String>,
+    pub xfr_out: HashMap<StoredName, String>,
 
     pub hooks: Vec<String>,
 
