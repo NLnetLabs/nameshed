@@ -126,7 +126,6 @@ pub struct SignerSpec {
     //
     // TODO:
     // - Signing policy (disabled, pass-through?, enabled)
-    // - Serial number policy
 }
 
 //--- Conversion

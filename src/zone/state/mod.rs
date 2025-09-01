@@ -3,7 +3,7 @@
 use std::{
     collections::hash_map,
     fs,
-    io::{self, BufReader, BufWriter},
+    io::{self, BufReader},
     sync::Arc,
 };
 
@@ -106,19 +106,7 @@ impl Spec {
 
     /// Build and save this specification to a file.
     pub fn save(&self, path: &Utf8Path) -> io::Result<()> {
-        fs::create_dir_all(
-            path.parent()
-                .expect("'path' must be a file, so it must have a parent"),
-        )?;
-
-        let file = BufWriter::new(
-            fs::OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(path)?,
-        );
-        serde_json::to_writer(file, self)?;
-        Ok(())
+        let text = serde_json::to_string(self)?;
+        crate::util::write_file(path, text.as_bytes())
     }
 }

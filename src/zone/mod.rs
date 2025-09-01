@@ -82,8 +82,8 @@ impl Zone {
 //--- Loading / Saving
 
 impl Zone {
-    /// Reload this zone.
-    pub fn reload(
+    /// Reload the state of this zone.
+    pub fn reload_state(
         self: &Arc<Self>,
         policies: &mut foldhash::HashMap<Box<str>, Policy>,
         config: &Config,
@@ -99,8 +99,8 @@ impl Zone {
         Ok(())
     }
 
-    /// Save this zone.
-    pub fn save(self: &Arc<Self>, config: &Config) -> io::Result<()> {
+    /// Save the state of this zone.
+    pub fn save_state(self: &Arc<Self>, config: &Config) -> io::Result<()> {
         // Read the state out.
         let spec = {
             let state = self.state.lock().unwrap();

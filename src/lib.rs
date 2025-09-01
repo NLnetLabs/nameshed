@@ -13,6 +13,7 @@ pub mod policy;
 mod targets;
 pub mod tsig;
 mod units;
+pub mod util;
 pub mod zone;
 mod zonemaintenance;
 

@@ -52,8 +52,8 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             policy_dir: "/etc/cascade/policies".into(),
-            zone_state_dir: "/var/db/cascade/zone-state".into(),
-            tsig_store_path: "/var/db/cascade/tsig-keys".into(),
+            zone_state_dir: "/var/db/cascade/zone-state.db".into(),
+            tsig_store_path: "/var/db/cascade/tsig-keys.db".into(),
             daemon: Default::default(),
             loader: Default::default(),
             signer: Default::default(),
@@ -336,6 +336,13 @@ impl<T> Setting<T> {
 
     /// The current value.
     pub const fn value(&self) -> &T {
+        // This is a 'const' implementation of:
+        //
+        // self.args.as_ref()
+        //     .or(self.env.as_ref())
+        //     .or(self.file.as_ref())
+        //     .unwrap_or(&self.default)
+
         match self {
             Self {
                 args: Some(value), ..

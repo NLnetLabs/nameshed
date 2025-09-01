@@ -71,6 +71,6 @@ impl Spec {
     pub fn save(&self, path: &Utf8Path) -> io::Result<()> {
         let text = toml::to_string_pretty(self)
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
-        fs::write(path, text)
+        crate::util::write_file(path, text.as_bytes())
     }
 }

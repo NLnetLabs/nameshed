@@ -59,14 +59,28 @@ pub fn reload_all(
         // Filter for UTF-8 paths.
         let Ok(path) = Utf8PathBuf::from_path_buf(entry.path()) else {
             log::warn!(
-                "Ignoring potential policy file '{}' as the path is non-UTF-8",
+                "Ignoring potential policy '{}' as the path is non-UTF-8",
                 entry.path().display()
             );
             continue;
         };
 
+        // Filter hidden files.
+        if path
+            .file_name()
+            .expect("this path has a known parent directory")
+            .starts_with('.')
+        {
+            log::debug!("Ignoring hidden file '{path}' among policies");
+            continue;
+        }
+
         // Filter for '.toml' files.
-        if path.extension() != Some("toml") {
+        if path
+            .extension()
+            .is_none_or(|e| !e.eq_ignore_ascii_case("toml"))
+        {
+            log::warn!("Ignoring potential policy '{path}'; policies must end in '.toml'");
             continue;
         }
 
@@ -77,7 +91,10 @@ pub fn reload_all(
         let spec = match file::Spec::load(&path) {
             Ok(spec) => spec,
             // Ignore a directory ending in '.toml'.
-            Err(err) if err.kind() == io::ErrorKind::IsADirectory => continue,
+            Err(err) if err.kind() == io::ErrorKind::IsADirectory => {
+                log::warn!("Ignoring potential policy '{path}'; policies must be files");
+                continue;
+            }
             Err(err) => return Err(err),
         };
 
