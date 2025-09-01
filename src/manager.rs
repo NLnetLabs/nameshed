@@ -428,7 +428,7 @@ impl Manager {
         let mut kmip_server_conn_settings = HashMap::new();
 
         let hsm_relay_host = std::env::var("KMIP2PKCS11_HOST").ok();
-        let hsm_relay_port = std::env::var("CASCADE_HSM_RELAY_PORT")
+        let hsm_relay_port = std::env::var("KMIP2PKCS11_PORT")
             .ok()
             .and_then(|v| v.parse::<u16>().ok());
 
