@@ -536,8 +536,8 @@ impl Manager {
                 Unit::ZoneServer(ZoneServerUnit {
                     http_api_path: Arc::new(String::from("/_unit/ps/")),
                     listen: vec![
-                        "tcp:0.0.0.0:53".parse().unwrap(),
-                        "udp:0.0.0.0:53".parse().unwrap(),
+                        "tcp:127.0.0.1:8058".parse().unwrap(),
+                        "udp:127.0.0.1:8058".parse().unwrap(),
                     ],
                     xfr_out: HashMap::from([(zone_name.clone(), xfr_out)]),
                     hooks: vec![],
