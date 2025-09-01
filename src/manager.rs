@@ -441,7 +441,7 @@ impl Manager {
                         server_port,
                         server_insecure: true,
                         server_username: std::env::var("KMIP2PKCS11_USERNAME").ok(),
-                        server_password: std::env::var("CASCADE_HSM_RELAY_PASSWORD").ok(),
+                        server_password: std::env::var("KMIP2PKCS11_PASSWORD").ok(),
                         ..Default::default()
                     },
                 );
