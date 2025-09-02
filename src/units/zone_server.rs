@@ -128,12 +128,14 @@ pub struct ZoneServerUnit {
     pub source: Source,
 
     pub update_tx: mpsc::UnboundedSender<Update>,
-
-    pub cmd_rx: mpsc::UnboundedReceiver<ApplicationCommand>,
 }
 
 impl ZoneServerUnit {
-    pub async fn run(self, component: Component) -> Result<(), Terminated> {
+    pub async fn run(
+        self,
+        cmd_rx: mpsc::UnboundedReceiver<ApplicationCommand>,
+        component: Component,
+    ) -> Result<(), Terminated> {
         let unit_name = match (self.mode, self.source) {
             (Mode::Prepublish, Source::UnsignedZones) => "RS",
             (Mode::Prepublish, Source::SignedZones) => "RS2",
@@ -199,7 +201,7 @@ impl ZoneServerUnit {
             self.listen,
             zones,
         )
-        .run(unit_name, self.update_tx, self.cmd_rx)
+        .run(unit_name, self.update_tx, cmd_rx)
         .await?;
 
         Ok(())

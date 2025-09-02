@@ -133,7 +133,8 @@ pub struct Manager {
     /// The logger.
     _logger: &'static Logger,
 
-    cmd_tx: HashMap<Box<str>, mpsc::UnboundedSender<ApplicationCommand>>,
+    /// Senders for the channels to send application commands to units
+    cmd_txs: HashMap<Box<str>, mpsc::UnboundedSender<ApplicationCommand>>,
 
     center_tx: Option<mpsc::UnboundedSender<TargetCommand>>,
 
@@ -170,7 +171,7 @@ impl Manager {
         let manager = Manager {
             _logger: logger,
             center_tx: None,
-            cmd_tx: HashMap::new(),
+            cmd_txs: HashMap::new(),
             metrics: Default::default(),
             file_io: TheFileIo::default(),
             unsigned_zones,
@@ -191,7 +192,7 @@ impl Manager {
 
     pub async fn accept_application_commands(&self) {
         while let Some((unit_name, data)) = self.app_cmd_rx.lock().await.recv().await {
-            if let Some(tx) = self.cmd_tx.get(&*unit_name) {
+            if let Some(tx) = self.cmd_txs.get(&*unit_name) {
                 debug!("Forwarding application command to unit '{unit_name}'");
                 tx.send(data).unwrap();
             } else {
@@ -260,7 +261,6 @@ impl Manager {
         let tsig_key = std::env::var("ZL_TSIG_KEY")
             .unwrap_or("hmac-sha256:zlCZbVJPIhobIs1gJNQfrsS3xCxxsR9pMUrGwG8OgG8=".into());
 
-        let cmd_rx = self.new_cmd_channel("ZL");
         self.spawn_unit(
             "ZL",
             Unit::ZoneLoader(ZoneLoader {
@@ -269,11 +269,9 @@ impl Manager {
                 xfr_out: Arc::new(HashMap::from([(zone_name.clone(), xfr_out.clone())])),
                 tsig_keys: HashMap::from([(tsig_key_name, tsig_key)]),
                 update_tx: update_tx.clone(),
-                cmd_rx,
             }),
         );
 
-        let cmd_rx = self.new_cmd_channel("RS");
         self.spawn_unit(
             "RS",
             Unit::ZoneServer(ZoneServerUnit {
@@ -287,22 +285,18 @@ impl Manager {
                 source: zone_server::Source::UnsignedZones,
                 update_tx: update_tx.clone(),
                 http_api_path: Arc::new(String::from("/_unit/rs/")),
-                cmd_rx,
             }),
         );
 
-        let cmd_rx = self.new_cmd_channel("KM");
         self.spawn_unit(
             "KM",
             Unit::KeyManager(KeyManagerUnit {
                 dnst_keyset_bin_path: "/tmp/dnst".into(),
                 dnst_keyset_data_dir: "/tmp".into(),
                 update_tx: update_tx.clone(),
-                cmd_rx,
             }),
         );
 
-        let cmd_rx = self.new_cmd_channel("ZS");
         self.spawn_unit(
             "ZS",
             Unit::ZoneSigner(ZoneSignerUnit {
@@ -316,11 +310,9 @@ impl Manager {
                 rrsig_expiration_offset_secs: 60 * 60 * 24 * 14,
                 kmip_server_conn_settings,
                 update_tx: update_tx.clone(),
-                cmd_rx,
             }),
         );
 
-        let cmd_rx = self.new_cmd_channel("RS2");
         self.spawn_unit(
             "RS2",
             Unit::ZoneServer(ZoneServerUnit {
@@ -334,11 +326,9 @@ impl Manager {
                 mode: zone_server::Mode::Prepublish,
                 source: zone_server::Source::SignedZones,
                 update_tx: update_tx.clone(),
-                cmd_rx: cmd_rx,
             }),
         );
 
-        let cmd_rx = self.new_cmd_channel("PS");
         self.spawn_unit(
             "PS",
             Unit::ZoneServer(ZoneServerUnit {
@@ -352,23 +342,20 @@ impl Manager {
                 mode: zone_server::Mode::Publish,
                 source: zone_server::Source::PublishedZones,
                 update_tx: update_tx.clone(),
-                cmd_rx,
             }),
         );
 
-        let cmd_rx = self.new_cmd_channel("HS");
         self.spawn_unit(
             "HS",
             Unit::HttpServer(HttpServer {
                 // TODO: config/argument option
                 listen_addr: "127.0.0.1:8950".parse().unwrap(),
-                cmd_rx: Some(cmd_rx),
             }),
         );
     }
 
     pub async fn terminate(&mut self) {
-        for (name, tx) in self.cmd_tx.drain() {
+        for (name, tx) in self.cmd_txs.drain() {
             info!("Stopping unit '{name}'");
             let _ = tx.send(ApplicationCommand::Terminate);
             tx.closed().await;
@@ -382,13 +369,7 @@ impl Manager {
         }
     }
 
-    fn new_cmd_channel(&mut self, name: &str) -> mpsc::UnboundedReceiver<ApplicationCommand> {
-        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
-        self.cmd_tx.insert(name.into(), cmd_tx);
-        cmd_rx
-    }
-
-    fn spawn_unit(&self, name: &str, new_unit: Unit) {
+    fn spawn_unit(&mut self, name: &str, new_unit: Unit) {
         let component = Component::new(
             self.metrics.clone(),
             self.unsigned_zones.clone(),
@@ -398,8 +379,11 @@ impl Manager {
             self.app_cmd_tx.clone(),
         );
 
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+        self.cmd_txs.insert(name.into(), cmd_tx);
+
         info!("Starting unit '{name}'");
-        tokio::spawn(new_unit.run(component));
+        tokio::spawn(new_unit.run(cmd_rx, component));
     }
 
     fn spawn_target(

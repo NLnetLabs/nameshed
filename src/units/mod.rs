@@ -27,8 +27,9 @@ pub mod zone_signer;
 
 //------------ Unit ----------------------------------------------------------
 
-use crate::manager::Component;
+use crate::{comms::ApplicationCommand, manager::Component};
 use serde::Deserialize;
+use tokio::sync::mpsc;
 
 /// The fundamental entity for data processing.
 #[allow(clippy::enum_variant_names)]
@@ -45,13 +46,17 @@ pub enum Unit {
 }
 
 impl Unit {
-    pub async fn run(self, component: Component) {
+    pub async fn run(
+        self,
+        cmd_rx: mpsc::UnboundedReceiver<ApplicationCommand>,
+        component: Component,
+    ) {
         let _ = match self {
-            Unit::ZoneLoader(unit) => unit.run(component).await,
-            Unit::KeyManager(unit) => unit.run(component).await,
-            Unit::ZoneServer(unit) => unit.run(component).await,
-            Unit::ZoneSigner(unit) => unit.run(component).await,
-            Unit::HttpServer(unit) => unit.run(component).await,
+            Unit::ZoneLoader(unit) => unit.run(cmd_rx, component).await,
+            Unit::KeyManager(unit) => unit.run(cmd_rx, component).await,
+            Unit::ZoneServer(unit) => unit.run(cmd_rx, component).await,
+            Unit::ZoneSigner(unit) => unit.run(cmd_rx, component).await,
+            Unit::HttpServer(unit) => unit.run(cmd_rx, component).await,
         };
     }
 

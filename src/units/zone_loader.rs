@@ -100,12 +100,14 @@ pub struct ZoneLoader {
 
     /// Updates for the central command.
     pub update_tx: mpsc::UnboundedSender<Update>,
-
-    pub cmd_rx: mpsc::UnboundedReceiver<ApplicationCommand>,
 }
 
 impl ZoneLoader {
-    pub async fn run(mut self, component: Component) -> Result<(), Terminated> {
+    pub async fn run(
+        self,
+        mut cmd_rx: mpsc::UnboundedReceiver<ApplicationCommand>,
+        component: Component,
+    ) -> Result<(), Terminated> {
         // TODO: metrics and status reporting
 
         let (zone_updated_tx, mut zone_updated_rx) = tokio::sync::mpsc::channel(10);
@@ -163,7 +165,7 @@ impl ZoneLoader {
                     self.on_zone_updated(zone_updated);
                 }
 
-                cmd = self.cmd_rx.recv() => {
+                cmd = cmd_rx.recv() => {
                     self.on_command(cmd, component.tsig_key_store(), &zone_maintainer, zone_updated_tx.clone()).await?;
                 }
             }

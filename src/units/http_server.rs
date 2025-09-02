@@ -62,7 +62,6 @@ const HTTP_UNIT_NAME: &str = "HS";
 
 pub struct HttpServer {
     pub listen_addr: SocketAddr,
-    pub cmd_rx: Option<mpsc::UnboundedReceiver<ApplicationCommand>>,
 }
 
 struct HttpServerState {
@@ -70,7 +69,11 @@ struct HttpServerState {
 }
 
 impl HttpServer {
-    pub async fn run(mut self, component: Component) -> Result<(), Terminated> {
+    pub async fn run(
+        self,
+        mut cmd_rx: mpsc::UnboundedReceiver<ApplicationCommand>,
+        component: Component,
+    ) -> Result<(), Terminated> {
         let component = Arc::new(RwLock::new(component));
         // Setup listener
         let sock = TcpListener::bind(self.listen_addr).await.map_err(|e| {
@@ -78,10 +81,6 @@ impl HttpServer {
             Terminated
         })?;
 
-        let mut cmd_rx = self
-            .cmd_rx
-            .take()
-            .expect("This should always exist in the beginning");
         tokio::task::spawn(async move {
             loop {
                 let cmd = cmd_rx.recv().await;
