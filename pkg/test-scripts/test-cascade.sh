@@ -11,6 +11,9 @@ case $1 in
     echo -e "\nCASCADED VERSION:"
     cascaded --version
 
+    echo -e "\nDNST VERSION:"
+    dnst --version
+
     echo -e "\nCASCADED CONF:"
     cat /etc/cascade/config.toml
 
