@@ -17,6 +17,13 @@ jobs:
       package_build_rules: pkg/rules/packages-to-build.yml
       package_test_scripts_path: pkg/test-scripts/test-<package>.sh
 
-      deb_extra_build_packages: libssl-dev
+      deb_extra_biuild_packages: libssl-dev
+      deb_apt_source: '"deb [arch=amd64 signed-by=/usr/share/keyrings/nlnetlabs-archive-keyring.gpg] https://packages.nlnetlabs.nl/linux/ubuntu '
+
       rpm_extra_build_packages: make openssl-devel
       rpm_scriptlets_path: pkg/rpm/scriptlets.toml
+      rpm_yum_repo: |
+        [nlnetlabs]
+        name=NLnet Labs Testing
+        baseurl=https://packages.nlnetlabs.nl/linux/centos/$releasever/main/$basearch
+        enabled=1
