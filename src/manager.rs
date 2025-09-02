@@ -130,32 +130,12 @@ impl Display for TargetCommand {
 /// Requires a running Tokio reactor that has been "entered" (see Tokio
 /// `Handle::enter()`).
 pub struct Manager {
-    /// Commands for the zone loader.
-    loader_tx: Option<mpsc::UnboundedSender<ApplicationCommand>>,
-
     /// The logger.
     _logger: &'static Logger,
 
-    /// Commands for the review server.
-    review_tx: Option<mpsc::UnboundedSender<ApplicationCommand>>,
+    cmd_tx: HashMap<Box<str>, mpsc::UnboundedSender<ApplicationCommand>>,
 
-    /// Commands for the key manager.
-    key_manager_tx: Option<mpsc::UnboundedSender<ApplicationCommand>>,
-
-    /// Commands for the zone signer.
-    signer_tx: Option<mpsc::UnboundedSender<ApplicationCommand>>,
-
-    /// Commands for the secondary review server.
-    review2_tx: Option<mpsc::UnboundedSender<ApplicationCommand>>,
-
-    /// Commands for the publish server.
-    publish_tx: Option<mpsc::UnboundedSender<ApplicationCommand>>,
-
-    /// Commands for the central command.
     center_tx: Option<mpsc::UnboundedSender<TargetCommand>>,
-
-    /// Commands for the http server.
-    http_tx: Option<mpsc::UnboundedSender<ApplicationCommand>>,
 
     /// The metrics collection maintained by this manager.
     metrics: metrics::Collection,
@@ -188,15 +168,9 @@ impl Manager {
 
         #[allow(clippy::let_and_return, clippy::default_constructed_unit_structs)]
         let manager = Manager {
-            loader_tx: None,
             _logger: logger,
-            review_tx: None,
-            key_manager_tx: None,
-            signer_tx: None,
-            review2_tx: None,
-            publish_tx: None,
             center_tx: None,
-            http_tx: None,
+            cmd_tx: HashMap::new(),
             metrics: Default::default(),
             file_io: TheFileIo::default(),
             unsigned_zones,
@@ -217,190 +191,17 @@ impl Manager {
 
     pub async fn accept_application_commands(&self) {
         while let Some((unit_name, data)) = self.app_cmd_rx.lock().await.recv().await {
-            let Some(tx) = (match &*unit_name {
-                "ZL" => self.loader_tx.as_ref(),
-                "RS" => self.review_tx.as_ref(),
-                "KM" => self.key_manager_tx.as_ref(),
-                "ZS" => self.signer_tx.as_ref(),
-                "RS2" => self.review2_tx.as_ref(),
-                "PS" => self.publish_tx.as_ref(),
-                "HS" => self.http_tx.as_ref(),
-                _ => None,
-            }) else {
-                continue;
-            };
-            debug!("Forwarding application command to unit '{unit_name}'");
-            tx.send(data).unwrap();
+            if let Some(tx) = self.cmd_tx.get(&*unit_name) {
+                debug!("Forwarding application command to unit '{unit_name}'");
+                tx.send(data).unwrap();
+            } else {
+                debug!("Unrecognized unit: {unit_name}");
+            }
         }
     }
 
-    /// Spawns all units and targets in the config into the given runtime.
-    ///
-    /// # Panics
-    ///
-    /// The method panics if the config hasn’t been successfully prepared via
-    /// the same manager earlier.
-    ///
-    /// # Hot reloading
-    ///
-    /// Running units and targets that do not exist in the config by the same
-    /// name, or exist by the same name but have a different type, will be
-    /// terminated.
-    ///
-    /// Running units and targets with the same name and type as in the config
-    /// will be signalled to reconfigure themselves per the new config (even
-    /// if unchanged, it is the responsibility of the unit/target to decide
-    /// how to react to the "new" config).
-    ///
-    /// Units receive the reconfigure signal via their gate. The gate will
-    /// automatically update itself and its clones to use the new set of
-    /// Senders that correspond to changes in the set of downstream units and
-    /// targets that link to the unit.
-    ///
-    /// Units and targets receive changes to their set of links (if any) as
-    /// part of the "new" config payload of the reconfigure signal. It is the
-    /// responsibility of the unit/target to switch from the old links to the
-    /// new links and, if desired, to drain old link queues before ceasing to
-    /// query them further.
+    /// Spawns all units and targets
     pub fn spawn(&mut self) {
-        self.spawn_internal(Self::spawn_unit, Self::spawn_target)
-    }
-
-    /// Separated out from [spawn](Self::spawn) for testing purposes.
-    ///
-    /// Pass the new unit to the existing unit to reconfigure itself. If the
-    /// set of downstream units and targets that refer to the unit being
-    /// reconfigured have changed, we need to ensure that the gates and links
-    /// in use correspond to the newly configured topology. For example:
-    ///
-    /// Before:
-    ///
-    /// ```text
-    ///     unit                                    target
-    ///     ┌───┐                                   ┌───┐
-    ///     │ a │gate◀─────────────────────────link│ c │
-    ///     └───┘                                   └───┘
-    /// ```
-    /// After:
-    ///
-    /// ```text
-    ///     running:
-    ///     --------
-    ///     unit                                    target
-    ///     ┌───┐                                   ┌───┐
-    ///     │ a │gate◀─────────────────────────link│ c │
-    ///     └───┘                                   └───┘
-    ///
-    ///     pending:
-    ///     --------
-    ///     unit                unit                target
-    ///     ┌───┐               ┌───┐               ┌───┐
-    ///     │ a'│gate'◀───link'│ b'│gate'◀───link'│ c'│
-    ///     └───┘               └───┘               └───┘
-    /// ```
-    /// In this example unit a and target c still exist in the config file,
-    /// possibly with changed settings, and new unit b has been added. The
-    /// pending gates and links for new units that correspond to existing
-    /// units are NOT the same links and gates, hence they have been marked in
-    /// the diagram with ' to distinguish them.
-    ///
-    /// At this point we haven't started unit b' yet so what we actually have
-    /// is:
-    ///
-    /// ```text
-    ///     current:
-    ///     --------
-    ///     unit                                    target
-    ///     ┌───┐                                   ┌───┐
-    ///     │ a │gate◀─────────────────────────link│ c │
-    ///     └───┘                                   └───┘
-    ///
-    ///     unit                 unit               target
-    ///     ┌───┐               ┌───┐               ┌───┐
-    ///     │ a'│gate◀╴╴╴╴link'│ b'│gate'◀╴╴╴link'│ c'│
-    ///     └───┘               └───┘               └───┘
-    /// ```
-    /// Versus:
-    ///
-    /// ```text
-    ///     desired:
-    ///     --------
-    ///     unit                unit                target
-    ///     ┌───┐               ┌───┐               ┌───┐
-    ///     │ a │gate◀────link'│ b'│gate'◀───link'│ c │
-    ///     └───┘               └───┘               └───┘
-    /// ```
-    /// If we blindly replace unit a with a' and target c with c' we risk
-    /// breaking existing connections or discarding state unnecessarily. So
-    /// instead we want the existing units and targets to decide for
-    /// themselves what needs to be done to adjust to the configuration
-    /// changes.
-    ///
-    /// If we weren't reconfiguring unit a we wouldn't have a problem, the new
-    /// a' would correctly establish a link with the new b'. So it's unit a
-    /// that we have to fix.
-    ///
-    /// Unit a has a gate with a data update Sender that corresponds with the
-    /// Receiver of the link held by target c. The gate of unit a may actually
-    /// have been cloned and thus there may be multiple Senders corresponding
-    /// to target c. The gate of unit a may also be linked to other links held
-    /// by other units and targets than in our simple example. We need to drop
-    /// the wrong data update Senders and replace them with new ones referring
-    /// to unit b' (well, at this point we don't know that it's unit b' we're
-    /// talking about, just that we want gate a to have the same update
-    /// Senders as gate a' (as all of the newly created gates and links have
-    /// the desired topological setup).
-    ///
-    /// Note that the only way we have of influencing the data update senders
-    /// of clones to match changes we make to the update sender of the
-    /// original gate that was cloned is to send commands to the cloned gates.
-    ///
-    /// So, to reconfigure units we send their gate a Reconfigure command
-    /// containing the new configuration. Note that this includes any newly
-    /// constructed Links so the unit can .close() its current link(s) to
-    /// prevent new incoming messages, process any messages still queued in
-    /// the link, then when Link::query() returns UnitStatus::Gone because the
-    /// queue is empty and the receiver is closed, we can at that point switch
-    /// to using the new links. This is done inside each unit.
-    ///
-    /// The Reconfiguring GateStatus update will be propagated by the gate to
-    /// its clones, if any. This allows spawned tasks each handling a client
-    /// connection, e.g. from different routers, to each handle any
-    /// reconfiguration required in the best way.
-    ///
-    /// For Targets we do something similar but as they don't have a Gate we
-    /// pass a new MPSC Channel receiver to them and hold the corresponding
-    /// sender here.
-    ///
-    /// Finally, unit and/or target configurations that have been commented
-    /// out but for which a unit/target was already running, require that we
-    /// detect the missing config and send a Terminate command to the orphaned
-    /// unit/target.
-    #[allow(clippy::too_many_arguments)]
-    fn spawn_internal<SpawnUnit, SpawnTarget>(
-        &mut self,
-        spawn_unit: SpawnUnit,
-        spawn_target: SpawnTarget,
-    ) where
-        SpawnUnit: Fn(Component, Unit),
-        SpawnTarget: Fn(Component, Target, mpsc::UnboundedReceiver<TargetCommand>),
-    {
-        let (zl_tx, zl_rx) = mpsc::unbounded_channel();
-        let (rs_tx, rs_rx) = mpsc::unbounded_channel();
-        let (km_tx, km_rx) = mpsc::unbounded_channel();
-        let (zs_tx, zs_rx) = mpsc::unbounded_channel();
-        let (rs2_tx, rs2_rx) = mpsc::unbounded_channel();
-        let (ps_tx, ps_rx) = mpsc::unbounded_channel();
-        let (http_tx, http_rx) = mpsc::unbounded_channel();
-
-        self.loader_tx = Some(zl_tx);
-        self.review_tx = Some(rs_tx);
-        self.key_manager_tx = Some(km_tx);
-        self.signer_tx = Some(zs_tx);
-        self.review2_tx = Some(rs2_tx);
-        self.publish_tx = Some(ps_tx);
-        self.http_tx = Some(http_tx);
-
         let (update_tx, update_rx) = mpsc::unbounded_channel();
 
         {
@@ -422,7 +223,7 @@ impl Manager {
 
             info!("Starting target '{name}'");
             let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
-            spawn_target(component, new_target, cmd_rx);
+            Self::spawn_target(component, new_target, cmd_rx);
             self.center_tx = Some(cmd_tx);
         }
 
@@ -459,132 +260,115 @@ impl Manager {
         let tsig_key = std::env::var("ZL_TSIG_KEY")
             .unwrap_or("hmac-sha256:zlCZbVJPIhobIs1gJNQfrsS3xCxxsR9pMUrGwG8OgG8=".into());
 
-        let units = [
-            (
-                String::from("ZL"),
-                Unit::ZoneLoader(ZoneLoader {
-                    zones: Default::default(),
-                    xfr_in: Arc::new(HashMap::from([(zone_name.clone(), xfr_in)])),
-                    xfr_out: Arc::new(HashMap::from([(zone_name.clone(), xfr_out.clone())])),
-                    tsig_keys: HashMap::from([(tsig_key_name, tsig_key)]),
-                    update_tx: update_tx.clone(),
-                    cmd_rx: zl_rx,
-                }),
-            ),
-            (
-                String::from("RS"),
-                Unit::ZoneServer(ZoneServerUnit {
-                    listen: vec![
-                        "tcp:127.0.0.1:8056".parse().unwrap(),
-                        "udp:127.0.0.1:8056".parse().unwrap(),
-                    ],
-                    xfr_out: HashMap::from([(zone_name.clone(), xfr_out)]),
-                    hooks: vec![String::from("/tmp/approve_or_deny.sh")],
-                    mode: zone_server::Mode::Prepublish,
-                    source: zone_server::Source::UnsignedZones,
-                    update_tx: update_tx.clone(),
-                    cmd_rx: rs_rx,
-                    http_api_path: Arc::new(String::from("/_unit/rs/")),
-                }),
-            ),
-            (
-                String::from("KM"),
-                Unit::KeyManager(KeyManagerUnit {
-                    dnst_keyset_bin_path: "/tmp/dnst".into(),
-                    dnst_keyset_data_dir: "/tmp".into(),
-                    update_tx: update_tx.clone(),
-                    cmd_rx: km_rx,
-                }),
-            ),
-            (
-                String::from("ZS"),
-                Unit::ZoneSigner(ZoneSignerUnit {
-                    keys_path: "/tmp/keys".into(),
-                    treat_single_keys_as_csks: true,
-                    max_concurrent_operations: 1,
-                    max_concurrent_rrsig_generation_tasks: 32,
-                    use_lightweight_zone_tree: false,
-                    denial_config: TomlDenialConfig::default(), //Nsec3(NonEmpty::new(TomlNsec3Config::default())),
-                    rrsig_inception_offset_secs: 60 * 90,
-                    rrsig_expiration_offset_secs: 60 * 60 * 24 * 14,
-                    kmip_server_conn_settings,
-                    update_tx: update_tx.clone(),
-                    cmd_rx: zs_rx,
-                }),
-            ),
-            (
-                String::from("RS2"),
-                Unit::ZoneServer(ZoneServerUnit {
-                    http_api_path: Arc::new(String::from("/_unit/rs2/")),
-                    listen: vec![
-                        "tcp:127.0.0.1:8057".parse().unwrap(),
-                        "udp:127.0.0.1:8057".parse().unwrap(),
-                    ],
-                    xfr_out: HashMap::from([(
-                        zone_name.clone(),
-                        "127.0.0.1:8055 KEY sec1-key".into(),
-                    )]),
-                    hooks: vec![String::from("/tmp/approve_or_deny_signed.sh")],
-                    mode: zone_server::Mode::Prepublish,
-                    source: zone_server::Source::SignedZones,
-                    update_tx: update_tx.clone(),
-                    cmd_rx: rs2_rx,
-                }),
-            ),
-            (
-                String::from("PS"),
-                Unit::ZoneServer(ZoneServerUnit {
-                    http_api_path: Arc::new(String::from("/_unit/ps/")),
-                    listen: vec![
-                        "tcp:127.0.0.1:8058".parse().unwrap(),
-                        "udp:127.0.0.1:8058".parse().unwrap(),
-                    ],
-                    xfr_out: HashMap::from([(zone_name.into(), "127.0.0.1:8055".into())]),
-                    hooks: vec![],
-                    mode: zone_server::Mode::Publish,
-                    source: zone_server::Source::PublishedZones,
-                    update_tx: update_tx.clone(),
-                    cmd_rx: ps_rx,
-                }),
-            ),
-            (
-                String::from("HS"),
-                Unit::HttpServer(HttpServer {
-                    // TODO: config/argument option
-                    listen_addr: "127.0.0.1:8950".parse().unwrap(),
-                    cmd_rx: Some(http_rx),
-                }),
-            ),
-        ];
+        let cmd_rx = self.new_cmd_channel("ZL");
+        self.spawn_unit(
+            "ZL",
+            Unit::ZoneLoader(ZoneLoader {
+                zones: Default::default(),
+                xfr_in: Arc::new(HashMap::from([(zone_name.clone(), xfr_in)])),
+                xfr_out: Arc::new(HashMap::from([(zone_name.clone(), xfr_out.clone())])),
+                tsig_keys: HashMap::from([(tsig_key_name, tsig_key)]),
+                update_tx: update_tx.clone(),
+                cmd_rx,
+            }),
+        );
 
-        // Spawn and terminate units
-        for (name, new_unit) in units {
-            // Spawn the new unit
-            let component = Component::new(
-                self.metrics.clone(),
-                self.unsigned_zones.clone(),
-                self.signed_zones.clone(),
-                self.published_zones.clone(),
-                self.tsig_key_store.clone(),
-                self.app_cmd_tx.clone(),
-            );
+        let cmd_rx = self.new_cmd_channel("RS");
+        self.spawn_unit(
+            "RS",
+            Unit::ZoneServer(ZoneServerUnit {
+                listen: vec![
+                    "tcp:127.0.0.1:8056".parse().unwrap(),
+                    "udp:127.0.0.1:8056".parse().unwrap(),
+                ],
+                xfr_out: HashMap::from([(zone_name.clone(), xfr_out)]),
+                hooks: vec![String::from("/tmp/approve_or_deny.sh")],
+                mode: zone_server::Mode::Prepublish,
+                source: zone_server::Source::UnsignedZones,
+                update_tx: update_tx.clone(),
+                http_api_path: Arc::new(String::from("/_unit/rs/")),
+                cmd_rx,
+            }),
+        );
 
-            let _unit_type = std::mem::discriminant(&new_unit);
-            info!("Starting unit '{name}'");
-            spawn_unit(component, new_unit);
-        }
+        let cmd_rx = self.new_cmd_channel("KM");
+        self.spawn_unit(
+            "KM",
+            Unit::KeyManager(KeyManagerUnit {
+                dnst_keyset_bin_path: "/tmp/dnst".into(),
+                dnst_keyset_data_dir: "/tmp".into(),
+                update_tx: update_tx.clone(),
+                cmd_rx,
+            }),
+        );
+
+        let cmd_rx = self.new_cmd_channel("ZS");
+        self.spawn_unit(
+            "ZS",
+            Unit::ZoneSigner(ZoneSignerUnit {
+                keys_path: "/tmp/keys".into(),
+                treat_single_keys_as_csks: true,
+                max_concurrent_operations: 1,
+                max_concurrent_rrsig_generation_tasks: 32,
+                use_lightweight_zone_tree: false,
+                denial_config: TomlDenialConfig::default(), //Nsec3(NonEmpty::new(TomlNsec3Config::default())),
+                rrsig_inception_offset_secs: 60 * 90,
+                rrsig_expiration_offset_secs: 60 * 60 * 24 * 14,
+                kmip_server_conn_settings,
+                update_tx: update_tx.clone(),
+                cmd_rx,
+            }),
+        );
+
+        let cmd_rx = self.new_cmd_channel("RS2");
+        self.spawn_unit(
+            "RS2",
+            Unit::ZoneServer(ZoneServerUnit {
+                http_api_path: Arc::new(String::from("/_unit/rs2/")),
+                listen: vec![
+                    "tcp:127.0.0.1:8057".parse().unwrap(),
+                    "udp:127.0.0.1:8057".parse().unwrap(),
+                ],
+                xfr_out: HashMap::from([(zone_name.clone(), "127.0.0.1:8055 KEY sec1-key".into())]),
+                hooks: vec![String::from("/tmp/approve_or_deny_signed.sh")],
+                mode: zone_server::Mode::Prepublish,
+                source: zone_server::Source::SignedZones,
+                update_tx: update_tx.clone(),
+                cmd_rx: cmd_rx,
+            }),
+        );
+
+        let cmd_rx = self.new_cmd_channel("PS");
+        self.spawn_unit(
+            "PS",
+            Unit::ZoneServer(ZoneServerUnit {
+                http_api_path: Arc::new(String::from("/_unit/ps/")),
+                listen: vec![
+                    "tcp:127.0.0.1:8058".parse().unwrap(),
+                    "udp:127.0.0.1:8058".parse().unwrap(),
+                ],
+                xfr_out: HashMap::from([(zone_name.into(), "127.0.0.1:8055".into())]),
+                hooks: vec![],
+                mode: zone_server::Mode::Publish,
+                source: zone_server::Source::PublishedZones,
+                update_tx: update_tx.clone(),
+                cmd_rx,
+            }),
+        );
+
+        let cmd_rx = self.new_cmd_channel("HS");
+        self.spawn_unit(
+            "HS",
+            Unit::HttpServer(HttpServer {
+                // TODO: config/argument option
+                listen_addr: "127.0.0.1:8950".parse().unwrap(),
+                cmd_rx: Some(cmd_rx),
+            }),
+        );
     }
 
     pub async fn terminate(&mut self) {
-        let units = [
-            ("ZL", self.loader_tx.take().unwrap()),
-            ("RS", self.review_tx.take().unwrap()),
-            ("ZS", self.signer_tx.take().unwrap()),
-            ("RS2", self.review2_tx.take().unwrap()),
-            ("PS", self.publish_tx.take().unwrap()),
-            ("HS", self.http_tx.take().unwrap()),
-        ];
-        for (name, tx) in units {
+        for (name, tx) in self.cmd_tx.drain() {
             info!("Stopping unit '{name}'");
             let _ = tx.send(ApplicationCommand::Terminate);
             tx.closed().await;
@@ -598,7 +382,23 @@ impl Manager {
         }
     }
 
-    fn spawn_unit(component: Component, new_unit: Unit) {
+    fn new_cmd_channel(&mut self, name: &str) -> mpsc::UnboundedReceiver<ApplicationCommand> {
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+        self.cmd_tx.insert(name.into(), cmd_tx);
+        cmd_rx
+    }
+
+    fn spawn_unit(&self, name: &str, new_unit: Unit) {
+        let component = Component::new(
+            self.metrics.clone(),
+            self.unsigned_zones.clone(),
+            self.signed_zones.clone(),
+            self.published_zones.clone(),
+            self.tsig_key_store.clone(),
+            self.app_cmd_tx.clone(),
+        );
+
+        info!("Starting unit '{name}'");
         tokio::spawn(new_unit.run(component));
     }
 
