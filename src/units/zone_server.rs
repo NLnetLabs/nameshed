@@ -79,12 +79,12 @@ use crate::manager::Component;
 use crate::metrics::{self, util::append_per_router_metric, Metric, MetricType, MetricUnit};
 use crate::payload::Update;
 use crate::units::Unit;
-use crate::zonemaintenance::maintainer::{DefaultConnFactory, TypedZone, ZoneMaintainer};
-use crate::zonemaintenance::types::TsigKey;
+use crate::zonemaintenance::maintainer::{Config, DefaultConnFactory, TypedZone, ZoneMaintainer};
 use crate::zonemaintenance::types::{
-    CompatibilityMode, NotifyConfig, TransportStrategy, XfrConfig, XfrStrategy, ZoneConfig,
-    ZoneMaintainerKeyStore,
+    CompatibilityMode, NotifyConfig, NotifySrcDstConfig, TransportStrategy, XfrConfig, XfrStrategy,
+    ZoneConfig, ZoneInfo, ZoneMaintainerKeyStore,
 };
+use crate::zonemaintenance::types::{SrcDstConfig, TsigKey};
 
 #[derive(Copy, Clone, Debug, Deserialize, PartialEq, Eq)]
 pub enum Mode {
@@ -197,6 +197,7 @@ impl ZoneServerUnit {
             self.source,
             self.hooks,
             self.listen,
+            self.xfr_out,
             zones,
         )
         .run(unit_name, self.update_tx, self.cmd_rx)
@@ -259,6 +260,7 @@ struct ZoneServer {
     pending_approvals: Arc<RwLock<HashMap<(Name<Bytes>, Serial), Vec<Uuid>>>>,
     #[allow(clippy::type_complexity)]
     last_approvals: Arc<RwLock<HashMap<(Name<Bytes>, Serial), Instant>>>,
+    xfr_out: HashMap<StoredName, String>,
     zones: XfrDataProvidingZonesWrapper,
 }
 
@@ -271,6 +273,7 @@ impl ZoneServer {
         source: Source,
         hooks: Vec<String>,
         listen: Vec<ListenAddr>,
+        xfr_out: HashMap<StoredName, String>,
         zones: XfrDataProvidingZonesWrapper,
     ) -> Self {
         Self {
@@ -282,6 +285,7 @@ impl ZoneServer {
             hooks,
             pending_approvals: Default::default(),
             last_approvals: Default::default(),
+            xfr_out,
             listen,
             zones,
         }
@@ -477,6 +481,35 @@ impl ZoneServer {
                                     Arc::unwrap_or_clone(signed_zones.clone());
                                 new_signed_zones.remove_zone(zone_name, Class::IN).unwrap();
                                 component.signed_zones().store(Arc::new(new_signed_zones));
+
+                                // Send NOTIFY if configured to do so.
+                                if let Some(xfr_out) = arc_self.xfr_out.get(zone_name) {
+                                    info!("[{unit_name}]: XFR out configuration found, checking for NOTIFY support.");
+                                    // The XFR out configuration is a zone
+                                    // name to string mapping, with the string
+                                    // being of the form "<addr>[:port][ KEY
+                                    // <tsig-key-name>]".
+                                    let mut xfr_cfg = XfrConfig::default();
+                                    let mut notify_cfg = NotifyConfig::default();
+                                    let key_store = component.tsig_key_store();
+                                    if let Ok(sock_addr) = parse_xfr_acl(xfr_out, &mut xfr_cfg, &mut notify_cfg, key_store)
+                                        .inspect_err(|err| error!("Cannot check if NOTIFY should be sent for zone '{zone_name}': Failed to parse XFR ACL '{xfr_out}': {err}")) {
+
+                                    // Is NOTIFY permitted to the specified
+                                    // destination? To send a NOTIFY we need
+                                    // to know which port number to send it
+                                    // to.
+                                    if sock_addr.port() != 0 {
+                                        info!("[{unit_name}]: Sending NOTIFY to {sock_addr}");
+                                        let maintainer_config =
+                                            Config::<_,DefaultConnFactory>::new(key_store.clone());
+                                        let maintainer_config = Arc::new(ArcSwap::from_pointee(maintainer_config));
+                                        let mut zone_info = ZoneInfo::default();
+                                        zone_info.config.send_notify_to.add_dst(sock_addr, notify_cfg);
+                                        ZoneMaintainer::send_notify_to_addrs(zone_name.clone(), [sock_addr].iter(), maintainer_config, &zone_info).await;
+                                    }
+                                    }
+                                }
                             }
                         }
 

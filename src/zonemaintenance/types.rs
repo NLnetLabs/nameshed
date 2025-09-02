@@ -755,15 +755,15 @@ impl ZoneNameServers {
 
 //------------ ZoneInfo ------------------------------------------------------
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct ZoneInfo {
-    pub(super) _catalog_member_id: Option<StoredName>,
-    pub(super) config: ZoneConfig,
+    pub _catalog_member_id: Option<StoredName>,
+    pub config: ZoneConfig,
     #[serde(skip)]
-    pub(super) diffs: Arc<Mutex<ZoneDiffs>>,
+    pub diffs: Arc<Mutex<ZoneDiffs>>,
     #[serde(skip)]
-    pub(super) nameservers: Arc<Mutex<Option<ZoneNameServers>>>,
-    pub(super) expired: Arc<AtomicBool>,
+    pub nameservers: Arc<Mutex<Option<ZoneNameServers>>>,
+    pub expired: Arc<AtomicBool>,
 }
 
 impl ZoneInfo {

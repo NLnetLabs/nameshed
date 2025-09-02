@@ -286,8 +286,8 @@ impl ZoneLoader {
             xfr_cfg.ixfr_transport = TransportStrategy::Tcp;
 
             let dst = parse_xfr_acl(xfr_out, &mut xfr_cfg, &mut notify_cfg, tsig_key_store)
-                .map_err(|_| {
-                    error!("[ZL]: Error parsing XFR ACL");
+                .map_err(|err| {
+                    error!("[ZL]: Error parsing XFR ACL for zone '{zone_name}': {err}");
                     Terminated
                 })?;
 
@@ -349,8 +349,8 @@ impl ZoneLoader {
             xfr_cfg.ixfr_transport = TransportStrategy::Tcp;
 
             let src = parse_xfr_acl(xfr_in, &mut xfr_cfg, &mut notify_cfg, tsig_key_store)
-                .map_err(|_| {
-                    error!("[ZL]: Error parsing XFR ACL");
+                .map_err(|err| {
+                    error!("[ZL]: Error parsing XFR ACL for zone '{zone_name}': {err}");
                     Terminated
                 })?;
 
