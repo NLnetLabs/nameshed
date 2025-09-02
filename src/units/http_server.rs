@@ -167,7 +167,7 @@ impl HttpServer {
         })
     }
 
-    async fn zone_remove(Path(payload): Path<Name<Bytes>>) -> Json<ZoneRemoveResult> {
+    async fn zone_remove(Path(_payload): Path<Name<Bytes>>) -> Json<ZoneRemoveResult> {
         todo!()
     }
 

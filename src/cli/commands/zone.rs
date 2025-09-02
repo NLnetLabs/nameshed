@@ -1,5 +1,4 @@
 use bytes::Bytes;
-use camino::Utf8PathBuf;
 use domain::base::Name;
 use futures::TryFutureExt;
 use log::error;

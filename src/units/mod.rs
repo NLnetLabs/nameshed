@@ -60,6 +60,7 @@ impl Unit {
         };
     }
 
+    #[allow(dead_code)]
     pub fn type_name(&self) -> &'static str {
         match self {
             Unit::ZoneLoader(_) => "zone-loader",
