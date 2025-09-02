@@ -4,8 +4,7 @@ set -eo pipefail
 set -x
 
 case $1 in
-  post-install)
-  post-upgrade)
+  post-install|post-upgrade)
     echo -e "\nCASCADE VERSION:"
     cascade --version
 
