@@ -6,7 +6,7 @@ use clap::{
     Arg, ArgMatches, Command, ValueEnum, ValueHint,
 };
 
-use super::{Config, LogLevel, LogTarget, SettingSource};
+use super::{Config, LogLevel, LogTarget};
 
 //----------- ArgSpec ----------------------------------------------------------
 
@@ -73,16 +73,10 @@ impl ArgsSpec {
     /// Merge this into a [`Config`].
     pub fn merge(self, config: &mut Config) {
         let daemon = &mut config.daemon;
-        let source = SettingSource::Args;
-        daemon.logging.level.merge_value(self.log_level, source);
-        daemon
-            .logging
-            .target
-            .merge_value(self.log_target.map(|t| t.build()), source);
-        daemon.config_file.merge_value(self.config, source);
-        daemon
-            .daemonize
-            .merge_value(self.daemonize.then_some(true), source);
+        daemon.logging.level.args = self.log_level;
+        daemon.logging.target.args = self.log_target.map(|t| t.build());
+        daemon.config_file.args = self.config;
+        daemon.daemonize.args = self.daemonize.then_some(true);
     }
 }
 

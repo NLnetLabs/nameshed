@@ -27,7 +27,7 @@ fn main() -> ExitCode {
     // explicitly requests it.
 
     // Construct the configuration.
-    let config = match Config::process(&matches) {
+    let config = match Config::init(&matches) {
         Ok(config) => config,
         Err(error) => {
             eprintln!("Cascade couldn't be configured: {error}");

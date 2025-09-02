@@ -71,6 +71,9 @@ uuid               = { version = "1.4", features = ["v4", "fast-rng"] }
 indoc              = "2.0.5"
 rayon = "1.10.0"
 
+# 'tempfile' is used to generate temporary files as part of atomic file writes.
+tempfile = "3.21.0"
+
 # 'log' is a very popular logging crate, and is the primary means for Cascade
 # to indicate what it's doing at any time.
 [dependencies.log]
