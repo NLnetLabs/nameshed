@@ -12,7 +12,7 @@ case $1 in
     cascaded --version
 
     echo -e "\nCASCADED CONF:"
-    cat /etc/cascade/cascaded.conf
+    cat /etc/cascade/config.toml
 
     echo -e "\nCASCADED SERVICE STATUS:"
     systemctl status cascaded || true
