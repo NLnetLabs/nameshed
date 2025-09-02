@@ -4,7 +4,7 @@ Installation
 System Requirements
 -------------------
 
-When choosing a system for Cascade, Make sure you have [TODO] of available
+When choosing a system for Cascade, make sure you have [TODO] of available
 memory and [TODO] of disk space for the application. 
 
 Binary Packages
@@ -274,7 +274,7 @@ Updating
         
        .. code-block:: bash
         
-          sudo yum --showduplicates list cascade
+          sudo yum list --showduplicates cascade
           
        You can update to the latest version using:
          
@@ -389,7 +389,7 @@ a specific version, if needed.
         
        .. code-block:: bash
         
-          sudo yum --showduplicates list cascade
+          sudo yum list --showduplicates cascade
           
        You can install a specific version using 
        ``<package name>-<version info>``, e.g.:
