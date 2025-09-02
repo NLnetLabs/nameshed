@@ -4,7 +4,7 @@ use core::future::ready;
 use std::any::Any;
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::fmt::Display;
+use std::fmt::{Debug, Display};
 use std::fs::File;
 use std::net::{IpAddr, SocketAddr};
 use std::ops::{ControlFlow, Deref};
@@ -42,6 +42,7 @@ use domain::tsig::{Algorithm, Key, KeyName};
 use domain::utils::base64;
 use domain::zonefile::inplace;
 use domain::zonetree::error::OutOfZone;
+use domain::zonetree::types::ZoneUpdate;
 use domain::zonetree::{
     Answer, AnswerContent, InMemoryZoneDiff, ReadableZone, Rrset, SharedRrset, StoredName, WalkOp,
     WritableZone, WritableZoneNode, Zone, ZoneBuilder, ZoneStore, ZoneTree,
@@ -76,7 +77,7 @@ use crate::metrics::{self, util::append_per_router_metric, Metric, MetricType, M
 use crate::payload::Update;
 use crate::units::Unit;
 use crate::zonemaintenance::maintainer::{
-    Config, DefaultConnFactory, TypedZone, ZoneLookup, ZoneMaintainer,
+    Config, ConnectionFactory, DefaultConnFactory, TypedZone, ZoneLookup, ZoneMaintainer,
 };
 use crate::zonemaintenance::types::{
     CompatibilityMode, NotifyConfig, TransportStrategy, XfrConfig, XfrStrategy, ZoneConfig,
@@ -159,93 +160,120 @@ impl ZoneLoader {
         loop {
             tokio::select! {
                 zone_updated = zone_updated_rx.recv() => {
-                    let (zone_name, zone_serial) = zone_updated.unwrap();
-
-                    // status_reporter
-                    //     .listener_connection_accepted(client_addr);
-
-                    info!(
-                        "[ZL]: Received a new copy of zone '{zone_name}' at serial {zone_serial}",
-                    );
-
-                    self.update_tx
-                        .send(Update::UnsignedZoneUpdatedEvent {
-                            zone_name,
-                            zone_serial,
-                        })
-                        .unwrap();
+                    self.on_zone_updated(zone_updated);
                 }
 
                 cmd = self.cmd_rx.recv() => {
-                    info!(
-                        "[ZL] Received command: {cmd:?}",
-                    );
-
-                    match cmd {
-                        Some(ApplicationCommand::Terminate) | None => {
-                            // arc_self.status_reporter.terminated();
-                            return Err(Terminated);
-                        }
-
-                        Some(ApplicationCommand::RegisterZone { register }) => {
-                            let res = match register.source {
-                                ZoneSource::Zonefile { path /* Lacks XFR out settings */ } => {
-                                    Self::register_primary_zone(
-                                        register.name.clone(),
-                                        &path.to_string(),
-                                        component.tsig_key_store(),
-                                        None,
-                                        &self.xfr_out,
-                                        &zone_updated_tx,
-                                      ).await
-                                }
-                                ZoneSource::Server { addr /* Lacks TSIG key name */ } => {
-                                    // Use any existing XFR inbound ACL that
-                                    // has been defined for this zone from
-                                    // this source.
-                                    Self::register_secondary_zone(
-                                        register.name.clone(),
-                                        component.tsig_key_store(),
-                                        Some(addr),
-                                        &self.xfr_in,
-                                        zone_updated_tx.clone(),
-                                    )
-                                },
-                            };
-
-                            match res {
-                                Err(_) => {
-                                    error!("[ZL]: Error: Failed to register zone '{}'", register.name);
-                                }
-
-                                Ok(zone) => {
-                                    if let Err(err) = zone_maintainer.insert_zone(zone).await {
-                                        error!("[ZL]: Error: Failed to insert zone '{}': {err}", register.name);
-                                    }
-                                }
-                            }
-                        }
-
-                        Some(ApplicationCommand::RefreshZone {
-                            zone_name,
-                            serial,
-                            source,
-                        }) => {
-                            if let Some(source) = source {
-                                let _ = zone_maintainer.notify_zone_changed(Class::IN, &zone_name, serial, source).await;
-                            } else {
-                                // TODO: Should we check the serial number here?
-                                let _ = serial;
-
-                                zone_maintainer.force_zone_refresh(&zone_name, Class::IN).await;
-                            }
-                        }
-
-                        Some(_) => {}
-                    }
+                    self.on_command(cmd, component.tsig_key_store(), &zone_maintainer, zone_updated_tx.clone()).await?;
                 }
             }
         }
+    }
+
+    fn on_zone_updated(&self, zone_updated: Option<(StoredName, Serial)>) {
+        let (zone_name, zone_serial) = zone_updated.unwrap();
+
+        info!("[ZL]: Received a new copy of zone '{zone_name}' at serial {zone_serial}",);
+
+        self.update_tx
+            .send(Update::UnsignedZoneUpdatedEvent {
+                zone_name,
+                zone_serial,
+            })
+            .unwrap();
+    }
+
+    async fn on_command<KS, CF>(
+        &self,
+        cmd: Option<ApplicationCommand>,
+        tsig_key_store: &TsigKeyStore,
+        zone_maintainer: &ZoneMaintainer<KS, CF>,
+        zone_updated_tx: Sender<(StoredName, Serial)>,
+    ) -> Result<(), Terminated>
+    where
+        KS: Deref + Send + Sync + 'static,
+        KS::Target: KeyStore,
+        <KS::Target as KeyStore>::Key: Clone + Debug + Display + Sync + Send + 'static,
+        CF: ConnectionFactory + Send + Sync + 'static,
+    {
+        info!("[ZL] Received command: {cmd:?}",);
+
+        match cmd {
+            Some(ApplicationCommand::Terminate) | None => {
+                return Err(Terminated);
+            }
+
+            Some(ApplicationCommand::RegisterZone { register }) => {
+                let res = match register.source {
+                    ZoneSource::Zonefile {
+                        path, /* Lacks XFR out settings */
+                    } => {
+                        Self::register_primary_zone(
+                            register.name.clone(),
+                            &path.to_string(),
+                            tsig_key_store,
+                            None,
+                            &self.xfr_out,
+                            &zone_updated_tx,
+                        )
+                        .await
+                    }
+                    ZoneSource::Server {
+                        addr, /* Lacks TSIG key name */
+                    } => {
+                        // Use any existing XFR inbound ACL that has been
+                        // defined for this zone from this source.
+                        Self::register_secondary_zone(
+                            register.name.clone(),
+                            tsig_key_store,
+                            Some(addr),
+                            &self.xfr_in,
+                            zone_updated_tx.clone(),
+                        )
+                    }
+                };
+
+                match res {
+                    Err(_) => {
+                        error!("[ZL]: Error: Failed to register zone '{}'", register.name);
+                    }
+
+                    Ok(zone) => {
+                        if let Err(err) = zone_maintainer.insert_zone(zone).await {
+                            error!(
+                                "[ZL]: Error: Failed to insert zone '{}': {err}",
+                                register.name
+                            );
+                        }
+                    }
+                }
+            }
+
+            Some(ApplicationCommand::RefreshZone {
+                zone_name,
+                serial,
+                source,
+            }) => {
+                if let Some(source) = source {
+                    let _ = zone_maintainer
+                        .notify_zone_changed(Class::IN, &zone_name, serial, source)
+                        .await;
+                } else {
+                    // TODO: Should we check the serial number here?
+                    let _ = serial;
+
+                    zone_maintainer
+                        .force_zone_refresh(&zone_name, Class::IN)
+                        .await;
+                }
+            }
+
+            Some(_) => {
+                // TODO
+            }
+        }
+
+        Ok(())
     }
 
     async fn register_primary_zone(
