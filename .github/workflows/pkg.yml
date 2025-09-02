@@ -12,7 +12,7 @@ on:
 
 jobs:
   package:
-    uses: NLnetLabs/ploutos/.github/workflows/pkg-rust.yml@v8
+    uses: NLnetLabs/ploutos/.github/workflows/pkg-rust.yml@fix-service-names-ending-in-d-in-rpms
     with:
       package_build_rules: pkg/rules/packages-to-build.yml
       package_test_scripts_path: pkg/test-scripts/test-<package>.sh
