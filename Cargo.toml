@@ -140,6 +140,9 @@ conf-files = ["/etc/cascade/config.toml"]
 systemd-units = { unit-name = "cascaded", unit-scripts = "pkg/common", enable = false }
 
 [package.metadata.generate-rpm]
+# Use a shorter summary as rpmlint complains with E: summary-too-long.
+# Use an initial capital letter to satisfy rpmlinlt which complains with W: summary-not-capitalized
+summary = "Friendly DNSSEC signing solution"
 assets = [
 	{ source = "target/release/cascade", dest = "/usr/bin/cascade", mode = "755" },
 	{ source = "target/release/cascaded", dest = "/usr/bin/cascaded", mode = "755" },
