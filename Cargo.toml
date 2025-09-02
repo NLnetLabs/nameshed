@@ -114,33 +114,13 @@ panic = "abort"
 
 [package.metadata.deb]
 assets = [
-	[
-		"target/release/cascade",
-		"usr/bin/",
-		"755",
-	],
-	[
-		"target/release/cascaded",
-		"usr/bin/",
-		"755",
-	],
-	[
-		"README.md",
-		"usr/share/doc/cascade/",
-		"644",
-	],
+	["target/release/cascade", "usr/bin/", "755"],
+	["target/release/cascaded", "usr/bin/",	"755"],
+	["README.md",	"usr/share/doc/cascade/",	"644"],
 	#["doc/cascade.1", "usr/share/man/man1/cascade.1", "644"],
 	#["doc/cascaded.1", "usr/share/man/man1/cascaded.1", "644"],
-	[
-		"config.toml",
-		"etc/cascade/config.toml",
-		"644",
-	],
-	[
-		"pkg/common/service.preset",
-		"usr/lib/systemd/service-preset/50-cascaded.preset",
-		"644",
-	],
+	["config.toml", "etc/cascade/config.toml", "644"],
+	["pkg/common/service.preset",	"usr/lib/systemd/service-preset/50-cascaded.preset", "644"],
 ]
 name = "cascade"
 maintainer = "NLnet Labs <cascade@nlnetlabs.nl>"
