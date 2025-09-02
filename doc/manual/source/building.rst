@@ -1,17 +1,16 @@
 Building From Source
 ====================
 
-In addition to meeting the :ref:`system requirements <installation:System
-Requirements>`, there are two things you need to build Cascade: a C toolchain
-and Rust. You can run Cascade on any operating system and CPU architecture
-where you can fulfil these requirements.
+There are two things you need to build Cascade: a C toolchain and Rust. You
+can run Cascade on any operating system and CPU architecture where you can
+fulfil these requirements.
 
 Dependencies
 ------------
 
-To get started you need a C toolchain  because of the cryptographic
-primitives used by Cascade require it. You also need Rust because that’s the
-programming language that Cascade has been written in.
+To get started, you need a C toolchain because the cryptographic primitives
+used by Cascade require it. You also need Rust because that’s the programming
+language that Cascade has been written in.
 
 C Toolchain
 """""""""""
@@ -71,8 +70,8 @@ running:
   cargo install --locked cascade
 
 The command will build Cascade and install it in the same directory that
-Cargo itself lives in, likely ``$HOME/.cargo/bin``. This means Cascade
-will be in your path, too.
+Cargo itself lives in, likely ``$HOME/.cargo/bin``. Ensure this directory is
+in your PATH so you can run Cascade immediately.
 
 Updating
 """"""""
@@ -124,7 +123,7 @@ binaries are actually dynamically linked on :program:`glibc` systems and can
 only be transferred between systems with the same :program:`glibc` versions.
 
 However, Rust can build binaries based on the alternative implementation
-named :program:`musl` that can easily be statically linked. Building such
+named :program:`musl`, allowing you to statically link them. Building such
 binaries is easy with :program:`rustup`. You need to install :program:`musl`
 and the correct :program:`musl` target such as ``x86_64-unknown-linux-musl``
 for x86\_64 Linux systems. Then you can just build Cascade for that

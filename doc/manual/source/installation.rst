@@ -1,12 +1,6 @@
 Installation
 ============
 
-System Requirements
--------------------
-
-When choosing a system for Cascade, make sure you have [TODO] of available
-memory and [TODO] of disk space for the application. 
-
 Binary Packages
 ---------------
 
