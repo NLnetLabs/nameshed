@@ -143,10 +143,8 @@ assets = [
 	],
 ]
 name = "cascade"
-# TODO: create email alias
 maintainer = "NLnet Labs <cascade@nlnetlabs.nl>"
 license-file = ["LICENSE", "0"]
-# TODO: come up with a description (also for the git repo)
 extended-description = """\
 Cascade is a friendly DNSSEC signing solution, offering sensible defaults,
 controllability, observability and flexibility.

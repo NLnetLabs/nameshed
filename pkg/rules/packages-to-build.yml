@@ -18,7 +18,7 @@ test-image:
   - ""
 include:
   - image: 'almalinux:10'
-    systemd_service_unit_file: pkg/common/cascade.service
+    systemd_service_unit_file: pkg/common/cascaded.service
 
 # 'mode' is not used by the package building workflow job, but is used by the package testing workflow job.
 # Ploutos will not include this key when using this matrix definition to generate package building matrix
