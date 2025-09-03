@@ -12,6 +12,7 @@ const DEFAULT_AXFR_PORT: u16 = 53;
 pub struct ZoneAdd {
     pub name: Name<Bytes>,
     pub source: ZoneSource,
+    pub policy: String,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
