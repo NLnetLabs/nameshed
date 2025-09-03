@@ -1,7 +1,7 @@
 //! Cascade's central command.
 
 use std::{
-    io,
+    fmt, io,
     sync::{Arc, Mutex},
 };
 
@@ -17,7 +17,7 @@ use crate::{
     payload::Update,
     policy::{Policy, PolicyVersion},
     tsig::TsigStore,
-    zone::ZoneByName,
+    zone::{Zone, ZoneByName},
 };
 
 //----------- Center -----------------------------------------------------------
@@ -48,6 +48,49 @@ pub struct Center {
 
     /// A channel to send the central command updates.
     pub update_tx: mpsc::UnboundedSender<Update>,
+}
+
+//--- Actions
+
+impl Center {
+    /// Add a zone.
+    pub fn add_zone(&self, name: Name<Bytes>) -> Result<(), ZoneAddError> {
+        let zone = ZoneByName(Arc::new(Zone::new(name.clone())));
+        let mut state = self.state.lock().unwrap();
+        if !state.zones.insert(zone) {
+            return Err(ZoneAddError::AlreadyExists);
+        }
+
+        self.update_tx
+            .send(Update::Changed(Change::ZoneAdded(name.clone())))
+            .unwrap();
+
+        log::info!("Added zone '{name}'");
+        Ok(())
+    }
+
+    /// Remove a zone.
+    pub fn remove_zone(&self, name: Name<Bytes>) -> Result<(), ZoneRemoveError> {
+        self.update_tx
+            .send(Update::Changed(Change::ZoneRemoved(name.clone())))
+            .unwrap();
+
+        let mut state = self.state.lock().unwrap();
+        let zone = state.zones.take(&name).ok_or(ZoneRemoveError::NotFound)?;
+        let mut zone_state = zone.0.state.lock().unwrap();
+
+        // Update the policy's referenced zones.
+        if let Some(policy) = zone_state.policy.take() {
+            let policy = state
+                .policies
+                .get_mut(&policy.name)
+                .expect("every zone policy exists");
+            assert!(policy.zones.remove(&name), "zone policies are consistent");
+        }
+
+        log::info!("Removed zone '{name}'");
+        Ok(())
+    }
 }
 
 //--- Saving/Loading
@@ -103,7 +146,7 @@ impl Center {
 
         // Save the per-zone state files.
         for (name, spec) in zone_states {
-            let path = zone_state_dir.join(name.to_string());
+            let path = zone_state_dir.join(format!("{name}.db"));
             match spec.save(&path) {
                 Ok(()) => log::debug!("Saved state of zone '{name}'"),
                 Err(err) => {
@@ -192,4 +235,42 @@ pub enum Change {
 
     /// A zone has been removed.
     ZoneRemoved(Name<Bytes>),
+}
+
+//----------- ZoneAddError -----------------------------------------------------
+
+/// An error adding a zone.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ZoneAddError {
+    /// A zone of the same name already exists.
+    AlreadyExists,
+}
+
+impl std::error::Error for ZoneAddError {}
+
+impl fmt::Display for ZoneAddError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::AlreadyExists => "a zone of this name already exists",
+        })
+    }
+}
+
+//----------- ZoneRemoveError --------------------------------------------------
+
+/// An error removing a zone.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ZoneRemoveError {
+    /// No such name could be found.
+    NotFound,
+}
+
+impl std::error::Error for ZoneRemoveError {}
+
+impl fmt::Display for ZoneRemoveError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::NotFound => "no such zone was found",
+        })
+    }
 }

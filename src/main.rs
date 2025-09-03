@@ -84,7 +84,7 @@ fn main() -> ExitCode {
         let policies = &mut state.policies;
         for zone in &state.zones {
             let name = &zone.0.name;
-            let path = zone_state_dir.join(name.to_string());
+            let path = zone_state_dir.join(format!("{name}.db"));
             let spec = match cascade::zone::state::Spec::load(&path) {
                 Ok(spec) => spec,
                 Err(err) => {
