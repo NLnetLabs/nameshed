@@ -1,4 +1,4 @@
-//! Nameshed's central command.
+//! Cascade's central command.
 
 use std::{
     io,
@@ -22,7 +22,7 @@ use crate::{
 
 //----------- Center -----------------------------------------------------------
 
-/// Nameshed's central command.
+/// Cascade's central command.
 #[derive(Debug)]
 pub struct Center {
     /// Global state.
@@ -145,7 +145,7 @@ pub struct State {
 
     /// The TSIG key store.
     ///
-    /// TSIG keys are used for authenticating Nameshed to zone sources, and for
+    /// TSIG keys are used for authenticating Cascade to zone sources, and for
     /// authenticating incoming requests for zones.
     pub tsig_store: TsigStore,
 }
@@ -153,9 +153,9 @@ pub struct State {
 //--- Initialization
 
 impl State {
-    /// Build a new Nameshed state.
+    /// Build a new Cascade state.
     ///
-    /// A new instance of Nameshed is initialized with a blank state.  If a
+    /// A new instance of Cascade is initialized with a blank state.  If a
     /// previous state file exists, it can be imported afterwards.
     pub fn new(config: Config) -> Self {
         Self {
