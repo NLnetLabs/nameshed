@@ -23,7 +23,12 @@ pub enum ZoneCommand {
         /// The zone source can be an IP address (with or without port,
         /// defaults to port 53) or a file path.
         // TODO: allow supplying different tcp and/or udp port?
+        #[arg(long = "source")]
         source: ZoneSource,
+
+        /// Policy to use for this zone
+        #[arg(long = "policy")]
+        policy: String,
     },
 
     /// Remove a zone
@@ -60,10 +65,18 @@ pub enum ZoneCommand {
 impl Zone {
     pub async fn execute(self, client: CascadeApiClient) -> Result<(), ()> {
         match self.command {
-            ZoneCommand::Add { name, source } => {
+            ZoneCommand::Add {
+                name,
+                source,
+                policy,
+            } => {
                 let res: ZoneAddResult = client
                     .post("zone/add")
-                    .json(&ZoneAdd { name, source })
+                    .json(&ZoneAdd {
+                        name,
+                        source,
+                        policy,
+                    })
                     .send()
                     .and_then(|r| r.json())
                     .await
