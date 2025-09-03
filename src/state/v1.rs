@@ -487,19 +487,19 @@ impl ServerConfigSpec {
 #[serde(rename_all = "kebab-case", deny_unknown_fields, tag = "type")]
 pub enum SocketConfigSpec {
     /// Listen exclusively over UDP.
-    UDP {
+    Udp {
         /// The socket address to listen on.
         addr: SocketAddr,
     },
 
     /// Listen exclusively over TCP.
-    TCP {
+    Tcp {
         /// The socket address to listen on.
         addr: SocketAddr,
     },
 
     /// Listen over both TCP and UDP.
-    TCPUDP {
+    TcpUdp {
         /// The socket address to listen on.
         addr: SocketAddr,
     },
@@ -510,9 +510,9 @@ pub enum SocketConfigSpec {
 impl From<config::SocketConfig> for SocketConfigSpec {
     fn from(value: config::SocketConfig) -> Self {
         match value {
-            config::SocketConfig::UDP { addr } => Self::UDP { addr },
-            config::SocketConfig::TCP { addr } => Self::TCP { addr },
-            config::SocketConfig::TCPUDP { addr } => Self::TCPUDP { addr },
+            config::SocketConfig::UDP { addr } => Self::Udp { addr },
+            config::SocketConfig::TCP { addr } => Self::Tcp { addr },
+            config::SocketConfig::TCPUDP { addr } => Self::TcpUdp { addr },
         }
     }
 }
@@ -520,9 +520,9 @@ impl From<config::SocketConfig> for SocketConfigSpec {
 impl From<SocketConfigSpec> for config::SocketConfig {
     fn from(value: SocketConfigSpec) -> Self {
         match value {
-            SocketConfigSpec::UDP { addr } => Self::UDP { addr },
-            SocketConfigSpec::TCP { addr } => Self::TCP { addr },
-            SocketConfigSpec::TCPUDP { addr } => Self::TCPUDP { addr },
+            SocketConfigSpec::Udp { addr } => Self::UDP { addr },
+            SocketConfigSpec::Tcp { addr } => Self::TCP { addr },
+            SocketConfigSpec::TcpUdp { addr } => Self::TCPUDP { addr },
         }
     }
 }
@@ -589,7 +589,10 @@ pub enum LogTarget {
     /// Append logs to a file.
     ///
     /// If the file is a terminal, ANSI color codes may be used.
-    File(Box<Utf8Path>),
+    File {
+        /// The path to the file.
+        path: Box<Utf8Path>,
+    },
 
     /// Write logs to the UNIX syslog.
     Syslog,
@@ -600,7 +603,7 @@ pub enum LogTarget {
 impl From<config::LogTarget> for LogTarget {
     fn from(value: config::LogTarget) -> Self {
         match value {
-            config::LogTarget::File(path) => Self::File(path),
+            config::LogTarget::File(path) => Self::File { path },
             config::LogTarget::Syslog => Self::Syslog,
         }
     }
@@ -609,7 +612,7 @@ impl From<config::LogTarget> for LogTarget {
 impl From<LogTarget> for config::LogTarget {
     fn from(value: LogTarget) -> Self {
         match value {
-            LogTarget::File(path) => Self::File(path),
+            LogTarget::File { path } => Self::File(path),
             LogTarget::Syslog => Self::Syslog,
         }
     }

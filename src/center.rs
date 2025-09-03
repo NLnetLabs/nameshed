@@ -1,6 +1,9 @@
 //! Nameshed's central command.
 
-use std::sync::{Arc, Mutex};
+use std::{
+    io,
+    sync::{Arc, Mutex},
+};
 
 use arc_swap::ArcSwap;
 use bytes::Bytes;
@@ -45,6 +48,57 @@ pub struct Center {
 
     /// A channel to send the central command updates.
     pub update_tx: mpsc::UnboundedSender<Update>,
+}
+
+//--- Saving/Loading
+
+impl Center {
+    /// Save Cascade's state to disk.
+    pub fn save(&self) {
+        let state_path;
+        let state_spec;
+        let zone_state_dir;
+        let zone_states: foldhash::HashMap<_, _>;
+
+        // Read everything from the global state.
+        {
+            let state = self.state.lock().unwrap();
+
+            state_spec = crate::state::Spec::build(&state);
+            state_path = state.config.daemon.state_file.value().clone();
+
+            zone_state_dir = state.config.zone_state_dir.clone();
+            zone_states = state
+                .zones
+                .iter()
+                .map(|zone| {
+                    let name = zone.0.name.clone();
+                    let state = zone.0.state.lock().unwrap();
+                    let spec = crate::zone::state::Spec::build(&state);
+                    (name, spec)
+                })
+                .collect();
+        }
+
+        // Save the global state file.
+        match state_spec.save(&state_path) {
+            Ok(()) => log::debug!("Saved global state"),
+            Err(err) => {
+                log::error!("Could not save global state to '{state_path}': {err}");
+            }
+        }
+
+        // Save the per-zone state files.
+        for (name, spec) in zone_states {
+            let path = zone_state_dir.join(name.to_string());
+            match spec.save(&path) {
+                Ok(()) => log::debug!("Saved state of zone '{name}'"),
+                Err(err) => {
+                    log::error!("Could not save state of zone '{name}' to '{path}': '{err}");
+                }
+            }
+        }
+    }
 }
 
 //----------- State ------------------------------------------------------------
@@ -97,6 +151,15 @@ impl State {
             policies: Default::default(),
             tsig_store: Default::default(),
         }
+    }
+
+    /// Attempt to load the global state file.
+    pub fn init_from_file(&mut self) -> io::Result<()> {
+        let path = self.config.daemon.state_file.value();
+        let spec = crate::state::Spec::load(path)?;
+        let mut _changes = Vec::new();
+        spec.parse_into(self, &mut _changes);
+        Ok(())
     }
 }
 
