@@ -3,6 +3,7 @@
 use log::debug;
 use std::collections::HashMap;
 use std::fmt::Display;
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::mpsc::{self};
@@ -66,6 +67,11 @@ pub fn spawn(
     let tsig_key = std::env::var("ZL_TSIG_KEY")
         .unwrap_or("hmac-sha256:zlCZbVJPIhobIs1gJNQfrsS3xCxxsR9pMUrGwG8OgG8=".into());
 
+    // Global settings for dnst keyset
+    // TODO: Should probably be configurable
+    let dnst_keyset_bin_path: PathBuf = "dnst".into();
+    let dnst_keyset_data_dir: PathBuf = "/tmp/keyset/".into();
+
     // Spawn the zone loader.
     log::info!("Starting unit 'ZL'");
     let unit = ZoneLoader {
@@ -101,8 +107,8 @@ pub fn spawn(
     log::info!("Starting unit 'KM'");
     let unit = KeyManagerUnit {
         center: center.clone(),
-        dnst_keyset_bin_path: "/tmp/dnst".into(),
-        dnst_keyset_data_dir: "/tmp".into(),
+        dnst_keyset_bin_path: dnst_keyset_bin_path.clone(),
+        dnst_keyset_data_dir: dnst_keyset_data_dir.clone(),
     };
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
     tokio::spawn(unit.run(cmd_rx));
@@ -117,7 +123,7 @@ pub fn spawn(
         max_concurrent_rrsig_generation_tasks: 32,
         use_lightweight_zone_tree: false,
         kmip_server_conn_settings,
-        dnst_keyset_data_dir: "/tmp".into(),
+        dnst_keyset_data_dir: dnst_keyset_data_dir.clone(),
     };
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
     tokio::spawn(unit.run(cmd_rx));
