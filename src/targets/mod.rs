@@ -42,6 +42,7 @@ impl Target {
         }
     }
 
+    #[allow(dead_code)]
     pub fn type_name(&self) -> &'static str {
         match self {
             Target::CentraLCommand(_) => "central-command",

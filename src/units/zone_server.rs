@@ -119,7 +119,7 @@ pub struct ZoneServerUnit {
     pub listen: Vec<ListenAddr>,
 
     /// XFR out per zone: Allow XFR to, and when with a port also send NOTIFY to.
-    pub xfr_out: HashMap<StoredName, String>,
+    pub _xfr_out: HashMap<StoredName, String>,
 
     pub hooks: Vec<String>,
 
@@ -532,12 +532,7 @@ impl ZoneServer {
                 self.zone_review_api
                     .as_ref()
                     .expect("This should have been setup on startup.")
-                    .process_request(
-                        zone_name.clone(),
-                        zone_serial.clone(),
-                        approval_token,
-                        operation,
-                    )
+                    .process_request(zone_name.clone(), zone_serial, approval_token, operation)
                     .await,
             )
             .await
@@ -773,6 +768,7 @@ struct ZoneReviewApi {
     update_tx: mpsc::UnboundedSender<Update>,
     #[allow(clippy::type_complexity)]
     pending_approvals: Arc<RwLock<HashMap<(Name<Bytes>, Serial), Vec<Uuid>>>>,
+    #[allow(clippy::type_complexity)]
     last_approvals: Arc<RwLock<HashMap<(Name<Bytes>, Serial), Instant>>>,
     zones: XfrDataProvidingZonesWrapper,
     mode: Mode,

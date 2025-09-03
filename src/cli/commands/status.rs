@@ -35,7 +35,7 @@ impl Status {
                 // TODO: move to function that can be called by the general
                 // status command with a zone arg?
                 let url = format!("/zone/{name}/status");
-                let response: ZoneStatusResult = client
+                let _response: ZoneStatusResult = client
                     .get(&url)
                     .send()
                     .and_then(|r| r.json())

@@ -311,9 +311,12 @@ impl ZoneLoader {
 
         if let Some(xfr_out) = xfr_out.get(zone_name) {
             let mut notify_cfg = NotifyConfig::default();
-            let mut xfr_cfg = XfrConfig::default();
-            xfr_cfg.strategy = XfrStrategy::IxfrWithAxfrFallback;
-            xfr_cfg.ixfr_transport = TransportStrategy::Tcp;
+
+            let mut xfr_cfg = XfrConfig {
+                strategy: XfrStrategy::IxfrWithAxfrFallback,
+                ixfr_transport: TransportStrategy::Tcp,
+                ..Default::default()
+            };
 
             let dst = parse_xfr_acl(xfr_out, &mut xfr_cfg, &mut notify_cfg, tsig_key_store)
                 .map_err(|_| {
@@ -374,9 +377,12 @@ impl ZoneLoader {
 
         if let Some(xfr_in) = xfr_in.get(zone_name) {
             let mut notify_cfg = NotifyConfig::default();
-            let mut xfr_cfg = XfrConfig::default();
-            xfr_cfg.strategy = XfrStrategy::IxfrWithAxfrFallback;
-            xfr_cfg.ixfr_transport = TransportStrategy::Tcp;
+
+            let mut xfr_cfg = XfrConfig {
+                strategy: XfrStrategy::IxfrWithAxfrFallback,
+                ixfr_transport: TransportStrategy::Tcp,
+                ..Default::default()
+            };
 
             let src = parse_xfr_acl(xfr_in, &mut xfr_cfg, &mut notify_cfg, tsig_key_store)
                 .map_err(|_| {

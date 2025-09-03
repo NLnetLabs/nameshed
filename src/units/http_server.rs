@@ -167,7 +167,7 @@ impl HttpServer {
         })
     }
 
-    async fn zone_remove(Path(payload): Path<Name<Bytes>>) -> Json<ZoneRemoveResult> {
+    async fn zone_remove(Path(_payload): Path<Name<Bytes>>) -> Json<ZoneRemoveResult> {
         todo!()
     }
 
@@ -366,58 +366,64 @@ impl HttpServer {
         params: HashMap<String, String>,
     ) -> Result<(), StatusCode> {
         let uri = uri.path_and_query().map(|p| p.as_str()).unwrap_or_default();
-        let zone_name = params.get("zone");
-        let zone_serial = params.get("serial");
-        if matches!(action.as_ref(), "approve" | "reject")
-            && zone_name.is_some()
-            && zone_serial.is_some()
-            && token.len() > 0
-        {
-            let zone_name = zone_name.unwrap();
-            let zone_serial = zone_serial.unwrap();
 
-            if let Ok(zone_name) = Name::<Bytes>::from_str(zone_name) {
-                if let Ok(zone_serial) = Serial::from_str(zone_serial) {
-                    let (tx, mut rx) = mpsc::channel(10);
-                    state
-                        .component
-                        .read()
-                        .await
-                        .send_command(
-                            unit,
-                            ApplicationCommand::HandleZoneReviewApi {
-                                zone_name,
-                                zone_serial,
-                                approval_token: token,
-                                operation: action,
-                                http_tx: tx,
-                            },
-                        )
-                        .await;
+        let Some(zone_name) = params.get("zone") else {
+            warn!("[{HTTP_UNIT_NAME}]: Invalid HTTP request: {uri}");
+            return Err(StatusCode::BAD_REQUEST);
+        };
 
-                    let res = rx.recv().await;
-                    let Some(res) = res else {
-                        // Failed to receive response... When would that happen?
-                        return Err(StatusCode::INTERNAL_SERVER_ERROR);
-                    };
+        let Some(zone_serial) = params.get("serial") else {
+            warn!("[{HTTP_UNIT_NAME}]: Invalid HTTP request: {uri}");
+            return Err(StatusCode::BAD_REQUEST);
+        };
 
-                    let ret = match res {
-                        Ok(_) => Ok(()),
-                        Err(_) => Err(StatusCode::BAD_REQUEST),
-                    };
-                    // TODO: make debug when setting log level is fixed
-                    warn!("[{HTTP_UNIT_NAME}]: Handled HTTP request: {uri} :: {ret:?}");
-                    // debug!("[{HTTP_UNIT_NAME}]: Handled HTTP request: {uri} :: {ret:?}");
-
-                    return ret;
-                } else {
-                    warn!("[{HTTP_UNIT_NAME}]: Invalid zone serial '{zone_serial}' in request.");
-                }
-            } else {
-                warn!("[{HTTP_UNIT_NAME}]: Invalid zone name '{zone_name}' in request.");
-            }
+        if token.is_empty() || !["approve", "reject"].contains(&action.as_ref()) {
+            warn!("[{HTTP_UNIT_NAME}]: Invalid HTTP request: {uri}");
+            return Err(StatusCode::BAD_REQUEST);
         }
-        warn!("[{HTTP_UNIT_NAME}]: Invalid HTTP request: {uri}");
-        Err(StatusCode::BAD_REQUEST)
+
+        let Ok(zone_name) = Name::<Bytes>::from_str(zone_name) else {
+            warn!("[{HTTP_UNIT_NAME}]: Invalid zone name '{zone_name}' in request.");
+            return Err(StatusCode::BAD_REQUEST);
+        };
+
+        let Ok(zone_serial) = Serial::from_str(zone_serial) else {
+            warn!("[{HTTP_UNIT_NAME}]: Invalid zone serial '{zone_serial}' in request.");
+            return Err(StatusCode::BAD_REQUEST);
+        };
+
+        let (tx, mut rx) = mpsc::channel(10);
+        state
+            .component
+            .read()
+            .await
+            .send_command(
+                unit,
+                ApplicationCommand::HandleZoneReviewApi {
+                    zone_name,
+                    zone_serial,
+                    approval_token: token,
+                    operation: action,
+                    http_tx: tx,
+                },
+            )
+            .await;
+
+        let res = rx.recv().await;
+        let Some(res) = res else {
+            // Failed to receive response... When would that happen?
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        };
+
+        let ret = match res {
+            Ok(_) => Ok(()),
+            Err(_) => Err(StatusCode::BAD_REQUEST),
+        };
+
+        // TODO: make debug when setting log level is fixed
+        warn!("[{HTTP_UNIT_NAME}]: Handled HTTP request: {uri} :: {ret:?}");
+        // debug!("[{HTTP_UNIT_NAME}]: Handled HTTP request: {uri} :: {ret:?}");
+
+        ret
     }
 }
