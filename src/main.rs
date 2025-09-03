@@ -3,11 +3,14 @@ use cascade::{
     comms::ApplicationCommand,
     config::Config,
     manager::{self, TargetCommand},
+    policy,
 };
 use clap::{crate_authors, crate_version};
 use std::{
+    io,
     process::ExitCode,
     sync::{Arc, Mutex},
+    time::Duration,
 };
 use tokio::sync::mpsc;
 
@@ -32,7 +35,7 @@ fn main() -> ExitCode {
     let matches = cmd.get_matches();
 
     // Construct the configuration.
-    let config = match Config::init(&matches) {
+    let mut config = match Config::init(&matches) {
         Ok(config) => config,
         Err(error) => {
             eprintln!("Cascade couldn't be configured: {error}");
@@ -41,17 +44,74 @@ fn main() -> ExitCode {
     };
 
     if matches.get_flag("check_config") {
-        return ExitCode::SUCCESS;
+        // Try reading the configuration file.
+        match config.init_from_file() {
+            Ok(()) => return ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("Cascade couldn't be configured: {error}");
+                return ExitCode::FAILURE;
+            }
+        }
     }
 
+    // Load the global state file or build one from scratch.
+    let mut state = center::State::new(config);
+    if let Err(err) = state.init_from_file() {
+        if err.kind() != io::ErrorKind::NotFound {
+            log::error!("Could not load the state file: {err}");
+            return ExitCode::FAILURE;
+        }
+
+        log::info!("State file not found; starting from scratch");
+
+        // Load the configuration file from scratch.
+        if let Err(err) = state.config.init_from_file() {
+            eprintln!("Cascade couldn't be configured: {err}");
+            return ExitCode::FAILURE;
+        }
+
+        // Load all policies.
+        if let Err(err) = policy::reload_all(&mut state.policies, &state.config) {
+            eprintln!("Cascade couldn't load all policies: {err}");
+            return ExitCode::FAILURE;
+        }
+
+        // TODO: Fail if any zone state files exist.
+    } else {
+        log::info!("Successfully loaded the global state file");
+
+        let zone_state_dir = &state.config.zone_state_dir;
+        let policies = &mut state.policies;
+        for zone in &state.zones {
+            let name = &zone.0.name;
+            let path = zone_state_dir.join(name.to_string());
+            let spec = match cascade::zone::state::Spec::load(&path) {
+                Ok(spec) => spec,
+                Err(err) => {
+                    log::error!("Failed to load zone state '{name}': {err}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            let mut state = zone.0.state.lock().unwrap();
+            spec.parse_into(&zone.0, &mut state, policies);
+        }
+    }
+
+    // TODO: Load the TSIG store file.
+
     // TODO: daemonbase
-    logger.apply(logger.prepare(&config.daemon.logging).unwrap().unwrap());
+    logger.apply(
+        logger
+            .prepare(&state.config.daemon.logging)
+            .unwrap()
+            .unwrap(),
+    );
 
     // Prepare Cascade.
     let (app_cmd_tx, mut app_cmd_rx) = mpsc::unbounded_channel();
     let (update_tx, update_rx) = mpsc::unbounded_channel();
     let center = Arc::new(Center {
-        state: Mutex::new(center::State::new(config)),
+        state: Mutex::new(state),
         logger,
         unsigned_zones: Default::default(),
         signed_zones: Default::default(),
@@ -80,7 +140,7 @@ fn main() -> ExitCode {
         let mut unit_txs = Default::default();
         manager::spawn(&center, update_rx, &mut center_tx, &mut unit_txs);
 
-        // Let the manager run and handle external events.
+        let mut saver = tokio::time::interval(Duration::from_secs(5));
         let result = loop {
             tokio::select! {
                 // Watch for CTRL-C (SIGINT).
@@ -95,6 +155,8 @@ fn main() -> ExitCode {
                 }
 
                 _ = manager::forward_app_cmds(&mut app_cmd_rx, &unit_txs) => {}
+
+                _ = saver.tick() => center.save(),
             }
         };
 
