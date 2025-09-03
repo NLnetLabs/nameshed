@@ -25,5 +25,5 @@ jobs:
       rpm_yum_repo: |
         [nlnetlabs]
         name=NLnet Labs Testing
-        baseurl=https://raw.githubusercontent.com/NLnetLabs/cascade/refs/heads/workaround-rpm-packaging-failure/pkg/rpm/repo/$releasever/local/$basearch
+        baseurl=https://packages.nlnetlabs.nl/linux/centos/$releasever/proposed/$basearch
         enabled=1
