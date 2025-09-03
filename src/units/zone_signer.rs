@@ -135,8 +135,6 @@ pub struct ZoneSignerUnit {
     pub kmip_server_conn_settings: HashMap<String, KmipServerConnectionSettings>,
 
     pub update_tx: mpsc::UnboundedSender<Update>,
-
-    pub cmd_rx: mpsc::UnboundedReceiver<ApplicationCommand>,
 }
 
 #[allow(dead_code)]
@@ -159,7 +157,11 @@ impl ZoneSignerUnit {
 }
 
 impl ZoneSignerUnit {
-    pub async fn run(mut self, component: Component) -> Result<(), Terminated> {
+    pub async fn run(
+        mut self,
+        cmd_rx: mpsc::UnboundedReceiver<ApplicationCommand>,
+        component: Component,
+    ) -> Result<(), Terminated> {
         // TODO: metrics and status reporting
 
         // Create KMIP server connection pools.
@@ -227,7 +229,7 @@ impl ZoneSignerUnit {
             self.keys_path,
             kmip_servers,
         )
-        .run(self.cmd_rx)
+        .run(cmd_rx)
         .await?;
 
         Ok(())

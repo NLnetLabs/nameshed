@@ -15,6 +15,7 @@ use std::fs::metadata;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
+use tokio::select;
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::MissedTickBehavior;
 
@@ -23,11 +24,14 @@ pub struct KeyManagerUnit {
     pub dnst_keyset_bin_path: PathBuf,
     pub dnst_keyset_data_dir: PathBuf,
     pub update_tx: mpsc::UnboundedSender<Update>,
-    pub cmd_rx: mpsc::UnboundedReceiver<ApplicationCommand>,
 }
 
 impl KeyManagerUnit {
-    pub async fn run(self, component: Component) -> Result<(), Terminated> {
+    pub async fn run(
+        self,
+        cmd_rx: mpsc::UnboundedReceiver<ApplicationCommand>,
+        component: Component,
+    ) -> Result<(), Terminated> {
         // TODO: metrics and status reporting
 
         KeyManager::new(
@@ -36,7 +40,7 @@ impl KeyManagerUnit {
             self.dnst_keyset_data_dir,
             self.update_tx,
         )
-        .run(self.cmd_rx)
+        .run(cmd_rx)
         .await?;
 
         Ok(())
@@ -71,17 +75,22 @@ impl KeyManager {
 
     async fn run(
         self,
-        cmd_rx: mpsc::UnboundedReceiver<ApplicationCommand>,
+        mut cmd_rx: mpsc::UnboundedReceiver<ApplicationCommand>,
     ) -> Result<(), crate::comms::Terminated> {
         let mut interval = tokio::time::interval(Duration::from_secs(5));
         interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
-        // NOTE: We are not expecting any application commands right now.
-        let _ = cmd_rx;
-
         loop {
-            interval.tick().await;
-            self.tick().await;
+            select! {
+                _ = interval.tick() => {
+                    self.tick().await;
+                }
+                cmd = cmd_rx.recv() => {
+                    if let Some(ApplicationCommand::Terminate) = cmd {
+                        return Err(Terminated);
+                    }
+                }
+            }
         }
     }
 
