@@ -116,8 +116,6 @@ use core::sync::atomic::AtomicBool;
 
 #[derive(Debug)]
 pub struct ZoneSignerUnit {
-    pub keys_path: PathBuf,
-
     pub rrsig_inception_offset_secs: u32,
 
     pub rrsig_expiration_offset_secs: u32,
@@ -135,6 +133,8 @@ pub struct ZoneSignerUnit {
     pub kmip_server_conn_settings: HashMap<String, KmipServerConnectionSettings>,
 
     pub update_tx: mpsc::UnboundedSender<Update>,
+
+    pub dnst_keyset_data_dir: PathBuf,
 }
 
 #[allow(dead_code)]
@@ -226,8 +226,8 @@ impl ZoneSignerUnit {
             self.max_concurrent_rrsig_generation_tasks,
             self.treat_single_keys_as_csks,
             self.update_tx,
-            self.keys_path,
             kmip_servers,
+            self.dnst_keyset_data_dir,
         )
         .run(cmd_rx)
         .await?;
@@ -292,8 +292,8 @@ struct ZoneSigner {
     signer_status: Arc<RwLock<ZoneSignerStatus>>,
     treat_single_keys_as_csks: bool,
     update_tx: mpsc::UnboundedSender<Update>,
-    _keys_path: PathBuf,
     kmip_servers: HashMap<String, SyncConnPool>,
+    dnst_keyset_data_dir: PathBuf,
 }
 
 impl ZoneSigner {
@@ -308,8 +308,8 @@ impl ZoneSigner {
         max_concurrent_rrsig_generation_tasks: usize,
         treat_single_keys_as_csks: bool,
         update_tx: mpsc::UnboundedSender<Update>,
-        keys_path: PathBuf,
         kmip_servers: HashMap<String, SyncConnPool>,
+        dnst_keyset_data_dir: PathBuf,
     ) -> Self {
         Self {
             component,
@@ -322,8 +322,8 @@ impl ZoneSigner {
             signer_status: Default::default(),
             treat_single_keys_as_csks,
             update_tx,
-            _keys_path: keys_path,
             kmip_servers,
+            dnst_keyset_data_dir,
         }
     }
 
@@ -446,7 +446,7 @@ impl ZoneSigner {
         trace!("Reading dnst keyset DNSKEY RRs and RRSIG RRs");
         // Read the DNSKEY RRs and DNSKEY RRSIG RR from the keyset state.
         let apex_name = zone.apex_name().to_string();
-        let state_path = Path::new("/tmp/").join(format!("{apex_name}.state"));
+        let state_path = self.dnst_keyset_data_dir.join(format!("{apex_name}.state"));
         let state = std::fs::read_to_string(&state_path).map_err(|err| format!("Unable to read `dnst keyset` state file '{}' while signing zone {zone_name}: {err}", state_path.display()))?;
         let state: KeySetState = serde_json::from_str(&state).unwrap();
         for dnskey_rr in state.dnskey_rrset {

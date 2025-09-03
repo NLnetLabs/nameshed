@@ -3,8 +3,10 @@ use crate::comms::{ApplicationCommand, GraphStatus, Terminated};
 use crate::manager::Component;
 use crate::metrics;
 use crate::payload::Update;
+use bytes::Bytes;
 use core::fmt::Display;
 use core::time::Duration;
+use domain::base::Name;
 use domain::dnssec::sign::keys::keyset::{KeySet, UnixTime};
 use domain::zonetree::Zone;
 use log::{error, info};
@@ -86,12 +88,57 @@ impl KeyManager {
                     self.tick().await;
                 }
                 cmd = cmd_rx.recv() => {
-                    if let Some(ApplicationCommand::Terminate) = cmd {
-                        return Err(Terminated);
-                    }
+                    self.run_cmd(cmd)?;
                 }
             }
         }
+    }
+
+    fn run_cmd(&self, cmd: Option<ApplicationCommand>) -> Result<(), Terminated> {
+        match cmd {
+            Some(ApplicationCommand::Terminate) | None => Err(Terminated),
+            Some(ApplicationCommand::RegisterZone {
+                register: crate::api::ZoneAdd { name, .. },
+            }) => {
+                let state_path = self.dnst_keyset_data_dir.join(format!("{name}.state"));
+
+                let status = self
+                    .keyset_cmd(&name)
+                    .arg("create")
+                    .arg("-n")
+                    .arg(name.to_string())
+                    .arg("-s")
+                    .arg(&state_path)
+                    .status();
+
+                if status.is_err() {
+                    error!("[ZL]: Error creating keyset");
+                    return Err(Terminated);
+                }
+
+                // TODO: This should not happen immediately after
+                // `keyset create` but only once the zone is enabled.
+                // We currently do not have a good mechanism for that
+                // so we init the key immediately.
+                let status = self.keyset_cmd(&name).arg("init").status();
+
+                if status.is_err() {
+                    error!("[ZL]: Error initializing keyset");
+                    return Err(Terminated);
+                }
+
+                Ok(())
+            }
+            Some(_) => Ok(()), // not for us
+        }
+    }
+
+    /// Create a keyset command with the config file for the given zone
+    fn keyset_cmd(&self, name: impl Display) -> Command {
+        let cfg_path = self.dnst_keyset_data_dir.join(format!("{name}.cfg"));
+        let mut cmd = Command::new(&self.dnst_keyset_bin_path);
+        cmd.arg("keyset").arg("-c").arg(&cfg_path);
+        cmd
     }
 
     async fn tick(&self) {
@@ -99,7 +146,7 @@ impl KeyManager {
         let mut ks_info = self.ks_info.lock().await;
         for zone in zone_tree.load().iter_zones() {
             let apex_name = zone.apex_name().to_string();
-            let state_path = Path::new("/tmp/").join(format!("{apex_name}.state"));
+            let state_path = self.dnst_keyset_data_dir.join(format!("{apex_name}.state"));
             if !state_path.exists() {
                 continue;
             }
@@ -130,16 +177,8 @@ impl KeyManager {
             };
 
             if *cron_next < UnixTime::now() {
-                // Run cron
-                let cfg_path = self.dnst_keyset_data_dir.join(format!("{apex_name}.cfg"));
-                let mut args = vec!["keyset", "-c"];
-                args.push(cfg_path.to_str().unwrap());
-                args.push("cron");
-                println!(
-                    "Invoking keyset cron for zone {apex_name} with {}",
-                    args.join(" ")
-                );
-                let Ok(res) = Command::new(&self.dnst_keyset_bin_path).args(args).output() else {
+                println!("Invoking keyset cron for zone {apex_name}");
+                let Ok(res) = self.keyset_cmd(&apex_name).arg("cron").output() else {
                     error!(
                         "Failed to invoke keyset binary at '{}",
                         self.dnst_keyset_bin_path.display()
@@ -186,7 +225,8 @@ impl KeyManager {
                     };
                     if new_info.retries >= CRON_MAX_RETRIES {
                         error!(
-                            "The command 'dnst keyset cron' for config {} failed to update state file {}", cfg_path.display(), state_path.display()
+                            "The command 'dnst keyset cron' failed to update state file {}",
+                            state_path.display()
                         );
 
                         // Clear cron_next.

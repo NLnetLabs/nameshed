@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # We expect to receive: <zone name> <zone serial> <approval token>
 set -euo pipefail -x
 
