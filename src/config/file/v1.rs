@@ -85,7 +85,7 @@ impl Spec {
 
     /// The default value for `zone_state_dir`.
     fn zone_state_dir_default() -> Box<Utf8Path> {
-        "/var/db/cascade/zone-state.db".into()
+        "/var/db/cascade/zone-state".into()
     }
 
     /// The default value for `tsig_store_path`.

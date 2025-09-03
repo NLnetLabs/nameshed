@@ -133,6 +133,9 @@ impl HttpServer {
         State(state): State<Arc<HttpServerState>>,
         Json(zone_register): Json<ZoneAdd>,
     ) -> Json<ZoneAddResult> {
+        // TODO: Use the result.
+        let _ = state.center.add_zone(zone_register.name.clone());
+
         let zone_name = zone_register.name.clone();
         state
             .center
@@ -150,8 +153,14 @@ impl HttpServer {
         })
     }
 
-    async fn zone_remove(Path(_payload): Path<Name<Bytes>>) -> Json<ZoneRemoveResult> {
-        todo!()
+    async fn zone_remove(
+        State(state): State<Arc<HttpServerState>>,
+        Path(name): Path<Name<Bytes>>,
+    ) -> Json<ZoneRemoveResult> {
+        // TODO: Use the result.
+        let _ = state.center.remove_zone(name);
+
+        Json(ZoneRemoveResult {})
     }
 
     async fn zones_list(State(state): State<Arc<HttpServerState>>) -> Json<ZonesListResult> {

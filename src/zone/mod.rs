@@ -16,7 +16,9 @@ use domain::{
 };
 
 use crate::{
+    center::{Center, Change},
     config::Config,
+    payload::Update,
     policy::{Policy, PolicyVersion},
 };
 
@@ -89,7 +91,7 @@ impl Zone {
         config: &Config,
     ) -> io::Result<()> {
         // Load and parse the state file.
-        let path = config.zone_state_dir.join(format!("{}.state", self.name));
+        let path = config.zone_state_dir.join(format!("{}.db", self.name));
         let spec = state::Spec::load(&path)?;
 
         // Merge the parsed data.
@@ -108,9 +110,75 @@ impl Zone {
         };
 
         // Build and write the state file.
-        let path = config.zone_state_dir.join(format!("{}.state", self.name));
+        let path = config.zone_state_dir.join(format!("{}.db", self.name));
         spec.save(&path)
     }
+}
+
+//----------- Actions ----------------------------------------------------------
+
+/// Change the policy used by a zone.
+pub fn change_policy(
+    center: &Center,
+    name: Name<Bytes>,
+    policy: Box<str>,
+) -> Result<(), ChangePolicyError> {
+    let mut state = center.state.lock().unwrap();
+    let state = &mut *state;
+
+    // Verify the operation will succeed.
+    {
+        state
+            .zones
+            .get(&name)
+            .ok_or(ChangePolicyError::NoSuchZone)?;
+
+        let policy = state
+            .policies
+            .get(&policy)
+            .ok_or(ChangePolicyError::NoSuchPolicy)?;
+        if policy.mid_deletion {
+            return Err(ChangePolicyError::PolicyMidDeletion);
+        }
+    }
+
+    // Perform the operation.
+    let zone = state.zones.get(&name).unwrap();
+    let mut zone_state = zone.0.state.lock().unwrap();
+
+    // Unlink the previous policy of the zone.
+    if let Some(policy) = zone_state.policy.take() {
+        let policy = state
+            .policies
+            .get_mut(&policy.name)
+            .expect("zones and policies are consistent");
+        assert!(
+            policy.zones.remove(&name),
+            "zones and policies are consistent"
+        );
+    }
+
+    // Link the zone to the selected policy.
+    let policy = state
+        .policies
+        .get_mut(&policy)
+        .ok_or(ChangePolicyError::NoSuchPolicy)?;
+    if policy.mid_deletion {
+        return Err(ChangePolicyError::PolicyMidDeletion);
+    }
+    zone_state.policy = Some(policy.latest.clone());
+    policy.zones.insert(name.clone());
+
+    center
+        .update_tx
+        .send(Update::Changed(Change::ZonePolicyChanged(
+            name.clone(),
+            policy.latest.clone(),
+        )))
+        .unwrap();
+
+    log::info!("Set policy of zone '{name}' to '{}'", policy.latest.name);
+    Ok(())
 }
 
 //----------- ZoneByName -------------------------------------------------------
@@ -194,5 +262,32 @@ impl Hash for ZoneByPtr {
 impl fmt::Debug for ZoneByPtr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
+    }
+}
+
+//----------- ChangePolicyError ------------------------------------------------
+
+/// An error in changing the policy of a zone.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ChangePolicyError {
+    /// The specified zone does not exist.
+    NoSuchZone,
+
+    /// The specified policy does not exist.
+    NoSuchPolicy,
+
+    /// The specified policy was being deleted.
+    PolicyMidDeletion,
+}
+
+impl std::error::Error for ChangePolicyError {}
+
+impl fmt::Display for ChangePolicyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::NoSuchZone => "the specified zone does not exist",
+            Self::NoSuchPolicy => "the specified policy does not exist",
+            Self::PolicyMidDeletion => "the specified policy is being deleted",
+        })
     }
 }

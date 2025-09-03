@@ -130,6 +130,12 @@ pub struct ConfigSpec {
     /// The directory storing policy files.
     pub policy_dir: Box<Utf8Path>,
 
+    /// The directory storing zone state files.
+    pub zone_state_dir: Box<Utf8Path>,
+
+    /// The file storing TSIG keys.
+    pub tsig_store_path: Box<Utf8Path>,
+
     /// Daemon-related configuration.
     pub daemon: DaemonConfigSpec,
 
@@ -152,6 +158,8 @@ impl ConfigSpec {
     /// Parse from this specification.
     pub fn parse_into(self, config: &mut Config, changed: &mut bool) {
         update_value(&mut config.policy_dir, self.policy_dir, changed);
+        update_value(&mut config.zone_state_dir, self.zone_state_dir, changed);
+        update_value(&mut config.tsig_store_path, self.tsig_store_path, changed);
         self.daemon.parse_into(&mut config.daemon, changed);
         update_value(&mut config.loader, self.loader.parse(), changed);
         update_value(&mut config.signer, self.signer.parse(), changed);
@@ -163,6 +171,8 @@ impl ConfigSpec {
     pub fn build(config: &Config) -> Self {
         Self {
             policy_dir: config.policy_dir.clone(),
+            zone_state_dir: config.zone_state_dir.clone(),
+            tsig_store_path: config.tsig_store_path.clone(),
             daemon: DaemonConfigSpec::build(&config.daemon),
             loader: LoaderConfigSpec::build(&config.loader),
             signer: SignerConfigSpec::build(&config.signer),
