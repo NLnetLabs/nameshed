@@ -12,11 +12,30 @@ on:
 
 jobs:
   package:
-    uses: NLnetLabs/ploutos/.github/workflows/pkg-rust.yml@v8
+    uses: NLnetLabs/ploutos/.github/workflows/pkg-rust.yml@v9
     with:
       package_build_rules: pkg/rules/packages-to-build.yml
       package_test_scripts_path: pkg/test-scripts/test-<package>.sh
 
+      # About the use of deb_apt_source and rpm_yum_repo:
+      # ----------------------------------------------------------------------
+      # These settings are used below to direct Ploutos to add an alternate
+      # package repository than the default (also packages.nlnetlabs.nl but
+      # normal channel rather than the "-proposed" channel). This repository
+      # is used during the package testing phase and is needed so that when
+      # the newly built Cascade package is installed that its dependencies,
+      # dnst and kmip2pkcs11, can be resolved. This is because those
+      # dependencies are at the time of writing not yet published in the main
+      # channel but only in the "-proposed" channel.
+      package_test_always_add_repo: true
+
       deb_extra_build_packages: libssl-dev
+      deb_apt_source: 'deb [arch=amd64] https://packages.nlnetlabs.nl/linux/${OS_NAME} ${OS_REL}-proposed main'
+
       rpm_extra_build_packages: make openssl-devel
       rpm_scriptlets_path: pkg/rpm/scriptlets.toml
+      rpm_yum_repo: |
+        [nlnetlabs]
+        name=NLnet Labs Testing
+        baseurl=https://packages.nlnetlabs.nl/linux/centos/$releasever/proposed/$basearch
+        enabled=1

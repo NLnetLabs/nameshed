@@ -18,7 +18,7 @@ if [ $1 -eq 1 ] ; then
     fi
 
     # Run commands equivalent to what the RPM systemd macros would do
-    systemd_post cascade.service
+    systemd_post cascaded.service
     systemd_triggers
 fi
 '''
@@ -30,7 +30,7 @@ pre_uninstall_script = '''
 if [ $1 -eq 0 ] ; then
     # Package removal, not upgrade
     # Run commands equivalent to what the RPM systemd macros would do
-    systemd_preun cascade.service
+    systemd_preun cascaded.service
     systemd_triggers
 fi
 '''
@@ -41,7 +41,7 @@ post_uninstall_script = '''
 
 if [ $1 -ge 1 ] ; then
     # Run commands equivalent to what the RPM systemd macros would do
-    systemd_postun_with_restart cascade.service
+    systemd_postun_with_restart cascaded.service
     systemd_triggers
 
     # TODO: Remove the user account?

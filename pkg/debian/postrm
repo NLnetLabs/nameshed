@@ -1,6 +1,6 @@
 #!/bin/sh -e
 
-CONFIG_FILE_PATH="/etc/cascade/cascade.conf"
+CONFIG_FILE_PATH="/etc/cascade/config.toml"
 
 case "$1" in
 purge)
