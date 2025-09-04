@@ -89,10 +89,6 @@ pub fn spawn(
     log::info!("Starting unit 'RS'");
     let unit = ZoneServerUnit {
         center: center.clone(),
-        listen: vec![
-            "tcp:127.0.0.1:8056".parse().unwrap(),
-            "udp:127.0.0.1:8056".parse().unwrap(),
-        ],
         _xfr_out: HashMap::from([(zone_name.clone(), xfr_out)]),
         hooks: vec![String::from("/tmp/approve_or_deny.sh")],
         mode: zone_server::Mode::Prepublish,
@@ -134,10 +130,6 @@ pub fn spawn(
     let unit = ZoneServerUnit {
         center: center.clone(),
         http_api_path: Arc::new(String::from("/_unit/rs2/")),
-        listen: vec![
-            "tcp:127.0.0.1:8057".parse().unwrap(),
-            "udp:127.0.0.1:8057".parse().unwrap(),
-        ],
         _xfr_out: HashMap::from([(zone_name.clone(), "127.0.0.1:8055 KEY sec1-key".into())]),
         hooks: vec![String::from("/tmp/approve_or_deny_signed.sh")],
         mode: zone_server::Mode::Prepublish,
@@ -152,10 +144,6 @@ pub fn spawn(
     let unit = ZoneServerUnit {
         center: center.clone(),
         http_api_path: Arc::new(String::from("/_unit/ps/")),
-        listen: vec![
-            "tcp:127.0.0.1:8058".parse().unwrap(),
-            "udp:127.0.0.1:8058".parse().unwrap(),
-        ],
         _xfr_out: HashMap::from([(zone_name, "127.0.0.1:8055".into())]),
         hooks: vec![],
         mode: zone_server::Mode::Publish,

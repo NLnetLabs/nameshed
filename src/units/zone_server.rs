@@ -51,6 +51,7 @@ use crate::common::net::ListenAddr;
 use crate::common::tsig::TsigKeyStore;
 use crate::comms::ApplicationCommand;
 use crate::comms::Terminated;
+use crate::config::SocketConfig;
 use crate::payload::Update;
 
 #[derive(Copy, Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -83,9 +84,6 @@ pub struct ZoneServerUnit {
 
     /// The relative path at which we should listen for HTTP query API requests
     pub http_api_path: Arc<String>,
-
-    /// Addresses and protocols to listen on.
-    pub listen: Vec<ListenAddr>,
 
     /// XFR out per zone: Allow XFR to, and when with a port also send NOTIFY to.
     pub _xfr_out: HashMap<StoredName, String>,
@@ -145,15 +143,44 @@ impl ZoneServerUnit {
         let svc = MandatoryMiddlewareSvc::<_, _, ()>::new(svc);
         let svc = Arc::new(svc);
 
-        for addr in self.listen.iter().cloned() {
+        // TODO: Should this reload when the config changes?
+        let servers = {
+            let state = self.center.state.lock().unwrap();
+            let config = &state.config;
+            let servers = match self.source {
+                Source::UnsignedZones => &config.loader.review.servers,
+                Source::SignedZones => &config.signer.review.servers,
+                Source::PublishedZones => &config.server.servers,
+            };
+            servers.clone()
+        };
+
+        let mut addrs = Vec::new();
+
+        for addr in servers {
             info!("[{unit_name}]: Binding on {addr:?}");
-            let svc = svc.clone();
-            let unit_name: Box<str> = unit_name.into();
-            tokio::spawn(async move {
-                if let Err(err) = Self::server(addr, svc).await {
-                    error!("[{unit_name}]: {err}");
-                }
-            });
+
+            if let SocketConfig::UDP { addr } | SocketConfig::TCPUDP { addr } = addr {
+                let unit_name: Box<str> = unit_name.into();
+                let svc = svc.clone();
+                tokio::spawn(async move {
+                    if let Err(err) = Self::server(ListenAddr::Udp(addr), svc).await {
+                        error!("[{unit_name}]: {err}");
+                    }
+                });
+                addrs.push(ListenAddr::Udp(addr));
+            }
+
+            if let SocketConfig::TCP { addr } | SocketConfig::TCPUDP { addr } = addr {
+                let unit_name: Box<str> = unit_name.into();
+                let svc = svc.clone();
+                tokio::spawn(async move {
+                    if let Err(err) = Self::server(ListenAddr::Tcp(addr), svc).await {
+                        error!("[{unit_name}]: {err}");
+                    }
+                });
+                addrs.push(ListenAddr::Tcp(addr));
+            }
         }
 
         let update_tx = self.center.update_tx.clone();
@@ -163,7 +190,7 @@ impl ZoneServerUnit {
             self.mode,
             self.source,
             self.hooks,
-            self.listen,
+            addrs,
             zones,
         )
         .run(unit_name, update_tx, cmd_rx)
