@@ -2,7 +2,7 @@
 name = "cascade"
 default-run = "cascaded"
 description = "friendly DNSSEC signing solution: sensible defaults, controllability, observability and flexibility"
-version = "0.1.0"
+version = "0.1.0-rc1"
 edition = "2021"
 license = "BSD-3-Clause"
 exclude = [".github", ".gitignore"]

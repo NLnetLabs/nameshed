@@ -314,7 +314,7 @@ dependencies = [
 
 [[package]]
 name = "cascade"
-version = "0.1.0"
+version = "0.1.0-rc1"
 dependencies = [
  "allocator-api2",
  "arc-swap",
