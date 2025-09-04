@@ -150,6 +150,17 @@ impl HttpServer {
             .send((
                 "ZL".into(),
                 ApplicationCommand::RegisterZone {
+                    register: zone_register.clone(),
+                },
+            ))
+            .unwrap();
+
+        state
+            .center
+            .app_cmd_tx
+            .send((
+                "KM".into(),
+                ApplicationCommand::RegisterZone {
                     register: zone_register,
                 },
             ))

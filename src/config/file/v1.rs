@@ -28,6 +28,14 @@ pub struct Spec {
     #[serde(default = "Spec::tsig_store_path_default")]
     pub tsig_store_path: Box<Utf8Path>,
 
+    /// Path to the directory where the keys should be stored.
+    #[serde(default = "Spec::keys_dir_default")]
+    pub keys_dir: Box<Utf8Path>,
+
+    /// Path to the dnst binary that Cascade should use.
+    #[serde(default = "Spec::dnst_binary_path_default")]
+    pub dnst_binary_path: Box<Utf8Path>,
+
     /// Configuring the Cascade daemon.
     pub daemon: DaemonSpec,
 
@@ -52,6 +60,8 @@ impl Spec {
         config.policy_dir = self.policy_dir;
         config.zone_state_dir = self.zone_state_dir;
         config.tsig_store_path = self.tsig_store_path;
+        config.keys_dir = self.keys_dir;
+        config.dnst_binary_path = self.dnst_binary_path;
         self.daemon.parse_into(&mut config.daemon);
         self.loader.parse_into(&mut config.loader);
         self.signer.parse_into(&mut config.signer);
@@ -68,6 +78,8 @@ impl Default for Spec {
             policy_dir: Self::policy_dir_default(),
             zone_state_dir: Self::zone_state_dir_default(),
             tsig_store_path: Self::tsig_store_path_default(),
+            keys_dir: Self::keys_dir_default(),
+            dnst_binary_path: Self::dnst_binary_path_default(),
             daemon: Default::default(),
             loader: Default::default(),
             signer: Default::default(),
@@ -91,6 +103,16 @@ impl Spec {
     /// The default value for `tsig_store_path`.
     fn tsig_store_path_default() -> Box<Utf8Path> {
         "/var/db/cascade/tsig-keys.db".into()
+    }
+
+    /// The default value for `dnst_binary_path`.
+    fn dnst_binary_path_default() -> Box<Utf8Path> {
+        "dnst".into()
+    }
+
+    /// The default value for `dnst_keyset_dir`.
+    fn keys_dir_default() -> Box<Utf8Path> {
+        "/var/db/cascade/keys".into()
     }
 }
 

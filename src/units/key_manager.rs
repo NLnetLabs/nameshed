@@ -1,6 +1,7 @@
 use crate::center::Center;
 use crate::comms::{ApplicationCommand, Terminated};
 use crate::payload::Update;
+use camino::Utf8Path;
 use core::time::Duration;
 use domain::dnssec::sign::keys::keyset::{KeySet, UnixTime};
 use log::error;
@@ -8,7 +9,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::fs::metadata;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
 use tokio::select;
@@ -18,8 +19,6 @@ use tokio::time::MissedTickBehavior;
 #[derive(Debug)]
 pub struct KeyManagerUnit {
     pub center: Arc<Center>,
-    pub dnst_keyset_bin_path: PathBuf,
-    pub dnst_keyset_data_dir: PathBuf,
 }
 
 impl KeyManagerUnit {
@@ -29,13 +28,7 @@ impl KeyManagerUnit {
     ) -> Result<(), Terminated> {
         // TODO: metrics and status reporting
 
-        KeyManager::new(
-            self.center,
-            self.dnst_keyset_bin_path,
-            self.dnst_keyset_data_dir,
-        )
-        .run(cmd_rx)
-        .await?;
+        KeyManager::new(self.center).run(cmd_rx).await?;
 
         Ok(())
     }
@@ -45,22 +38,23 @@ impl KeyManagerUnit {
 
 struct KeyManager {
     center: Arc<Center>,
-    dnst_keyset_bin_path: PathBuf,
-    dnst_keyset_data_dir: PathBuf,
     ks_info: Mutex<HashMap<String, KeySetInfo>>,
+    dnst_binary_path: Box<Utf8Path>,
+    keys_dir: Box<Utf8Path>,
 }
 
 impl KeyManager {
-    fn new(
-        center: Arc<Center>,
-        dnst_keyset_bin_path: PathBuf,
-        dnst_keyset_data_dir: PathBuf,
-    ) -> Self {
+    fn new(center: Arc<Center>) -> Self {
+        let state = center.state.lock().unwrap();
+        let dnst_binary_path = state.config.dnst_binary_path.clone();
+        let keys_dir = state.config.keys_dir.clone();
+        drop(state);
+
         Self {
             center,
-            dnst_keyset_bin_path,
-            dnst_keyset_data_dir,
             ks_info: Mutex::new(HashMap::new()),
+            dnst_binary_path,
+            keys_dir,
         }
     }
 
@@ -84,24 +78,27 @@ impl KeyManager {
     }
 
     fn run_cmd(&self, cmd: Option<ApplicationCommand>) -> Result<(), Terminated> {
+        log::info!("[KM] Received command: {cmd:?}");
+
         match cmd {
             Some(ApplicationCommand::Terminate) | None => Err(Terminated),
             Some(ApplicationCommand::RegisterZone {
                 register: crate::api::ZoneAdd { name, .. },
             }) => {
-                let state_path = self.dnst_keyset_data_dir.join(format!("{name}.state"));
+                let state_path = self.keys_dir.join(format!("{name}.state"));
 
-                let status = self
-                    .keyset_cmd(&name)
-                    .arg("create")
+                let mut cmd = self.keyset_cmd(&name);
+
+                cmd.arg("create")
                     .arg("-n")
                     .arg(name.to_string())
                     .arg("-s")
-                    .arg(&state_path)
-                    .status();
+                    .arg(&state_path);
 
-                if status.is_err() {
-                    error!("[ZL]: Error creating keyset");
+                log::info!("Running {cmd:?}");
+
+                if let Err(e) = cmd.output() {
+                    error!("[KM]: Error creating keyset: {e}");
                     return Err(Terminated);
                 }
 
@@ -109,10 +106,13 @@ impl KeyManager {
                 // `keyset create` but only once the zone is enabled.
                 // We currently do not have a good mechanism for that
                 // so we init the key immediately.
-                let status = self.keyset_cmd(&name).arg("init").status();
+                let mut cmd = self.keyset_cmd(&name);
+                cmd.arg("init");
 
-                if status.is_err() {
-                    error!("[ZL]: Error initializing keyset");
+                log::info!("Running {cmd:?}");
+
+                if let Err(e) = cmd.output() {
+                    error!("[KM]: Error initializing keyset: {e}");
                     return Err(Terminated);
                 }
 
@@ -124,8 +124,8 @@ impl KeyManager {
 
     /// Create a keyset command with the config file for the given zone
     fn keyset_cmd(&self, name: impl Display) -> Command {
-        let cfg_path = self.dnst_keyset_data_dir.join(format!("{name}.cfg"));
-        let mut cmd = Command::new(&self.dnst_keyset_bin_path);
+        let cfg_path = self.keys_dir.join(format!("{name}.cfg"));
+        let mut cmd = Command::new(self.dnst_binary_path.as_std_path());
         cmd.arg("keyset").arg("-c").arg(&cfg_path);
         cmd
     }
@@ -135,7 +135,7 @@ impl KeyManager {
         let mut ks_info = self.ks_info.lock().await;
         for zone in zone_tree.load().iter_zones() {
             let apex_name = zone.apex_name().to_string();
-            let state_path = self.dnst_keyset_data_dir.join(format!("{apex_name}.state"));
+            let state_path = self.keys_dir.join(format!("{apex_name}.state"));
             if !state_path.exists() {
                 continue;
             }
@@ -171,7 +171,7 @@ impl KeyManager {
                 let Ok(res) = self.keyset_cmd(&apex_name).arg("cron").output() else {
                     error!(
                         "Failed to invoke keyset binary at '{}",
-                        self.dnst_keyset_bin_path.display()
+                        self.dnst_binary_path
                     );
 
                     // Clear cron_next.
@@ -217,7 +217,7 @@ impl KeyManager {
                     if new_info.retries >= CRON_MAX_RETRIES {
                         error!(
                             "The command 'dnst keyset cron' failed to update state file {}",
-                            state_path.display()
+                            state_path
                         );
 
                         // Clear cron_next.
