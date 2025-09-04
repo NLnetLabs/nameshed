@@ -7,6 +7,7 @@ use std::{
     hash::{Hash, Hasher},
     io,
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use bytes::Bytes;
@@ -54,6 +55,13 @@ pub struct Zone {
 pub struct ZoneState {
     /// The policy (version) used by the zone.
     pub policy: Option<Arc<PolicyVersion>>,
+
+    /// An enqueued save of this state.
+    ///
+    /// The enqueued save operation will persist the current state in a short
+    /// duration of time.  If the field is `None`, and the state is changed, a
+    /// new save operation should be enqueued.
+    pub enqueued_save: Option<tokio::task::JoinHandle<()>>,
     //
     // TODO:
     // - A log?
@@ -101,25 +109,91 @@ impl Zone {
         Ok(())
     }
 
-    /// Save the state of this zone.
-    pub fn save_state(self: &Arc<Self>, config: &Config) -> io::Result<()> {
-        // Read the state out.
-        let spec = {
-            let state = self.state.lock().unwrap();
-            state::Spec::build(&state)
-        };
+    /// Mark the zone as dirty.
+    ///
+    /// A persistence operation for the zone will be enqueued (unless one
+    /// already exists), so that it will be saved in the near future.
+    pub fn mark_dirty(self: &Arc<Self>, state: &mut ZoneState, center: &Arc<Center>) {
+        if state.enqueued_save.is_some() {
+            // A save is already enqueued; nothing to do.
+            return;
+        }
 
-        // Build and write the state file.
-        let path = config.zone_state_dir.join(format!("{}.db", self.name));
-        spec.save(&path)
+        // Enqueue a new save.
+        let zone = self.clone();
+        let center = center.clone();
+        let task = tokio::spawn(async move {
+            // TODO: Make this time configurable.
+            tokio::time::sleep(Duration::from_secs(5)).await;
+
+            // Determine the save path from the global state.
+            let name = &zone.name;
+            let path = {
+                let state = center.state.lock().unwrap();
+                state.config.zone_state_dir.clone()
+            };
+            let path = path.join(format!("{name}.db"));
+
+            // Load the actual zone contents.
+            let spec = {
+                let mut state = zone.state.lock().unwrap();
+                let Some(_) = state.enqueued_save.take_if(|s| s.id() == tokio::task::id()) else {
+                    // 'enqueued_save' does not match what we set, so somebody
+                    // else set it to 'None' first.  Don't do anything.
+                    log::trace!("Ignoring enqueued save due to race");
+                    return;
+                };
+                state::Spec::build(&state)
+            };
+
+            // Save the zone state.
+            match spec.save(&path) {
+                Ok(()) => log::debug!("Saved state of zone '{name}' (to '{path}')"),
+                Err(err) => {
+                    log::error!("Could not save state of zone '{name}' to '{path}': {err}");
+                }
+            }
+        });
+        state.enqueued_save = Some(task);
     }
 }
 
 //----------- Actions ----------------------------------------------------------
 
+/// Persist the state of a zone immediately.
+pub fn save_state_now(center: &Center, zone: &Zone) {
+    // Determine the save path from the global state.
+    let name = &zone.name;
+    let path = {
+        let state = center.state.lock().unwrap();
+        state.config.zone_state_dir.clone()
+    };
+    let path = path.join(format!("{name}.db"));
+
+    // Load the actual zone contents.
+    let spec = {
+        let mut state = zone.state.lock().unwrap();
+
+        // If there was an enqueued save operation, stop it.
+        if let Some(save) = state.enqueued_save.take() {
+            save.abort();
+        }
+
+        state::Spec::build(&state)
+    };
+
+    // Save the global state.
+    match spec.save(&path) {
+        Ok(()) => log::debug!("Saved the state of zone '{name}' (to '{path}')"),
+        Err(err) => {
+            log::error!("Could not save the state of zone '{name}' to '{path}': {err}");
+        }
+    }
+}
+
 /// Change the policy used by a zone.
 pub fn change_policy(
-    center: &Center,
+    center: &Arc<Center>,
     name: Name<Bytes>,
     policy: Box<str>,
 ) -> Result<(), ChangePolicyError> {
@@ -176,6 +250,8 @@ pub fn change_policy(
             policy.latest.clone(),
         )))
         .unwrap();
+
+    zone.0.mark_dirty(&mut zone_state, center);
 
     log::info!("Set policy of zone '{name}' to '{}'", policy.latest.name);
     Ok(())

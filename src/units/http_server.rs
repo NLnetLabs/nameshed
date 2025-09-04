@@ -34,8 +34,10 @@ use crate::api::ZoneStage;
 use crate::api::ZoneStatusResult;
 use crate::api::ZonesListEntry;
 use crate::api::ZonesListResult;
+use crate::center;
 use crate::center::Center;
 use crate::comms::{ApplicationCommand, Terminated};
+use crate::zone;
 // use crate::zone::Zones;
 
 const HTTP_UNIT_NAME: &str = "HS";
@@ -134,7 +136,12 @@ impl HttpServer {
         Json(zone_register): Json<ZoneAdd>,
     ) -> Json<ZoneAddResult> {
         // TODO: Use the result.
-        let _ = state.center.add_zone(zone_register.name.clone());
+        let _ = center::add_zone(&state.center, zone_register.name.clone());
+        let _ = zone::change_policy(
+            &state.center,
+            zone_register.name.clone(),
+            zone_register.policy.clone().into(),
+        );
 
         let zone_name = zone_register.name.clone();
         state
@@ -158,7 +165,7 @@ impl HttpServer {
         Path(name): Path<Name<Bytes>>,
     ) -> Json<ZoneRemoveResult> {
         // TODO: Use the result.
-        let _ = state.center.remove_zone(name);
+        let _ = center::remove_zone(&state.center, name);
 
         Json(ZoneRemoveResult {})
     }
