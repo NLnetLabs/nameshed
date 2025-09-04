@@ -1,6 +1,6 @@
-use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::process::Command;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -15,6 +15,7 @@ use axum::routing::post;
 use axum::Json;
 use axum::Router;
 use bytes::Bytes;
+use domain::base::iana::Class;
 use domain::base::Name;
 use domain::base::Serial;
 use log::warn;
@@ -32,7 +33,6 @@ use crate::api::ZoneReloadResult;
 use crate::api::ZoneRemoveResult;
 use crate::api::ZoneStage;
 use crate::api::ZoneStatusResult;
-use crate::api::ZonesListEntry;
 use crate::api::ZonesListResult;
 use crate::center;
 use crate::center::Center;
@@ -137,11 +137,15 @@ impl HttpServer {
     ) -> Json<ZoneAddResult> {
         // TODO: Use the result.
         let _ = center::add_zone(&state.center, zone_register.name.clone());
-        let _ = zone::change_policy(
+        let res = zone::change_policy(
             &state.center,
             zone_register.name.clone(),
             zone_register.policy.clone().into(),
         );
+
+        if let Err(e) = res {
+            error!("Could not change policy: {e}");
+        }
 
         let zone_name = zone_register.name.clone();
         state
@@ -165,6 +169,7 @@ impl HttpServer {
                 },
             ))
             .unwrap();
+
         Json(ZoneAddResult {
             name: zone_name,
             status: "Submitted".to_string(),
@@ -181,37 +186,79 @@ impl HttpServer {
         Json(ZoneRemoveResult {})
     }
 
-    async fn zones_list(State(state): State<Arc<HttpServerState>>) -> Json<ZonesListResult> {
-        // The zone trees in the Component overlap. Therefore we take the
-        // furthest a zone has progressed. We use a BTreeMap to sort the zones
-        // while we're doing this.
-        let mut all_zones = BTreeMap::new();
+    async fn zones_list(State(http_state): State<Arc<HttpServerState>>) -> Json<ZonesListResult> {
+        let state = http_state.center.state.lock().unwrap();
+        let names: Vec<_> = state.zones.iter().map(|z| z.0.name.clone()).collect();
+        drop(state);
 
-        let unsigned_zones = state.center.unsigned_zones.load();
-        for zone in unsigned_zones.iter_zones() {
-            all_zones.insert(zone.apex_name().clone(), ZoneStage::Unsigned);
-        }
-
-        let unsigned_zones = state.center.signed_zones.load();
-        for zone in unsigned_zones.iter_zones() {
-            all_zones.insert(zone.apex_name().clone(), ZoneStage::Signed);
-        }
-
-        let unsigned_zones = state.center.published_zones.load();
-        for zone in unsigned_zones.iter_zones() {
-            all_zones.insert(zone.apex_name().clone(), ZoneStage::Published);
-        }
-
-        let zones = all_zones
-            .into_iter()
-            .map(|(name, stage)| ZonesListEntry { name, stage })
+        let zones = names
+            .iter()
+            .map(|z| Self::get_zone_status(http_state.clone(), z))
             .collect();
 
         Json(ZonesListResult { zones })
     }
 
-    async fn zone_status(Path(name): Path<Name<Bytes>>) -> Json<ZoneStatusResult> {
-        Json(ZoneStatusResult { name })
+    async fn zone_status(
+        State(state): State<Arc<HttpServerState>>,
+        Path(name): Path<Name<Bytes>>,
+    ) -> Json<ZoneStatusResult> {
+        Json(Self::get_zone_status(state, &name))
+    }
+
+    fn get_zone_status(state: Arc<HttpServerState>, name: &Name<Bytes>) -> ZoneStatusResult {
+        let center = &state.center;
+
+        let state = center.state.lock().unwrap();
+        let zone = state.zones.get(name).unwrap();
+        let zone_state = zone.0.state.lock().unwrap();
+
+        // TODO: Needs some info from the zone loader?
+        let source = "<unimplemented>".into();
+
+        let policy = zone_state
+            .policy
+            .as_ref()
+            .map_or("<none>".into(), |p| p.name.to_string());
+
+        // TODO: We need to show multiple versions here
+        let stage = if center
+            .published_zones
+            .load()
+            .get_zone(&name, Class::IN)
+            .is_some()
+        {
+            ZoneStage::Published
+        } else if center
+            .signed_zones
+            .load()
+            .get_zone(&name, Class::IN)
+            .is_some()
+        {
+            ZoneStage::Signed
+        } else {
+            ZoneStage::Unsigned
+        };
+
+        let dnst_binary = &state.config.dnst_binary_path;
+        let keys_dir = &state.config.keys_dir;
+        let cfg = keys_dir.join(format!("{name}.cfg"));
+        let key_status = Command::new(dnst_binary.as_std_path())
+            .arg("keyset")
+            .arg("-c")
+            .arg(cfg)
+            .arg("status")
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string());
+
+        ZoneStatusResult {
+            name: name.clone(),
+            source,
+            policy,
+            stage,
+            key_status,
+        }
     }
 
     async fn zone_reload(
