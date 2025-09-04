@@ -3,6 +3,7 @@
 use std::{
     fmt, io,
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use arc_swap::ArcSwap;
@@ -52,109 +53,56 @@ pub struct Center {
 
 //--- Actions
 
-impl Center {
-    /// Add a zone.
-    pub fn add_zone(&self, name: Name<Bytes>) -> Result<(), ZoneAddError> {
-        let zone = ZoneByName(Arc::new(Zone::new(name.clone())));
-        let mut state = self.state.lock().unwrap();
-        if !state.zones.insert(zone) {
+/// Add a zone.
+pub fn add_zone(center: &Arc<Center>, name: Name<Bytes>) -> Result<(), ZoneAddError> {
+    let zone = Arc::new(Zone::new(name.clone()));
+    {
+        let mut state = center.state.lock().unwrap();
+        if !state.zones.insert(ZoneByName(zone.clone())) {
             return Err(ZoneAddError::AlreadyExists);
         }
 
-        self.update_tx
+        center
+            .update_tx
             .send(Update::Changed(Change::ZoneAdded(name.clone())))
             .unwrap();
 
-        log::info!("Added zone '{name}'");
-        Ok(())
+        state.mark_dirty(center);
     }
 
-    /// Remove a zone.
-    pub fn remove_zone(&self, name: Name<Bytes>) -> Result<(), ZoneRemoveError> {
-        self.update_tx
-            .send(Update::Changed(Change::ZoneRemoved(name.clone())))
-            .unwrap();
-
-        let mut state = self.state.lock().unwrap();
-        let zone = state.zones.take(&name).ok_or(ZoneRemoveError::NotFound)?;
-        let mut zone_state = zone.0.state.lock().unwrap();
-
-        // Update the policy's referenced zones.
-        if let Some(policy) = zone_state.policy.take() {
-            let policy = state
-                .policies
-                .get_mut(&policy.name)
-                .expect("every zone policy exists");
-            assert!(policy.zones.remove(&name), "zone policies are consistent");
-        }
-
-        log::info!("Removed zone '{name}'");
-        Ok(())
+    {
+        let mut state = zone.state.lock().unwrap();
+        zone.mark_dirty(&mut state, center);
     }
+
+    log::info!("Added zone '{name}'");
+    Ok(())
 }
 
-//--- Saving/Loading
+/// Remove a zone.
+pub fn remove_zone(center: &Arc<Center>, name: Name<Bytes>) -> Result<(), ZoneRemoveError> {
+    center
+        .update_tx
+        .send(Update::Changed(Change::ZoneRemoved(name.clone())))
+        .unwrap();
 
-impl Center {
-    /// Save Cascade's state to disk.
-    pub fn save(&self) {
-        let state_path;
-        let state_spec;
-        let tsig_path;
-        let tsig_spec;
-        let zone_state_dir;
-        let zone_states: foldhash::HashMap<_, _>;
+    let mut state = center.state.lock().unwrap();
+    let zone = state.zones.take(&name).ok_or(ZoneRemoveError::NotFound)?;
+    let mut zone_state = zone.0.state.lock().unwrap();
 
-        // Read everything from the global state.
-        {
-            let state = self.state.lock().unwrap();
+    // Update the policy's referenced zones.
+    if let Some(policy) = zone_state.policy.take() {
+        let policy = state
+            .policies
+            .get_mut(&policy.name)
+            .expect("every zone policy exists");
+        assert!(policy.zones.remove(&name), "zone policies are consistent");
 
-            state_path = state.config.daemon.state_file.value().clone();
-            state_spec = crate::state::Spec::build(&state);
-
-            tsig_path = state.config.tsig_store_path.clone();
-            tsig_spec = crate::tsig::file::Spec::build(&state.tsig_store);
-
-            zone_state_dir = state.config.zone_state_dir.clone();
-            zone_states = state
-                .zones
-                .iter()
-                .map(|zone| {
-                    let name = zone.0.name.clone();
-                    let state = zone.0.state.lock().unwrap();
-                    let spec = crate::zone::state::Spec::build(&state);
-                    (name, spec)
-                })
-                .collect();
-        }
-
-        // Save the global state file.
-        match state_spec.save(&state_path) {
-            Ok(()) => log::debug!("Saved global state"),
-            Err(err) => {
-                log::error!("Could not save global state to '{state_path}': {err}");
-            }
-        }
-
-        // Save the TSIG store file.
-        match tsig_spec.save(&tsig_path) {
-            Ok(()) => log::debug!("Saved the TSIG store"),
-            Err(err) => {
-                log::error!("Could not save the TSIG store: {err}");
-            }
-        }
-
-        // Save the per-zone state files.
-        for (name, spec) in zone_states {
-            let path = zone_state_dir.join(format!("{name}.db"));
-            match spec.save(&path) {
-                Ok(()) => log::debug!("Saved state of zone '{name}'"),
-                Err(err) => {
-                    log::error!("Could not save state of zone '{name}' to '{path}': '{err}");
-                }
-            }
-        }
+        state.mark_dirty(center);
     }
+
+    log::info!("Removed zone '{name}'");
+    Ok(())
 }
 
 //----------- State ------------------------------------------------------------
@@ -191,6 +139,13 @@ pub struct State {
     /// TSIG keys are used for authenticating Cascade to zone sources, and for
     /// authenticating incoming requests for zones.
     pub tsig_store: TsigStore,
+
+    /// An enqueued save of this state.
+    ///
+    /// The enqueued save operation will persist the current state in a short
+    /// duration of time.  If the field is `None`, and the state is changed, a
+    /// new save operation should be enqueued.
+    pub enqueued_save: Option<tokio::task::JoinHandle<()>>,
 }
 
 //--- Initialization
@@ -206,6 +161,7 @@ impl State {
             zones: Default::default(),
             policies: Default::default(),
             tsig_store: Default::default(),
+            enqueued_save: None,
         }
     }
 
@@ -216,6 +172,48 @@ impl State {
         let mut _changes = Vec::new();
         spec.parse_into(self, &mut _changes);
         Ok(())
+    }
+
+    /// Mark the global state as dirty.
+    ///
+    /// A persistence operation for the global state will be enqueued (unless
+    /// one already exists), so that it will be saved in the near future.
+    pub fn mark_dirty(&mut self, center: &Arc<Center>) {
+        if self.enqueued_save.is_some() {
+            // A save is already enqueued; nothing to do.
+            return;
+        }
+
+        // Enqueue a new save.
+        let center = center.clone();
+        let task = tokio::spawn(async move {
+            // TODO: Make this time configurable.
+            tokio::time::sleep(Duration::from_secs(5)).await;
+
+            let (path, spec);
+            {
+                // Load the global state.
+                let mut state = center.state.lock().unwrap();
+                let Some(_) = state.enqueued_save.take_if(|s| s.id() == tokio::task::id()) else {
+                    // 'enqueued_save' does not match what we set, so somebody
+                    // else set it to 'None' first.  Don't do anything.
+                    log::trace!("Ignoring enqueued save due to race");
+                    return;
+                };
+
+                path = state.config.daemon.state_file.value().clone();
+                spec = crate::state::Spec::build(&state);
+            }
+
+            // Save the global state.
+            match spec.save(&path) {
+                Ok(()) => log::debug!("Saved global state (to '{path}')"),
+                Err(err) => {
+                    log::error!("Could not save global state to '{path}': {err}");
+                }
+            }
+        });
+        self.enqueued_save = Some(task);
     }
 }
 

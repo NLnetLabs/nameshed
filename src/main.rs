@@ -10,7 +10,6 @@ use std::{
     io,
     process::ExitCode,
     sync::{Arc, Mutex},
-    time::Duration,
 };
 use tokio::sync::mpsc;
 
@@ -66,13 +65,13 @@ fn main() -> ExitCode {
 
         // Load the configuration file from scratch.
         if let Err(err) = state.config.init_from_file() {
-            eprintln!("Cascade couldn't be configured: {err}");
+            log::error!("Cascade couldn't be configured: {err}");
             return ExitCode::FAILURE;
         }
 
         // Load all policies.
         if let Err(err) = policy::reload_all(&mut state.policies, &state.config) {
-            eprintln!("Cascade couldn't load all policies: {err}");
+            log::error!("Cascade couldn't load all policies: {err}");
             return ExitCode::FAILURE;
         }
 
@@ -86,9 +85,12 @@ fn main() -> ExitCode {
             let name = &zone.0.name;
             let path = zone_state_dir.join(format!("{name}.db"));
             let spec = match cascade::zone::state::Spec::load(&path) {
-                Ok(spec) => spec,
+                Ok(spec) => {
+                    log::debug!("Loaded state of zone '{name}' (from {path})");
+                    spec
+                }
                 Err(err) => {
-                    log::error!("Failed to load zone state '{name}': {err}");
+                    log::error!("Failed to load zone state '{name}' from '{path}': {err}");
                     return ExitCode::FAILURE;
                 }
             };
@@ -98,7 +100,9 @@ fn main() -> ExitCode {
     }
 
     // Load the TSIG store file.
-    match state.tsig_store.load(&state.config) {
+    //
+    // TODO: Track which TSIG keys are in use by zones.
+    match state.tsig_store.init_from_file(&state.config) {
         Ok(()) => log::debug!("Loaded the TSIG store"),
         Err(err) if err.kind() == io::ErrorKind::NotFound => {
             log::debug!("No TSIG store found; will create one");
@@ -150,7 +154,6 @@ fn main() -> ExitCode {
         let mut unit_txs = Default::default();
         manager::spawn(&center, update_rx, &mut center_tx, &mut unit_txs);
 
-        let mut saver = tokio::time::interval(Duration::from_secs(5));
         let result = loop {
             tokio::select! {
                 // Watch for CTRL-C (SIGINT).
@@ -165,8 +168,6 @@ fn main() -> ExitCode {
                 }
 
                 _ = manager::forward_app_cmds(&mut app_cmd_rx, &unit_txs) => {}
-
-                _ = saver.tick() => center.save(),
             }
         };
 
@@ -181,6 +182,19 @@ fn main() -> ExitCode {
             tx.send(ApplicationCommand::Terminate).unwrap();
             tx.closed().await;
         }
+
+        // Persist the current state.
+        cascade::state::save_now(&center);
+        cascade::tsig::save_now(&center);
+        let zones = {
+            let state = center.state.lock().unwrap();
+            state.zones.iter().map(|z| z.0.clone()).collect::<Vec<_>>()
+        };
+        for zone in zones {
+            // TODO: Maybe 'save_state_now()' should take '&Config'?
+            cascade::zone::save_state_now(&center, &zone);
+        }
+
         result
     })
 }

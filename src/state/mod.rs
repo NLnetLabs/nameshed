@@ -8,9 +8,36 @@ use std::{
 use camino::Utf8Path;
 use serde::{Deserialize, Serialize};
 
-use crate::center::{Change, State};
+use crate::center::{Center, Change, State};
 
 pub mod v1;
+
+//----------- Actions ----------------------------------------------------------
+
+/// Persist the global state immediately.
+pub fn save_now(center: &Center) {
+    let (path, spec);
+    {
+        // Load the global state.
+        let mut state = center.state.lock().unwrap();
+
+        // If there was an enqueued save operation, stop it.
+        if let Some(save) = state.enqueued_save.take() {
+            save.abort();
+        }
+
+        path = state.config.daemon.state_file.value().clone();
+        spec = Spec::build(&state);
+    }
+
+    // Save the global state.
+    match spec.save(&path) {
+        Ok(()) => log::debug!("Saved the global state (to '{path}')"),
+        Err(err) => {
+            log::error!("Could not save the global state to '{path}': {err}");
+        }
+    }
+}
 
 //----------- StateSpec --------------------------------------------------------
 
