@@ -20,6 +20,11 @@ tsig-store-path = "/var/db/cascade/tsig-keys.db"
 # external system.
 [daemon]
 #
+# Whether or not to fork the process and apply the pid-file, chroot and
+# identity settings.
+# 
+daemonize = false
+#
 # The minimum severity of the messages logged by the daemon.
 #
 # Messages at or above the specified severity level will be logged.  The
@@ -43,6 +48,8 @@ log-target = { type = "file", path = "/dev/stdout" }
 #
 # If specified, Cascade will maintain a PID file at this location; it will be a
 # simple plain-text file containing the PID number of the daemon process.
+#
+# Only applied if daemonize = true.
 #pid-file = "/var/run/cascade.pid"
 #
 # A directory to chroot into after startup.
@@ -53,6 +60,8 @@ log-target = { type = "file", path = "/dev/stdout" }
 # TODO: How will this affect the paths Cascade interacts with?  What if files
 # aren't within the chroot - do we just fail?  Or do we interpret all paths here
 # relative to the chroot?
+#
+# Only applied if daemonize = true.
 #chroot = "/var/run/cascade"
 #
 # An identity (user and group) to assume after startup.
@@ -61,8 +70,10 @@ log-target = { type = "file", path = "/dev/stdout" }
 # this will fail if Cascade is started without administrator privileges.
 #
 # The identity can be specified as '<user>:<group>' or just '<user>'; in the
-# latter case, the identically named/numbered group will be used.  Both the user
-# and group can be specified as a numeric ID or a name.
+# latter case, the identically named group will be used.  Both the user
+# and group must be specified as a name, numeric IDs are NOT supported.
+#
+# Only applied if daemonize = true.
 #identity = "cascade:cascade"
 
 # Configuring how zones are loaded.

@@ -9,6 +9,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc::{self};
 
 use crate::center::Center;
+use crate::common::net::ListenAddr;
 use crate::comms::ApplicationCommand;
 use crate::payload::Update;
 use crate::targets::central_command::CentralCommand;
@@ -148,14 +149,20 @@ pub fn spawn(
     unit_tx_slots.insert("RS2".into(), cmd_tx);
 
     // Spawn the published zone server.
+    // Use system provided sockets/listeners in preference to listen addresses
+    // from configuration.
+    let mut listen = get_system_provided_sockets();
+
+    if listen.is_empty() {
+        listen.push("tcp:127.0.0.1:8058".parse().unwrap());
+        listen.push("udp:127.0.0.1:8058".parse().unwrap());
+    }
+
     log::info!("Starting unit 'PS'");
     let unit = ZoneServerUnit {
         center: center.clone(),
         http_api_path: Arc::new(String::from("/_unit/ps/")),
-        listen: vec![
-            "tcp:127.0.0.1:8058".parse().unwrap(),
-            "udp:127.0.0.1:8058".parse().unwrap(),
-        ],
+        listen,
         _xfr_out: HashMap::from([(zone_name, "127.0.0.1:8055".into())]),
         hooks: vec![],
         mode: zone_server::Mode::Publish,
@@ -175,6 +182,20 @@ pub fn spawn(
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
     tokio::spawn(unit.run(cmd_rx));
     unit_tx_slots.insert("HS".into(), cmd_tx);
+}
+
+fn get_system_provided_sockets() -> Vec<ListenAddr> {
+    let mut listen_addr = vec![];
+    let mut provided = listenfd::ListenFd::from_env();
+    for idx in 0..provided.len() {
+        if let Ok(Some(sock)) = provided.take_udp_socket(idx) {
+            // Found a system provided UDP socket.
+            listen_addr.push(ListenAddr::UdpSocket(sock))
+        } else if let Ok(Some(listener)) = provided.take_tcp_listener(idx) {
+            listen_addr.push(ListenAddr::TcpListener(listener));
+        }
+    }
+    listen_addr
 }
 
 /// Forward application commands.

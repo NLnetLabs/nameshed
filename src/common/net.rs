@@ -59,13 +59,19 @@ impl TcpStreamWrapper for StandardTcpStream {
 //------------ ListenAddr ----------------------------------------------------
 
 /// An address and the protocol to serve queries on.
-#[derive(Clone, Debug, DeserializeFromStr)]
+#[derive(Debug, DeserializeFromStr)]
 pub enum ListenAddr {
     /// Plain, unencrypted UDP.
     Udp(SocketAddr),
 
     /// Plain, unencrypted TCP.
     Tcp(SocketAddr),
+
+    /// A provided UDP socket.
+    UdpSocket(std::net::UdpSocket),
+
+    /// A provided TCP listener.
+    TcpListener(std::net::TcpListener),
 }
 
 impl std::fmt::Display for ListenAddr {
@@ -73,6 +79,8 @@ impl std::fmt::Display for ListenAddr {
         match self {
             ListenAddr::Udp(addr) => write!(f, "Udp({addr})"),
             ListenAddr::Tcp(addr) => write!(f, "Tcp({addr})"),
+            ListenAddr::UdpSocket(_) => write!(f, "UdpSocket"),
+            ListenAddr::TcpListener(_) => write!(f, "TcpListener"),
         }
     }
 }

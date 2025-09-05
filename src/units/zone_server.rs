@@ -99,7 +99,7 @@ pub struct ZoneServerUnit {
 
 impl ZoneServerUnit {
     pub async fn run(
-        self,
+        mut self,
         cmd_rx: mpsc::UnboundedReceiver<ApplicationCommand>,
     ) -> Result<(), Terminated> {
         let unit_name = match (self.mode, self.source) {
@@ -145,7 +145,17 @@ impl ZoneServerUnit {
         let svc = MandatoryMiddlewareSvc::<_, _, ()>::new(svc);
         let svc = Arc::new(svc);
 
-        for addr in self.listen.iter().cloned() {
+        let listen_strings = self
+            .listen
+            .iter()
+            .filter_map(|addr| match addr {
+                ListenAddr::Udp(socket_addr) => Some(socket_addr.to_string()),
+                ListenAddr::Tcp(socket_addr) => Some(socket_addr.to_string()),
+                ListenAddr::UdpSocket(_) | ListenAddr::TcpListener(_) => None,
+            })
+            .collect();
+
+        for addr in self.listen.drain(..) {
             info!("[{unit_name}]: Binding on {addr:?}");
             let svc = svc.clone();
             let unit_name: Box<str> = unit_name.into();
@@ -163,7 +173,7 @@ impl ZoneServerUnit {
             self.mode,
             self.source,
             self.hooks,
-            self.listen,
+            listen_strings,
             zones,
         )
         .run(unit_name, update_tx, cmd_rx)
@@ -180,20 +190,20 @@ impl ZoneServerUnit {
         match addr {
             ListenAddr::Udp(addr) => {
                 let sock = UdpSocket::bind(addr).await?;
-                let config = dgram::Config::new();
-                let srv = DgramServer::<_, _, _>::with_config(sock, buf, svc, config);
-                let srv = Arc::new(srv);
-                srv.run().await;
+                serve_on_udp(svc, buf, sock).await;
+            }
+            ListenAddr::UdpSocket(sock) => {
+                let sock = UdpSocket::from_std(sock)?;
+                serve_on_udp(svc, buf, sock).await;
             }
             ListenAddr::Tcp(addr) => {
                 let sock = tokio::net::TcpListener::bind(addr).await?;
-                let mut conn_config = ConnectionConfig::new();
-                conn_config.set_max_queued_responses(10000);
-                let mut config = stream::Config::new();
-                config.set_connection_config(conn_config);
-                let srv = StreamServer::with_config(sock, buf, svc, config);
-                let srv = Arc::new(srv);
-                srv.run().await;
+                serve_on_tcp(svc, buf, sock).await;
+            }
+            ListenAddr::TcpListener(listener) => {
+                listener.set_nonblocking(true)?;
+                let listener = tokio::net::TcpListener::from_std(listener)?;
+                serve_on_tcp(svc, buf, listener).await;
             } // #[cfg(feature = "tls")]
               // ListenAddr::Tls(addr, config) => {
               //     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
@@ -212,6 +222,29 @@ impl ZoneServerUnit {
     }
 }
 
+async fn serve_on_udp<Svc>(svc: Svc, buf: VecBufSource, sock: UdpSocket)
+where
+    Svc: Service<Vec<u8>, ()> + Clone,
+{
+    let config = dgram::Config::new();
+    let srv = DgramServer::<_, _, _>::with_config(sock, buf, svc, config);
+    let srv = Arc::new(srv);
+    srv.run().await;
+}
+
+async fn serve_on_tcp<Svc>(svc: Svc, buf: VecBufSource, sock: tokio::net::TcpListener)
+where
+    Svc: Service<Vec<u8>, ()> + Clone,
+{
+    let mut conn_config = ConnectionConfig::new();
+    conn_config.set_max_queued_responses(10000);
+    let mut config = stream::Config::new();
+    config.set_connection_config(conn_config);
+    let srv = StreamServer::with_config(sock, buf, svc, config);
+    let srv = Arc::new(srv);
+    srv.run().await;
+}
+
 //------------ ZoneServer ----------------------------------------------------
 
 struct ZoneServer {
@@ -221,7 +254,7 @@ struct ZoneServer {
     mode: Mode,
     source: Source,
     hooks: Vec<String>,
-    listen: Vec<ListenAddr>,
+    listen: Vec<String>,
     #[allow(clippy::type_complexity)]
     pending_approvals: Arc<RwLock<HashMap<(Name<Bytes>, Serial), Vec<Uuid>>>>,
     #[allow(clippy::type_complexity)]
@@ -237,7 +270,7 @@ impl ZoneServer {
         mode: Mode,
         source: Source,
         hooks: Vec<String>,
-        listen: Vec<ListenAddr>,
+        listen: Vec<String>,
         zones: XfrDataProvidingZonesWrapper,
     ) -> Self {
         Self {
@@ -737,7 +770,7 @@ struct ZoneReviewApi {
     zones: XfrDataProvidingZonesWrapper,
     mode: Mode,
     source: Source,
-    listen: Vec<ListenAddr>,
+    listen: Vec<String>,
 }
 
 impl ZoneReviewApi {
@@ -749,7 +782,7 @@ impl ZoneReviewApi {
         zones: XfrDataProvidingZonesWrapper,
         mode: Mode,
         source: Source,
-        listen: Vec<ListenAddr>,
+        listen: Vec<String>,
     ) -> Self {
         Self {
             update_tx,
