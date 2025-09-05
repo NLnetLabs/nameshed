@@ -339,6 +339,7 @@ dependencies = [
  "hyper-util",
  "indoc",
  "layout-rs",
+ "listenfd",
  "log",
  "nix 0.22.3",
  "non-empty-vec",
@@ -1419,6 +1420,17 @@ name = "linux-raw-sys"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cd945864f07fe9f5371a27ad7b52a172b4b499999f1d97574c9fa68373937e12"
+
+[[package]]
+name = "listenfd"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b87bc54a4629b4294d0b3ef041b64c40c611097a677d9dc07b2c67739fe39dba"
+dependencies = [
+ "libc",
+ "uuid",
+ "winapi",
+]
 
 [[package]]
 name = "litemap"
