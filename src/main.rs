@@ -214,9 +214,9 @@ fn daemonize(config: &DaemonConfig) -> Result<(), String> {
         match (user_id, group_id) {
             (UserId::Named(user), GroupId::Named(group)) => {
                 daemon_config = daemon_config
-                    .with_user(&*user)
+                    .with_user(user)
                     .map_err(|err| format!("Invalid user name: {err}"))?
-                    .with_group(&*group)
+                    .with_group(group)
                     .map_err(|err| format!("Invalid group name: {err}"))?;
             }
             _ => {
