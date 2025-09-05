@@ -122,11 +122,9 @@ fn main() -> ExitCode {
             .unwrap(),
     );
 
-    if *state.config.daemon.daemonize.value() {
-        if let Err(err) = daemonize(&state.config.daemon) {
-            log::error!("Failed to daemonize: {err}");
-            return ExitCode::FAILURE;
-        }
+    if let Err(err) = daemonize(&state.config.daemon) {
+        log::error!("Failed to daemonize: {err}");
+        return ExitCode::FAILURE;
     }
 
     // Prepare Cascade.
@@ -237,11 +235,18 @@ fn daemonize(config: &DaemonConfig) -> Result<(), String> {
         daemon_config = daemon_config.with_pid_file(into_daemon_path(pid_file.clone()));
     }
 
-    if Process::from_config(daemon_config)
-        .setup_daemon(true)
-        .is_err()
-    {
-        return Err("Unknown error".to_string());
+    let mut process = Process::from_config(daemon_config);
+
+    log::debug!("Becoming daemon process");
+    if *config.daemonize.value() {
+        if process.setup_daemon(true).is_err() {
+            return Err("Failed to become daemon process: unknown error".to_string());
+        }
+    }
+
+    log::debug!("Dropping privileges");
+    if process.drop_privileges().is_err() {
+        return Err("Failed to drop privileges: unknown error".to_string());
     }
 
     Ok(())
