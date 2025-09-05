@@ -23,7 +23,7 @@ tsig-store-path = "/var/db/cascade/tsig-keys.db"
 # Whether or not to fork the process and apply the pid-file, chroot and
 # identity settings.
 # 
-daemonize = true
+daemonize = false
 #
 # The minimum severity of the messages logged by the daemon.
 #
