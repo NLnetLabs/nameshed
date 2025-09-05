@@ -1,11 +1,13 @@
+use camino::Utf8Path;
 use cascade::{
     center::{self, Center},
     comms::ApplicationCommand,
-    config::Config,
+    config::{Config, DaemonConfig, GroupId, UserId},
     manager::{self, TargetCommand},
     policy,
 };
 use clap::{crate_authors, crate_version};
+use daemonbase::process::Process;
 use std::{
     io,
     process::ExitCode,
@@ -113,13 +115,19 @@ fn main() -> ExitCode {
         }
     }
 
-    // TODO: daemonbase
     logger.apply(
         logger
             .prepare(&state.config.daemon.logging)
             .unwrap()
             .unwrap(),
     );
+
+    if *state.config.daemon.daemonize.value() {
+        if let Err(err) = daemonize(&state.config.daemon) {
+            log::error!("Failed to daemonize: {err}");
+            return ExitCode::FAILURE;
+        }
+    }
 
     // Prepare Cascade.
     let (app_cmd_tx, mut app_cmd_rx) = mpsc::unbounded_channel();
@@ -197,4 +205,49 @@ fn main() -> ExitCode {
 
         result
     })
+}
+
+fn daemonize(config: &DaemonConfig) -> Result<(), String> {
+    let mut daemon_config = daemonbase::process::Config::default();
+
+    if let Some((user_id, group_id)) = &config.identity {
+        match (user_id, group_id) {
+            (UserId::Named(user), GroupId::Named(group)) => {
+                daemon_config = daemon_config
+                    .with_user(&*user)
+                    .map_err(|err| format!("Invalid user name: {err}"))?
+                    .with_group(&*group)
+                    .map_err(|err| format!("Invalid group name: {err}"))?;
+            }
+            _ => {
+                // daemonbase doesn't support configuration from user id or
+                // group id.
+                return Err(
+                    "Failed to drop privileges: user and group must be names, not IDs".to_string(),
+                );
+            }
+        }
+    }
+
+    if let Some(chroot) = &config.chroot {
+        daemon_config = daemon_config.with_chroot(into_daemon_path(chroot.clone()));
+    }
+
+    if let Some(pid_file) = &config.pid_file {
+        daemon_config = daemon_config.with_pid_file(into_daemon_path(pid_file.clone()));
+    }
+
+    if Process::from_config(daemon_config)
+        .setup_daemon(true)
+        .is_err()
+    {
+        return Err("Unknown error".to_string());
+    }
+
+    Ok(())
+}
+
+fn into_daemon_path(p: Box<Utf8Path>) -> daemonbase::config::ConfigPath {
+    let p = p.into_path_buf().into_std_path_buf();
+    daemonbase::config::ConfigPath::from(p)
 }

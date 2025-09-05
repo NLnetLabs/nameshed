@@ -19,6 +19,7 @@ tsig-store-path = "/var/db/cascade/tsig-keys.db"
 # This controls Cascade's behaviour as a daemon, i.e. how it interacts with the
 # external system.
 [daemon]
+daemonize = true
 #
 # The minimum severity of the messages logged by the daemon.
 #

@@ -50,6 +50,8 @@ hyper-util			= { version = "0.1.16" }
 # `default-features = false` was copied from previous import from the Rotonda base
 reqwest				= { version = "0.12", default-features = false, features = ["http2", "json"] }
 axum				= { version = "0.8.4", features = ["http2", "ws"] }
+#daemonbase = { git = "https://github.com/NLnetLabs/daemonbase", rev = "038578e529f64ec0fee721b034dc82ab80a23f19", version = "0.1.3" } # Use commit 038578e5 to take the fix made for PR https://github.com/NLnetLabs/daemonbase/pull/11
+daemonbase = { path = "../../daemonbase", version = "0.1.4-dev" }
 
 # From Rotonda
 allocator-api2     = "0.2"
