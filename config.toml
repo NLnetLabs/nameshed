@@ -14,6 +14,12 @@ zone-state-dir = "/var/db/cascade/zone-state"
 # The file storing TSIG key secrets.
 tsig-store-path = "/var/db/cascade/tsig-keys.db"
 
+# The directory storing the keys.
+keys-dir = "/var/db/cascade/keys"
+
+# The path to the dnst binary Cascade should use.
+dnst-binary-path = "dnst"
+
 # Configuring the Cascade daemon.
 #
 # This controls Cascade's behaviour as a daemon, i.e. how it interacts with the

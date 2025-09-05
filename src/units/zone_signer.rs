@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
+use camino::Utf8Path;
 use domain::base::iana::Class;
 use domain::base::name::FlattenInto;
 use domain::base::{CanonicalOrd, Record, Rtype, Serial, Ttl};
@@ -65,8 +66,6 @@ pub struct ZoneSignerUnit {
     pub max_concurrent_rrsig_generation_tasks: usize,
 
     pub kmip_server_conn_settings: HashMap<String, KmipServerConnectionSettings>,
-
-    pub dnst_keyset_data_dir: PathBuf,
 }
 
 #[allow(dead_code)]
@@ -146,7 +145,6 @@ impl ZoneSignerUnit {
             self.max_concurrent_rrsig_generation_tasks,
             self.treat_single_keys_as_csks,
             kmip_servers,
-            self.dnst_keyset_data_dir,
         )
         .run(cmd_rx)
         .await?;
@@ -208,7 +206,7 @@ struct ZoneSigner {
     signer_status: Arc<RwLock<ZoneSignerStatus>>,
     treat_single_keys_as_csks: bool,
     kmip_servers: HashMap<String, SyncConnPool>,
-    dnst_keyset_data_dir: PathBuf,
+    keys_dir: Box<Utf8Path>,
 }
 
 impl ZoneSigner {
@@ -220,8 +218,11 @@ impl ZoneSigner {
         max_concurrent_rrsig_generation_tasks: usize,
         treat_single_keys_as_csks: bool,
         kmip_servers: HashMap<String, SyncConnPool>,
-        dnst_keyset_data_dir: PathBuf,
     ) -> Self {
+        let state = center.state.lock().unwrap();
+        let keys_dir = state.config.keys_dir.clone();
+        drop(state);
+
         Self {
             center,
             use_lightweight_zone_tree,
@@ -230,7 +231,7 @@ impl ZoneSigner {
             signer_status: Default::default(),
             treat_single_keys_as_csks,
             kmip_servers,
-            dnst_keyset_data_dir,
+            keys_dir,
         }
     }
 
@@ -360,8 +361,9 @@ impl ZoneSigner {
         trace!("Reading dnst keyset DNSKEY RRs and RRSIG RRs");
         // Read the DNSKEY RRs and DNSKEY RRSIG RR from the keyset state.
         let apex_name = zone.apex_name().to_string();
-        let state_path = self.dnst_keyset_data_dir.join(format!("{apex_name}.state"));
-        let state = std::fs::read_to_string(&state_path).map_err(|err| format!("Unable to read `dnst keyset` state file '{}' while signing zone {zone_name}: {err}", state_path.display()))?;
+        let state_path = self.keys_dir.join(format!("{apex_name}.state"));
+        let state = std::fs::read_to_string(&state_path)
+            .map_err(|err| format!("Unable to read `dnst keyset` state file '{state_path}' while signing zone {zone_name}: {err}"))?;
         let state: KeySetState = serde_json::from_str(&state).unwrap();
         for dnskey_rr in state.dnskey_rrset {
             let mut zonefile = Zonefile::new();

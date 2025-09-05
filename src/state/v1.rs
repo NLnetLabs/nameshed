@@ -136,6 +136,12 @@ pub struct ConfigSpec {
     /// The file storing TSIG keys.
     pub tsig_store_path: Box<Utf8Path>,
 
+    /// Path to the directory where the keys should be stored.
+    pub keys_dir: Box<Utf8Path>,
+
+    /// Path to the dnst binary that Cascade should use.
+    pub dnst_binary_path: Box<Utf8Path>,
+
     /// Daemon-related configuration.
     pub daemon: DaemonConfigSpec,
 
@@ -160,6 +166,8 @@ impl ConfigSpec {
         update_value(&mut config.policy_dir, self.policy_dir, changed);
         update_value(&mut config.zone_state_dir, self.zone_state_dir, changed);
         update_value(&mut config.tsig_store_path, self.tsig_store_path, changed);
+        update_value(&mut config.keys_dir, self.keys_dir, changed);
+        update_value(&mut config.dnst_binary_path, self.dnst_binary_path, changed);
         self.daemon.parse_into(&mut config.daemon, changed);
         update_value(&mut config.loader, self.loader.parse(), changed);
         update_value(&mut config.signer, self.signer.parse(), changed);
@@ -173,6 +181,8 @@ impl ConfigSpec {
             policy_dir: config.policy_dir.clone(),
             zone_state_dir: config.zone_state_dir.clone(),
             tsig_store_path: config.tsig_store_path.clone(),
+            keys_dir: config.keys_dir.clone(),
+            dnst_binary_path: config.dnst_binary_path.clone(),
             daemon: DaemonConfigSpec::build(&config.daemon),
             loader: LoaderConfigSpec::build(&config.loader),
             signer: SignerConfigSpec::build(&config.signer),
