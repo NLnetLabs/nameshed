@@ -31,8 +31,11 @@ pub enum ZoneSource {
 }
 
 impl Display for ZoneSource {
-    fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        todo!()
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ZoneSource::Zonefile { path } => path.fmt(f),
+            ZoneSource::Server { addr } => addr.fmt(f),
+        }
     }
 }
 
@@ -83,7 +86,7 @@ pub enum ZoneStatusError {
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct ZoneStatus {
     pub name: Name<Bytes>,
-    pub source: String, // ZoneSource,
+    pub source: ZoneSource,
     pub policy: String,
     pub stage: ZoneStage,
     pub key_status: Option<String>,

@@ -1,10 +1,12 @@
 //! Version 1 of the zone state file.
 
-use std::time::Duration;
+use std::{net::SocketAddr, time::Duration};
 
+use camino::Utf8Path;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    api::ZoneSource,
     policy::{
         KeyManagerPolicy, LoaderPolicy, Nsec3OptOutPolicy, PolicyVersion, ReviewPolicy,
         ServerPolicy, SignerDenialPolicy, SignerPolicy, SignerSerialPolicy,
@@ -23,6 +25,9 @@ pub struct Spec {
     /// The full details of the policy are stored here, as there may be a newer
     /// version of the policy that is not yet in use.
     pub policy: Option<PolicySpec>,
+
+    /// The source to load the zone from
+    pub source: Option<ZoneSourceSpec>,
 }
 
 //--- Conversion
@@ -32,6 +37,7 @@ impl Spec {
     pub fn build(zone: &ZoneState) -> Self {
         Self {
             policy: zone.policy.as_ref().map(|p| PolicySpec::build(p)),
+            source: zone.source.as_ref().map(|s| ZoneSourceSpec::build(s)),
         }
     }
 }
@@ -80,6 +86,33 @@ impl PolicySpec {
             key_manager: KeyManagerPolicySpec::build(&policy.key_manager),
             signer: SignerPolicySpec::build(&policy.signer),
             server: ServerPolicySpec::build(&policy.server),
+        }
+    }
+}
+
+//----------- ZoneSourceSpec ---------------------------------------------------
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub enum ZoneSourceSpec {
+    Zonefile { path: Box<Utf8Path> },
+    Server { addr: SocketAddr },
+}
+
+impl ZoneSourceSpec {
+    /// Parse from this specification.
+    pub fn parse(self) -> ZoneSource {
+        match self {
+            ZoneSourceSpec::Zonefile { path } => ZoneSource::Zonefile { path },
+            ZoneSourceSpec::Server { addr } => ZoneSource::Server { addr },
+        }
+    }
+
+    /// Build into this specification.
+    pub fn build(policy: &ZoneSource) -> Self {
+        match policy {
+            ZoneSource::Zonefile { path } => ZoneSourceSpec::Zonefile { path: path.clone() },
+            ZoneSource::Server { addr } => ZoneSourceSpec::Server { addr: addr.clone() },
         }
     }
 }

@@ -137,7 +137,12 @@ impl HttpServer {
         Json(zone_register): Json<ZoneAdd>,
     ) -> Json<ZoneAddResult> {
         // TODO: Use the result.
-        let _ = center::add_zone(&state.center, zone_register.name.clone());
+        let _ = center::add_zone(
+            &state.center,
+            zone_register.name.clone(),
+            zone_register.source.clone(),
+        );
+
         let res = zone::change_policy(
             &state.center,
             zone_register.name.clone(),
@@ -222,7 +227,7 @@ impl HttpServer {
         let zone_state = zone.0.state.lock().unwrap();
 
         // TODO: Needs some info from the zone loader?
-        let source = "<unimplemented>".into();
+        let source = zone_state.source.clone().unwrap();
 
         let policy = zone_state
             .policy
