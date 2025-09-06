@@ -3,7 +3,9 @@ use domain::base::Name;
 use futures::TryFutureExt;
 use log::error;
 
-use crate::api::{ZoneAdd, ZoneAddResult, ZoneSource, ZoneStatusResult, ZonesListResult};
+use crate::api::{
+    ZoneAdd, ZoneAddResult, ZoneSource, ZoneStatus, ZoneStatusError, ZonesListResult,
+};
 use crate::cli::client::CascadeApiClient;
 
 #[derive(Clone, Debug, clap::Args)]
@@ -134,7 +136,7 @@ impl Zone {
         // TODO: move to function that can be called by the general
         // status command with a zone arg?
         let url = format!("zone/{}/status", zone);
-        let response: ZoneStatusResult = client
+        let response: Result<ZoneStatus, ZoneStatusError> = client
             .get(&url)
             .send()
             .and_then(|r| r.json())
@@ -143,11 +145,19 @@ impl Zone {
                 error!("HTTP request failed: {e}");
             })?;
 
-        Self::print_zone_status(response);
-        Ok(())
+        match response {
+            Ok(status) => {
+                Self::print_zone_status(status);
+                Ok(())
+            }
+            Err(ZoneStatusError::ZoneDoesNotExist) => {
+                println!("zone `{zone}` does not exist");
+                Err(())
+            }
+        }
     }
 
-    fn print_zone_status(zone: ZoneStatusResult) {
+    fn print_zone_status(zone: ZoneStatus) {
         println!("{}", zone.name);
         println!("  source: {}", zone.source);
         println!("  policy: {}", zone.policy);

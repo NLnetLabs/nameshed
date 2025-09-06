@@ -32,7 +32,8 @@ use crate::api::ZoneAddResult;
 use crate::api::ZoneReloadResult;
 use crate::api::ZoneRemoveResult;
 use crate::api::ZoneStage;
-use crate::api::ZoneStatusResult;
+use crate::api::ZoneStatus;
+use crate::api::ZoneStatusError;
 use crate::api::ZonesListResult;
 use crate::center;
 use crate::center::Center;
@@ -193,7 +194,8 @@ impl HttpServer {
 
         let zones = names
             .iter()
-            .map(|z| Self::get_zone_status(http_state.clone(), z))
+            .map(|z| Self::get_zone_status(http_state.clone(), z).ok())
+            .flatten()
             .collect();
 
         Json(ZonesListResult { zones })
@@ -202,15 +204,21 @@ impl HttpServer {
     async fn zone_status(
         State(state): State<Arc<HttpServerState>>,
         Path(name): Path<Name<Bytes>>,
-    ) -> Json<ZoneStatusResult> {
+    ) -> Json<Result<ZoneStatus, ZoneStatusError>> {
         Json(Self::get_zone_status(state, &name))
     }
 
-    fn get_zone_status(state: Arc<HttpServerState>, name: &Name<Bytes>) -> ZoneStatusResult {
+    fn get_zone_status(
+        state: Arc<HttpServerState>,
+        name: &Name<Bytes>,
+    ) -> Result<ZoneStatus, ZoneStatusError> {
         let center = &state.center;
 
         let state = center.state.lock().unwrap();
-        let zone = state.zones.get(name).unwrap();
+        let zone = state
+            .zones
+            .get(name)
+            .ok_or(ZoneStatusError::ZoneDoesNotExist)?;
         let zone_state = zone.0.state.lock().unwrap();
 
         // TODO: Needs some info from the zone loader?
@@ -252,13 +260,13 @@ impl HttpServer {
             .ok()
             .map(|o| String::from_utf8_lossy(&o.stdout).to_string());
 
-        ZoneStatusResult {
+        Ok(ZoneStatus {
             name: name.clone(),
             source,
             policy,
             stage,
             key_status,
-        }
+        })
     }
 
     async fn zone_reload(

@@ -54,7 +54,7 @@ impl From<&str> for ZoneSource {
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct ZonesListResult {
-    pub zones: Vec<ZoneStatusResult>,
+    pub zones: Vec<ZoneStatus>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -76,7 +76,12 @@ impl Display for ZoneStage {
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
-pub struct ZoneStatusResult {
+pub enum ZoneStatusError {
+    ZoneDoesNotExist,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct ZoneStatus {
     pub name: Name<Bytes>,
     pub source: String, // ZoneSource,
     pub policy: String,

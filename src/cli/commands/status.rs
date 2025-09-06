@@ -1,9 +1,7 @@
-use bytes::Bytes;
-use domain::base::Name;
 use futures::TryFutureExt;
 use log::error;
 
-use crate::api::{ServerStatusResult, ZoneStatusResult};
+use crate::api::ServerStatusResult;
 use crate::cli::client::CascadeApiClient;
 
 #[derive(Clone, Debug, clap::Args)]
@@ -14,10 +12,6 @@ pub struct Status {
 
 #[derive(Clone, Debug, clap::Subcommand)]
 pub enum StatusCommand {
-    /// Show status of a specific zone
-    #[command(name = "zone")]
-    Zone { name: Name<Bytes> },
-
     /// Show status of DNSSEC keys
     #[command(name = "keys")]
     Keys,
@@ -31,21 +25,6 @@ pub enum StatusCommand {
 impl Status {
     pub async fn execute(self, client: CascadeApiClient) -> Result<(), ()> {
         match self.command {
-            Some(StatusCommand::Zone { name }) => {
-                // TODO: move to function that can be called by the general
-                // status command with a zone arg?
-                let url = format!("/zone/{name}/status");
-                let _response: ZoneStatusResult = client
-                    .get(&url)
-                    .send()
-                    .and_then(|r| r.json())
-                    .await
-                    .map_err(|e| {
-                        error!("HTTP request failed: {e}");
-                    })?;
-
-                println!("Success: Sent zone reload command for {}", name)
-            }
             Some(_) => todo!(),
             None => {
                 let response: ServerStatusResult = client
