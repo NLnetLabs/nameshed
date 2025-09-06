@@ -31,8 +31,11 @@ pub enum ZoneSource {
 }
 
 impl Display for ZoneSource {
-    fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        todo!()
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ZoneSource::Zonefile { path } => path.fmt(f),
+            ZoneSource::Server { addr } => addr.fmt(f),
+        }
     }
 }
 
@@ -54,13 +57,7 @@ impl From<&str> for ZoneSource {
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct ZonesListResult {
-    pub zones: Vec<ZonesListEntry>,
-}
-
-#[derive(Deserialize, Serialize, Debug, Clone)]
-pub struct ZonesListEntry {
-    pub name: Name<Bytes>,
-    pub stage: ZoneStage,
+    pub zones: Vec<ZoneStatus>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -70,9 +67,29 @@ pub enum ZoneStage {
     Published,
 }
 
+impl Display for ZoneStage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let str = match self {
+            ZoneStage::Unsigned => "unsigned",
+            ZoneStage::Signed => "signed",
+            ZoneStage::Published => "published",
+        };
+        f.write_str(str)
+    }
+}
+
 #[derive(Deserialize, Serialize, Debug, Clone)]
-pub struct ZoneStatusResult {
+pub enum ZoneStatusError {
+    ZoneDoesNotExist,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct ZoneStatus {
     pub name: Name<Bytes>,
+    pub source: ZoneSource,
+    pub policy: String,
+    pub stage: ZoneStage,
+    pub key_status: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]

@@ -4,7 +4,7 @@ use futures::TryFutureExt;
 use log::error;
 
 use crate::api::{
-    ZoneAdd, ZoneAddResult, ZoneSource, ZoneStage, ZoneStatusResult, ZonesListResult,
+    ZoneAdd, ZoneAddResult, ZoneSource, ZoneStatus, ZoneStatusError, ZonesListResult,
 };
 use crate::cli::client::CascadeApiClient;
 
@@ -109,13 +109,7 @@ impl Zone {
                     })?;
 
                 for zone in response.zones {
-                    let name = zone.name;
-                    let stage = match zone.stage {
-                        ZoneStage::Unsigned => "unsigned",
-                        ZoneStage::Signed => "signed",
-                        ZoneStage::Published => "published",
-                    };
-                    println!("{name}\t{stage}");
+                    Self::print_zone_status(zone);
                 }
             }
             ZoneCommand::Reload { zone } => {
@@ -132,21 +126,50 @@ impl Zone {
                 println!("Success: Sent zone reload command for {}", zone);
             }
             ZoneCommand::Status { zone } => {
-                // TODO: move to function that can be called by the general
-                // status command with a zone arg?
-                let url = format!("zone/{}/status", zone);
-                let response: ZoneStatusResult = client
-                    .get(&url)
-                    .send()
-                    .and_then(|r| r.json())
-                    .await
-                    .map_err(|e| {
-                        error!("HTTP request failed: {e}");
-                    })?;
-
-                println!("Server status: {:?}", response);
+                Self::status(client, zone).await?;
             }
         }
         Ok(())
+    }
+
+    async fn status(client: CascadeApiClient, zone: Name<Bytes>) -> Result<(), ()> {
+        // TODO: move to function that can be called by the general
+        // status command with a zone arg?
+        let url = format!("zone/{}/status", zone);
+        let response: Result<ZoneStatus, ZoneStatusError> = client
+            .get(&url)
+            .send()
+            .and_then(|r| r.json())
+            .await
+            .map_err(|e| {
+                error!("HTTP request failed: {e}");
+            })?;
+
+        match response {
+            Ok(status) => {
+                Self::print_zone_status(status);
+                Ok(())
+            }
+            Err(ZoneStatusError::ZoneDoesNotExist) => {
+                println!("zone `{zone}` does not exist");
+                Err(())
+            }
+        }
+    }
+
+    fn print_zone_status(zone: ZoneStatus) {
+        println!("{}", zone.name);
+        println!("  source: {}", zone.source);
+        println!("  policy: {}", zone.policy);
+        println!("  stage: {}", zone.stage);
+
+        if let Some(key_status) = zone.key_status {
+            println!("  key:");
+            for line in key_status.lines() {
+                println!("    {line}");
+            }
+        } else {
+            println!("  key: <none>");
+        }
     }
 }
